@@ -96,6 +96,10 @@ export async function toggleReaction(eventId: string, key: string): Promise<void
     });
 }
 
+export function resetMessages(): void {
+    windows.set({});
+}
+
 // --- Handler called by eventRouter for Matrix timeline events ---
 
 function getWindow(w: Record<string, ChannelWindow>, roomId: string): ChannelWindow {

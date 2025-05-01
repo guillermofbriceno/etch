@@ -5,6 +5,10 @@ import { writable } from 'svelte/store';
 // breaking what was previously a circular import.
 export const activeChannelId = writable<string | null>(null);
 
+export function resetActiveChannel(): void {
+    activeChannelId.set(null);
+}
+
 // Simple pub/sub for unread message notifications.
 // messages.ts publishes via emitUnreadMessage(), channels.ts subscribes via onUnreadMessage().
 type UnreadListener = (roomId: string) => void;

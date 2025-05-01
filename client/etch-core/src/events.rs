@@ -50,6 +50,7 @@ pub enum MumbleEvent {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", content = "data")]
 pub enum SystemEvent {
+    ServerReset,
     ConnectionLost,
     SettingsLoaded(crate::settings::Settings),
     LogError { message: String, target: String },

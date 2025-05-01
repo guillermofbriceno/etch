@@ -1,6 +1,6 @@
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration, Sleep};
-use crate::connection;
+use crate::connection::MatrixConnection;
 use crate::events::{CoreEvent, InternalEvent, InternalMatrixEvent, InternalMumbleEvent, MumbleEvent, SystemEvent};
 use crate::commands::{CoreCommand, MumbleCommand, ServerConnectionForm, SystemCommand};
 use crate::models::{ConnectionState, VoiceServerConfig};
@@ -16,6 +16,7 @@ pub struct CoreEngine<M, V> {
 
     matrix: M,
     voice: V,
+    conn: MatrixConnection,
     mumble_credentials: Option<VoiceServerConfig>,
     pub(crate) data_dir: PathBuf,
 }
@@ -38,6 +39,7 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
             event_tx,
             matrix,
             voice,
+            conn: MatrixConnection::new(),
             mumble_credentials: None,
             data_dir,
         }
@@ -45,11 +47,7 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
 
     pub async fn run(mut self) {
         let (internal_tx, mut internal_rx) = mpsc::channel::<InternalEvent>(100);
-
-        // --- Connection FSM state ---
-        let mut matrix_state = ConnectionState::Disconnected;
-        let mut matrix_timer: Pin<Box<Sleep>> = Box::pin(sleep(Duration::MAX));
-        let mut connection_form: Option<ServerConnectionForm> = None;
+        let mut retry_timer: Pin<Box<Sleep>> = Box::pin(sleep(Duration::MAX));
 
         loop {
             tokio::select! {
@@ -65,85 +63,22 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
                         CoreCommand::FetchMedia { mxc_url, respond } => {
                             self.matrix.spawn_media_fetch(mxc_url, respond);
                         }
-                        CoreCommand::System(sys_cmd) => {
-                            match sys_cmd {
-                                SystemCommand::ConnectToServer(form) => {
-                                    connection_form = Some(form.clone());
-                                    self.connect_to_server(
-                                        &form, &mut matrix_state, &mut matrix_timer,
-                                        internal_tx.clone(),
-                                    ).await;
-                                }
-                                SystemCommand::LoadSettings => {
-                                    let s = settings::load(&self.data_dir);
-                                    let _ = self.event_tx.send(CoreEvent::System(
-                                        SystemEvent::SettingsLoaded(s.clone()),
-                                    )).await;
-
-                                    if let Some(bm) = s.bookmarks.iter().find(|b| b.auto_connect) {
-                                        let form = ServerConnectionForm::from(bm);
-                                        connection_form = Some(form.clone());
-                                        self.connect_to_server(
-                                            &form, &mut matrix_state, &mut matrix_timer,
-                                            internal_tx.clone(),
-                                        ).await;
-                                    }
-                                }
-                                SystemCommand::SaveBookmarks(bookmarks) => {
-                                    settings::update_bookmarks(&self.data_dir, bookmarks);
-                                    let s = settings::load(&self.data_dir);
-                                    let _ = self.event_tx.send(CoreEvent::System(
-                                        SystemEvent::SettingsLoaded(s),
-                                    )).await;
-                                }
-                                SystemCommand::MuteMic(muted) => {
-                                    self.voice.send_command(MumbleCommand::MuteSelf(muted)).await;
-                                }
-                                SystemCommand::Deafen(deafened) => {
-                                    self.voice.send_command(MumbleCommand::DeafenSelf(deafened)).await;
-                                }
-                                SystemCommand::OpenMumbleGui(extra_args) => {
-                                    if let Some(ref creds) = self.mumble_credentials {
-                                        self.launch_voice(creds.clone(), true, &extra_args, internal_tx.clone()).await;
-                                    }
-                                }
-                                SystemCommand::RestartMumble(extra_args) => {
-                                    if let Some(ref creds) = self.mumble_credentials {
-                                        self.launch_voice(creds.clone(), false, &extra_args, internal_tx.clone()).await;
-                                    }
-                                }
-                                SystemCommand::SetLogLevel(level) => {
-                                    crate::logger::set_level(&level);
-                                }
-                                SystemCommand::TestError => {
-                                    log::error!("Test error triggered from Developer Options");
-                                }
-                                SystemCommand::HideDm { room_id } => {
-                                    settings::hide_dm(&self.data_dir, room_id);
-                                }
-                                SystemCommand::UnhideDm { room_id } => {
-                                    settings::unhide_dm(&self.data_dir, &room_id);
-                                }
-                            }
+                        CoreCommand::System(cmd) => {
+                            self.handle_system_command(cmd, &mut retry_timer, internal_tx.clone()).await;
                         }
                     }
                 }
 
                 Some(internal_event) = internal_rx.recv() => {
-                    self.handle_internal_event(
-                        internal_event, &mut matrix_state, &mut matrix_timer,
-                    ).await;
+                    self.handle_internal_event(internal_event, &mut retry_timer).await;
                 }
 
-                // --- Retry timers ---
+                // --- Retry timer ---
 
-                _ = &mut matrix_timer, if matrix_state.is_failed() => {
-                    if let Some(form) = connection_form.clone() {
-                        log::info!("Retrying Matrix connection (attempt {})", matrix_state.retries() + 1);
-                        self.connect_to_server(
-                            &form, &mut matrix_state, &mut matrix_timer,
-                            internal_tx.clone(),
-                        ).await;
+                _ = &mut retry_timer, if self.conn.state.is_failed() => {
+                    if let Some(form) = self.conn.form.clone() {
+                        log::info!("Retrying Matrix connection (attempt {})", self.conn.state.retries() + 1);
+                        self.connect_to_server(&form, &mut retry_timer, internal_tx.clone()).await;
                     }
                 }
             }
@@ -153,17 +88,75 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
         // Without this, events queued by Matrix/Mumble services during
         // command processing could be dropped on shutdown.
         while let Ok(event) = internal_rx.try_recv() {
-            self.handle_internal_event(
-                event, &mut matrix_state, &mut matrix_timer,
-            ).await;
+            self.handle_internal_event(event, &mut retry_timer).await;
+        }
+    }
+
+    async fn handle_system_command(
+        &mut self,
+        cmd: SystemCommand,
+        retry_timer: &mut Pin<Box<Sleep>>,
+        internal_tx: mpsc::Sender<InternalEvent>,
+    ) {
+        match cmd {
+            SystemCommand::ConnectToServer(form) => {
+                self.conn.form = Some(form.clone());
+                self.connect_to_server(&form, retry_timer, internal_tx).await;
+            }
+            SystemCommand::LoadSettings => {
+                let s = settings::load(&self.data_dir);
+                let _ = self.event_tx.send(CoreEvent::System(
+                    SystemEvent::SettingsLoaded(s.clone()),
+                )).await;
+
+                if let Some(bm) = s.bookmarks.iter().find(|b| b.auto_connect) {
+                    let form = ServerConnectionForm::from(bm);
+                    self.conn.form = Some(form.clone());
+                    self.connect_to_server(&form, retry_timer, internal_tx).await;
+                }
+            }
+            SystemCommand::SaveBookmarks(bookmarks) => {
+                settings::update_bookmarks(&self.data_dir, bookmarks);
+                let s = settings::load(&self.data_dir);
+                let _ = self.event_tx.send(CoreEvent::System(
+                    SystemEvent::SettingsLoaded(s),
+                )).await;
+            }
+            SystemCommand::MuteMic(muted) => {
+                self.voice.send_command(MumbleCommand::MuteSelf(muted)).await;
+            }
+            SystemCommand::Deafen(deafened) => {
+                self.voice.send_command(MumbleCommand::DeafenSelf(deafened)).await;
+            }
+            SystemCommand::OpenMumbleGui(extra_args) => {
+                if let Some(ref creds) = self.mumble_credentials {
+                    self.launch_voice(creds.clone(), true, &extra_args, internal_tx).await;
+                }
+            }
+            SystemCommand::RestartMumble(extra_args) => {
+                if let Some(ref creds) = self.mumble_credentials {
+                    self.launch_voice(creds.clone(), false, &extra_args, internal_tx).await;
+                }
+            }
+            SystemCommand::SetLogLevel(level) => {
+                crate::logger::set_level(&level);
+            }
+            SystemCommand::TestError => {
+                log::error!("Test error triggered from Developer Options");
+            }
+            SystemCommand::HideDm { room_id } => {
+                settings::hide_dm(&self.data_dir, room_id);
+            }
+            SystemCommand::UnhideDm { room_id } => {
+                settings::unhide_dm(&self.data_dir, &room_id);
+            }
         }
     }
 
     async fn handle_internal_event(
         &mut self,
         event: InternalEvent,
-        matrix_state: &mut ConnectionState,
-        matrix_timer: &mut Pin<Box<Sleep>>,
+        retry_timer: &mut Pin<Box<Sleep>>,
     ) {
         match event {
             InternalEvent::Matrix(evt) => {
@@ -176,10 +169,7 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
                     }
                     InternalMatrixEvent::Disconnected(reason) => {
                         log::warn!("Matrix disconnected: {}", reason);
-                        connection::schedule_retry(
-                            matrix_state, matrix_timer,
-                            reason, &self.event_tx, connection::matrix_conn_event,
-                        ).await;
+                        self.conn.schedule_retry(retry_timer, reason, &self.event_tx).await;
                     }
                 }
             }
@@ -246,26 +236,26 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
     async fn connect_to_server(
         &mut self,
         form: &ServerConnectionForm,
-        matrix_state: &mut ConnectionState,
-        matrix_timer: &mut Pin<Box<Sleep>>,
+        retry_timer: &mut Pin<Box<Sleep>>,
         internal_tx: mpsc::Sender<InternalEvent>,
     ) {
+        let _ = self.event_tx.send(CoreEvent::System(SystemEvent::ServerReset)).await;
+        self.matrix.reset().await;
+
         if form.mumble_host.is_some() {
             // Explicit Mumble config in bookmark: launch immediately, don't wait for Matrix
             self.resolve_and_launch_voice(form, None, false, "", internal_tx.clone()).await;
-            connection::attempt_matrix_connect(
-                matrix_state, matrix_timer,
-                &mut self.matrix, form.clone(),
+            self.conn.attempt_connect(
+                retry_timer, &mut self.matrix, form.clone(),
                 internal_tx, &self.event_tx,
             ).await;
         } else {
             // No explicit Mumble config: wait for Matrix to discover voice server
-            let voice_server = connection::attempt_matrix_connect(
-                matrix_state, matrix_timer,
-                &mut self.matrix, form.clone(),
+            let voice_server = self.conn.attempt_connect(
+                retry_timer, &mut self.matrix, form.clone(),
                 internal_tx.clone(), &self.event_tx,
             ).await;
-            if matches!(matrix_state, ConnectionState::Connected) {
+            if matches!(self.conn.state, ConnectionState::Connected) {
                 self.resolve_and_launch_voice(form, voice_server, false, "", internal_tx).await;
             }
         }
@@ -980,6 +970,68 @@ mod tests {
 
         let launches = voice_state.launched_with.lock().unwrap();
         assert_eq!(launches.len(), 2, "Expected 2 voice launches (connect + RestartMumble)");
+    }
+
+    // --- ServerReset tests ---
+
+    #[tokio::test]
+    async fn connect_resets_backend_before_connecting() {
+        // The whole point of ServerReset: stale state from the previous
+        // session must be cleared before any new state can accumulate.
+        // Verify the mock sees reset() before connect() in the call log.
+        let tmp = tempfile::tempdir().unwrap();
+        let (events, matrix_state, _) = run_commands(
+            MockMatrix::new(),
+            MockVoice::new(),
+            tmp.path(),
+            vec![CoreCommand::System(SystemCommand::ConnectToServer(connect_form()))],
+        ).await;
+
+        use crate::test_mocks::MockCall;
+        let log = matrix_state.call_log.lock().unwrap();
+        assert_eq!(
+            log.as_slice(),
+            &[MockCall::Reset, MockCall::Connect],
+            "reset() must be called exactly once, before connect()"
+        );
+
+        // The frontend also needs the ServerReset event to clear its stores,
+        // and it must arrive before the Connecting state so the UI doesn't
+        // briefly show stale data.
+        let reset_pos = events.iter().position(|e| matches!(e,
+            CoreEvent::System(SystemEvent::ServerReset)
+        ));
+        let connecting_pos = events.iter().position(|e| matches!(e,
+            CoreEvent::Matrix(MatrixEvent::ConnectionState(ConnectionState::Connecting))
+        ));
+        assert!(
+            reset_pos.unwrap() < connecting_pos.unwrap(),
+            "ServerReset event must precede Connecting state"
+        );
+    }
+
+    #[tokio::test]
+    async fn reconnect_resets_each_time() {
+        // Switching servers (or reconnecting to the same one) must clear
+        // state from the previous session every time, not just the first.
+        let tmp = tempfile::tempdir().unwrap();
+        let (_, matrix_state, _) = run_commands(
+            MockMatrix::new(),
+            MockVoice::new(),
+            tmp.path(),
+            vec![
+                CoreCommand::System(SystemCommand::ConnectToServer(connect_form())),
+                CoreCommand::System(SystemCommand::ConnectToServer(connect_form())),
+            ],
+        ).await;
+
+        use crate::test_mocks::MockCall;
+        let log = matrix_state.call_log.lock().unwrap();
+        assert_eq!(
+            log.as_slice(),
+            &[MockCall::Reset, MockCall::Connect, MockCall::Reset, MockCall::Connect],
+            "Each connection attempt must go through reset-then-connect"
+        );
     }
 
     #[tokio::test]

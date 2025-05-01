@@ -101,6 +101,15 @@ impl TimelineManager {
         }
     }
 
+    /// Clear all timeline subscriptions and the media source cache.
+    /// Dropping the Arc<Timeline> handles causes their diff-stream tasks to end.
+    pub fn clear(&mut self) {
+        self.timelines.clear();
+        let mut sources = self.media_sources.write().expect("media source lock");
+        sources.map.clear();
+        sources.order.clear();
+    }
+
     // Subscribe to a room's timeline. Sends the initial batch of messages,
     // then spawns a task that loops on the diff stream forwarding changes
     // as CoreEvents. Does NOT paginate — call paginate_backwards separately.
@@ -508,5 +517,33 @@ mod tests {
     fn get_returns_none_for_missing() {
         let cache = BoundedMediaSources::new(4);
         assert!(cache.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn clear_empties_media_sources_and_timelines() {
+        // TimelineManager::clear() is the backend half of the ServerReset
+        // path. Dropping Arc<Timeline> handles terminates their spawned
+        // diff-stream tasks, and clearing media sources prevents stale
+        // encrypted-media metadata from leaking across sessions.
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let mut mgr = TimelineManager::new(tx);
+
+        // Populate the media source cache via the shared lock (same path
+        // the real code takes through extract_media_url).
+        {
+            let mut sources = mgr.media_sources.write().unwrap();
+            sources.insert("mxc://a".into(), plain_source("mxc://a"));
+            sources.insert("mxc://b".into(), plain_source("mxc://b"));
+        }
+
+        mgr.clear();
+
+        let sources = mgr.media_sources.read().unwrap();
+        assert!(sources.get("mxc://a").is_none(), "media sources should be cleared");
+        assert!(sources.get("mxc://b").is_none(), "media sources should be cleared");
+        assert_eq!(sources.map.len(), 0);
+        assert_eq!(sources.order.len(), 0);
+
+        assert!(mgr.timeline_arcs().is_empty(), "timeline handles should be cleared");
     }
 }

@@ -15,6 +15,10 @@ export const currentUser = writable<UserInfo>({
     avatarUrl: null,
 });
 
+export function resetUser(): void {
+    currentUser.set({ username: '', matrixId: '', displayName: null, avatarUrl: null });
+}
+
 export function handleMatrixEvent(me: MatrixEvent): void {
     if (me.type === 'CurrentUser') {
         currentUser.set({

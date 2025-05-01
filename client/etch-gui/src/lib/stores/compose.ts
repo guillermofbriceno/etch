@@ -10,3 +10,5 @@ export function setReply(msg: ChatMessage): void {
 export function clearReply(): void {
     replyingTo.set(null);
 }
+
+export const resetCompose = clearReply;

@@ -34,6 +34,7 @@ export type MumbleEvent =
     | { type: 'ConnectionState'; data: { type: 'Disconnected' } | { type: 'Connecting' } | { type: 'Connected' } | { type: 'Failed'; reason: string; retries: number; retry_in_secs: number } };
 
 export type SystemEvent =
+    | { type: 'ServerReset' }
     | { type: 'ConnectionLost' }
     | { type: 'SettingsLoaded'; data: { bookmarks: ServerBookmark[]; transmission_mode: string | null; vad_threshold: number | null; voice_hold: number | null; use_mumble_settings: boolean | null; hidden_dms: string[] } }
     | { type: 'LogError'; data: { message: string; target: string } }

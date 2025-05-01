@@ -52,6 +52,11 @@ export function unhideDm(roomId: string): void {
     sendCoreCommand({ type: 'System', data: { type: 'UnhideDm', data: { room_id: roomId } } });
 }
 
+export function resetChannels(): void {
+    channels.set([]);
+    hiddenDmInfos.set(new Map());
+}
+
 // --- Unread / active channel bookkeeping ---
 
 export function initChannels(): void {

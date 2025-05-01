@@ -466,4 +466,49 @@ impl MatrixBackend for MatrixService {
         let Some(room) = client.get_room(&rid) else { return };
         self.timeline_manager.subscribe_to_room(&room).await;
     }
+
+    async fn reset(&mut self) {
+        if let Some(handle) = self.sync_handle.take() {
+            handle.abort();
+        }
+        self.timeline_manager.clear();
+        self.client = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn reset_aborts_sync_and_clears_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (tx, _rx) = mpsc::channel(1);
+        let mut service = MatrixService::new(tx, tmp.path().to_path_buf());
+
+        // Simulate a live session: a running sync task and cached media sources.
+        let sync_handle = tokio::spawn(async {
+            tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+        });
+        let abort_handle = sync_handle.abort_handle();
+        service.sync_handle = Some(sync_handle);
+        {
+            let mut sources = service.timeline_manager.media_sources.write().unwrap();
+            let uri = matrix_sdk::ruma::OwnedMxcUri::from("mxc://stale".to_owned());
+            sources.insert("mxc://stale".into(), MediaSource::Plain(uri));
+        }
+
+        service.reset().await;
+
+        // The sync handle was taken and abort() called on it.
+        assert!(service.sync_handle.is_none(), "sync handle should be consumed");
+        // Yield so the runtime can process the cancellation.
+        tokio::task::yield_now().await;
+        assert!(abort_handle.is_finished(), "sync task should be aborted");
+
+        assert!(service.client.is_none(), "client should be cleared");
+
+        let sources = service.timeline_manager.media_sources.read().unwrap();
+        assert!(sources.get("mxc://stale").is_none(), "media sources should be cleared");
+    }
 }

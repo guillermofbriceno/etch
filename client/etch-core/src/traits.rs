@@ -27,6 +27,8 @@ pub trait MatrixBackend: Send {
     );
 
     fn subscribe_to_room(&mut self, room_id: &str) -> impl Future<Output = ()> + Send;
+
+    fn reset(&mut self) -> impl Future<Output = ()> + Send;
 }
 
 pub trait VoiceService: Send {

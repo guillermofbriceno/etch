@@ -7,6 +7,14 @@ use crate::events::InternalEvent;
 use crate::models::VoiceServerConfig;
 use crate::traits::{MatrixBackend, VoiceService};
 
+/// Labels for trait methods called on the mock, recorded in call order.
+/// Used to verify sequencing constraints (e.g., reset before connect).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MockCall {
+    Reset,
+    Connect,
+}
+
 /// Shared state for `MockMatrix`. Clone the `Arc` before moving the
 /// mock into the engine so tests can inspect recorded calls afterward.
 pub struct MockMatrixState {
@@ -14,6 +22,8 @@ pub struct MockMatrixState {
     pub commands: Mutex<Vec<MatrixCommand>>,
     /// Room IDs passed to `subscribe_to_room`.
     pub subscribe_calls: Mutex<Vec<String>>,
+    /// Ordered log of trait method calls for sequencing assertions.
+    pub call_log: Mutex<Vec<MockCall>>,
 }
 
 pub struct MockMatrix {
@@ -31,6 +41,7 @@ impl MockMatrix {
             state: Arc::new(MockMatrixState {
                 commands: Mutex::new(Vec::new()),
                 subscribe_calls: Mutex::new(Vec::new()),
+                call_log: Mutex::new(Vec::new()),
             }),
             connect_result: (true, None),
             profile_response: (None, None),
@@ -61,6 +72,7 @@ impl MatrixBackend for MockMatrix {
         _form: ServerConnectionForm,
         internal_tx: mpsc::Sender<InternalEvent>,
     ) -> (bool, Option<VoiceServerConfig>) {
+        self.state.call_log.lock().unwrap().push(MockCall::Connect);
         for event in self.internal_events.drain(..) {
             let _ = internal_tx.send(event).await;
         }
@@ -90,6 +102,10 @@ impl MatrixBackend for MockMatrix {
 
     async fn subscribe_to_room(&mut self, room_id: &str) {
         self.state.subscribe_calls.lock().unwrap().push(room_id.to_string());
+    }
+
+    async fn reset(&mut self) {
+        self.state.call_log.lock().unwrap().push(MockCall::Reset);
     }
 }
 

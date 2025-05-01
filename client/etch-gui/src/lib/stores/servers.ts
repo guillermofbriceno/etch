@@ -85,6 +85,11 @@ export function removeBookmark(id: string): void {
     }
 }
 
+export function resetServerConnection(): void {
+    mediaBaseUrl.set(null);
+    passwordRequested.set(false);
+}
+
 // Handlers called by eventRouter
 export function handleMatrixEvent(me: MatrixEvent): void {
     if (me.type === 'PasswordRequest') {
