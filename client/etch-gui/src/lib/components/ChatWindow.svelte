@@ -24,6 +24,7 @@
 
     const BOTTOM_THRESHOLD = 100; // px — generous to cover subpixel rounding and partial messages
     const TOP_THRESHOLD = 400;   // px — triggers backward pagination when user scrolls near the top
+    let scrollTimeout: ReturnType<typeof setTimeout>;
     let stuckAtBottom = true;
     let newMessagesPending = false;
     let programmaticScroll = false;
@@ -56,6 +57,15 @@
     /** Scroll event handler — only reacts to user-initiated scrolls. */
     function onScroll() {
         if (!scrollerElement) return;
+
+        // Suppress child hover effects while scrolling so toolbars don't
+        // appear when content moves under a stationary cursor.
+        scrollerElement.classList.add('scrolling');
+        clearTimeout(scrollTimeout);
+        scrollTimeout = setTimeout(() => {
+            scrollerElement.classList.remove('scrolling');
+        }, 150);
+
         if (programmaticScroll) {
             programmaticScroll = false;
             return;
@@ -318,6 +328,10 @@
         padding: 16px 0;
         -webkit-user-select: text;
         user-select: text;
+    }
+
+    .messages-scroller:global(.scrolling) > :global(*) {
+        pointer-events: none;
     }
 
     :global(.messages-scroller *) {

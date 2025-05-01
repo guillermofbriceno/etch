@@ -15,6 +15,11 @@
     export let sender: SenderProfile | null;
     export let continuation: boolean;
 
+    const COLLAPSE_THRESHOLD = 300;
+    let bodyEl: HTMLElement;
+    let needsCollapse = false;
+    let collapsed = true;
+
     function mxcToUrl(mxc: string): string {
         if (!mxc) return '';
         if (!mxc.startsWith('mxc://')) return mxc;
@@ -84,6 +89,31 @@
         return { update: run };
     }
 
+    function collapseWatch(node: HTMLElement, _content: string) {
+        function measure() {
+            needsCollapse = node.scrollHeight > COLLAPSE_THRESHOLD;
+        }
+
+        requestAnimationFrame(measure);
+
+        const ro = new ResizeObserver(measure);
+        ro.observe(node);
+
+        return {
+            update() {
+                collapsed = true;
+                requestAnimationFrame(measure);
+            },
+            destroy() {
+                ro.disconnect();
+            },
+        };
+    }
+
+    function toggleCollapse() {
+        collapsed = !collapsed;
+    }
+
     function applyMentionStyling(container: HTMLElement, selfId: string): void {
         // Rewrite matrix.to anchor tags to styled mention spans
         container.querySelectorAll<HTMLAnchorElement>('a[href*="matrix.to/#/@"]').forEach((a) => {
@@ -132,10 +162,23 @@
         {/if}
 
         {#if !msg.media}
-            <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
-            <div class="body" use:processBody={{ htmlBody: msg.html_body, selfId: $currentUser.matrixId }} on:click={handleLinkClick}>
-                {@html messageBody(msg.body, msg.html_body)}
+            <div class="body-wrapper" class:collapsed={needsCollapse && collapsed}>
+                <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
+                <div
+                    class="body"
+                    bind:this={bodyEl}
+                    use:processBody={{ htmlBody: msg.html_body, selfId: $currentUser.matrixId }}
+                    use:collapseWatch={msg.body + (msg.html_body ?? '')}
+                    on:click={handleLinkClick}
+                >
+                    {@html messageBody(msg.body, msg.html_body)}
+                </div>
             </div>
+            {#if needsCollapse}
+                <button class="collapse-toggle" on:click={toggleCollapse}>
+                    {collapsed ? 'See more' : 'See less'}
+                </button>
+            {/if}
         {/if}
 
         {#if msg.media}
@@ -310,5 +353,35 @@
     .body :global(.mention-self) {
         background-color: color-mix(in srgb, var(--accent) 30%, transparent);
         color: #dee0fc;
+    }
+
+    /* --- Collapsible message body --- */
+    .body-wrapper {
+        position: relative;
+    }
+
+    .body-wrapper.collapsed {
+        max-height: 300px;
+        overflow: hidden;
+        -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 48px), transparent);
+        mask-image: linear-gradient(to bottom, black calc(100% - 48px), transparent);
+    }
+
+    .collapse-toggle {
+        display: inline-block;
+        background: none;
+        border: none;
+        color: var(--accent);
+        font-size: 13px;
+        font-weight: 500;
+        cursor: pointer;
+        padding: 4px 0;
+        margin: 0;
+        font-family: inherit;
+    }
+
+    .collapse-toggle:hover {
+        color: var(--accent-hover);
+        text-decoration: underline;
     }
 </style>
