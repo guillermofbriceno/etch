@@ -107,6 +107,10 @@ jobs:
           echo "=== Bridge plugin ==="
           file client/etch-gui/src-tauri/bundled/libetch_bridge.so
 
+      - name: Get app version
+        id: version
+        run: echo "tag=v$(jq -r .version client/etch-gui/src-tauri/tauri.conf.json)" >> "$GITHUB_OUTPUT"
+
       # ---- Build deb/rpm ----
 
       - name: Build deb/rpm (GitHub CI)
@@ -134,6 +138,9 @@ jobs:
       # The bundled Mumble .so files are already self-contained (processed by
       # linuxdeploy in the Mumble fork CI), so we stash them out of the AppDir,
       # run linuxdeploy on just the Etch binary, then restore and re-package.
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --locked
 
       - name: Build AppImage
         run: |
@@ -169,7 +176,7 @@ jobs:
         if: ${{ !env.ACT }}
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ steps.version.outputs.tag }}
           files: target/release/bundle/appimage/etch-gui-x86_64.AppImage
 
       - name: Preserve artifacts (local/act)
@@ -177,63 +184,3 @@ jobs:
         run: |
           cp target/release/bundle/appimage/etch-gui-x86_64.AppImage /tmp/etch-output.AppImage
           cp target/release/bundle/rpm/*.rpm /tmp/etch-output.rpm
-
-  build-server:
-    runs-on: ubuntu-22.04
-    needs: build-linux
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Check if server version changed
-        id: server-check
-        run: |
-          CURRENT=$(grep -oP '^version = "\K[^"]+' server/Cargo.toml)
-          PREV_TAG=$(git tag --sort=-v:refname | grep '^v' | sed -n '2p')
-          if [ -n "$PREV_TAG" ]; then
-            PREVIOUS=$(git show "$PREV_TAG:server/Cargo.toml" | grep -oP '^version = "\K[^"]+')
-          else
-            PREVIOUS=""
-          fi
-          echo "current=$CURRENT previous=$PREVIOUS"
-          if [ "$CURRENT" != "$PREVIOUS" ]; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Install Linux dependencies
-        if: steps.server-check.outputs.changed == 'true'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            pkg-config \
-            libssl-dev \
-            protobuf-compiler
-
-      - name: Install Rust 1.93
-        if: steps.server-check.outputs.changed == 'true'
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: '1.93'
-
-      - name: Rust cache
-        if: steps.server-check.outputs.changed == 'true'
-        uses: swatinem/rust-cache@v2
-
-      - name: Build server
-        if: steps.server-check.outputs.changed == 'true'
-        run: |
-          cargo build --release -p etch-server
-          mv target/release/etch-server target/release/etch-server-${{ github.ref_name }}-linux-amd64
-
-      - name: Upload server binary to Release
-        if: steps.server-check.outputs.changed == 'true'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          files: target/release/etch-server-${{ github.ref_name }}-linux-amd64
