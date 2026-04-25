@@ -1,0 +1,70 @@
+{
+    "audio": {
+        "audio_quality": 192000,
+        "echo_cancel_mode": "Disabled",
+        "loudness": 721,
+        "mute_cue_popup_shown": true,
+        "noise_cancel_mode": "RNN",
+        "play_mute_cue": false,
+        "transmit_cue_when_ptt": false,
+        "vad_max": 0.5,
+        "vad_min": 0.5
+    },
+    "certificate": "",
+    "messages": {
+        "traits": {
+            "0": 1,
+            "1": 1,
+            "10": 1,
+            "11": 1,
+            "12": 1,
+            "13": 1,
+            "14": 1,
+            "15": 1,
+            "16": 1,
+            "17": 1,
+            "18": 1,
+            "19": 1,
+            "2": 1,
+            "20": 1,
+            "21": 1,
+            "22": 1,
+            "23": 1,
+            "24": 1,
+            "25": 1,
+            "26": 1,
+            "27": 1,
+            "28": 1,
+            "29": 1,
+            "3": 1,
+            "30": 1,
+            "31": 1,
+            "4": 1,
+            "5": 1,
+            "6": 1,
+            "7": 1,
+            "8": 1,
+            "9": 1
+        }
+    },
+    "misc": {
+        "audio_wizard_has_been_shown": true,
+        "database_location": "",
+        "viewed_server_ping_consent_message": true
+    },
+    "mumble_has_quit_normally": true,
+    "network": {
+        "frames_per_packet": 1
+    },
+    "settings_version": 1,
+    "ui": {
+        "config_geometry": "",
+        "connect_dialog_geometry": "",
+        "connect_dialog_header_state": "",
+        "disable_public_server_list": true,
+        "send_usage_statistics": false,
+        "use_24h_clock_format": false,
+        "window_geometry": "",
+        "window_state": ""
+    }
+}

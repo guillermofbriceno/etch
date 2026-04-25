@@ -1,0 +1,10 @@
+[workspace]
+members = [
+    "client/etch-core",
+    "client/etch-cli",
+    "client/etch-gui/src-tauri",
+    "plugin/etch-bridge",
+    "shared/bridge-types",
+]
+resolver = "2"
+

@@ -1,0 +1,29 @@
+[package]
+name = "etch-core"
+version = "0.1.6"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1.50", features = ["full"] }
+serde = "1.0"
+tauri = "2.10"
+log = "0.4"
+simple_logger = "5"
+matrix-sdk = { version = "0.16.0", features = ["sqlite", "e2e-encryption"] }
+matrix-sdk-ui = "0.16.0"
+anyhow = "1.0"
+serde_json = "1.0"
+futures-util = "0.3"
+mime_guess = "2"
+futures = "0.3"
+bridge-types = { path = "../../shared/bridge-types" }
+interprocess = { version = "2", features = ["tokio"] }
+keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native"] }
+rand = "0.10"
+sha1 = "0.10"
+snafu = "0.9"
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+win32job = "2"

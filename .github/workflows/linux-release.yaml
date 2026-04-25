@@ -1,0 +1,239 @@
+name: "Linux Release"
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  MUMBLE_RELEASE_URL: https://github.com/ALS-Experiments/mumble/releases/download/v0.0.0/mumble-linux-x86_64.tar.gz
+  MUMBLE_ARTIFACT: mumble-linux-x86_64.tar.gz
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            curl \
+            wget \
+            file \
+            pkg-config \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libglib2.0-dev \
+            libsoup-3.0-dev \
+            librsvg2-dev \
+            libayatana-appindicator3-dev \
+            libssl-dev \
+            libxdo-dev \
+            libasound2-dev \
+            libopus-dev \
+            libsecret-1-dev \
+            libdbus-1-dev \
+            protobuf-compiler \
+            xdg-utils \
+            desktop-file-utils
+
+      - name: Install Rust 1.93
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.93'
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Install frontend dependencies
+        run: pnpm install
+        working-directory: client/etch-gui
+
+      # ---- Mumble + Bridge bundling ----
+
+      - name: Download Mumble
+        if: ${{ !env.ACT }}
+        run: curl -L -o "$MUMBLE_ARTIFACT" "$MUMBLE_RELEASE_URL"
+
+      - name: Verify Mumble checksum
+        if: ${{ !env.ACT }}
+        run: |
+          EXPECTED=$(grep "$MUMBLE_ARTIFACT" build/mumble-checksums.sha256 | awk '{print $1}')
+          ACTUAL=$(sha256sum "$MUMBLE_ARTIFACT" | awk '{print $1}')
+          echo "Expected: $EXPECTED"
+          echo "Actual:   $ACTUAL"
+          if [ "$EXPECTED" != "$ACTUAL" ]; then
+            echo "::error::Checksum mismatch for $MUMBLE_ARTIFACT"
+            exit 1
+          fi
+
+      - name: Extract Mumble into bundled/
+        if: ${{ !env.ACT }}
+        run: |
+          mkdir -p client/etch-gui/src-tauri/bundled/mumble
+          tar xzf "$MUMBLE_ARTIFACT" -C client/etch-gui/src-tauri/bundled/mumble/
+
+      - name: Build bridge plugin
+        run: cargo build --release -p etch-bridge
+
+      - name: Copy bridge plugin into bundled/
+        run: cp target/release/libetch_bridge.so client/etch-gui/src-tauri/bundled/
+
+      - name: Verify bundled contents
+        run: |
+          echo "=== Bundled contents ==="
+          find client/etch-gui/src-tauri/bundled/ -type f | head -50
+          echo "=== Mumble binary ==="
+          file client/etch-gui/src-tauri/bundled/mumble/bin/mumble || echo "WARNING: mumble binary not found"
+          echo "=== Bridge plugin ==="
+          file client/etch-gui/src-tauri/bundled/libetch_bridge.so
+
+      # ---- Build deb/rpm ----
+
+      - name: Build deb/rpm (GitHub CI)
+        if: ${{ !env.ACT }}
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: client/etch-gui
+          tagName: v__VERSION__
+          releaseName: 'Etch v__VERSION__'
+          releaseBody: 'See the assets below to download this version.'
+          releaseDraft: true
+          prerelease: false
+          args: --bundles deb,rpm
+
+      - name: Build deb/rpm (local/act)
+        if: ${{ env.ACT == 'true' }}
+        run: |
+          cargo install tauri-cli --locked
+          cd client/etch-gui && cargo tauri build --bundles deb,rpm
+
+      # ---- Build AppImage ----
+      # linuxdeploy scans ALL ELF files in the AppDir and resolves their deps.
+      # The bundled Mumble .so files are already self-contained (processed by
+      # linuxdeploy in the Mumble fork CI), so we stash them out of the AppDir,
+      # run linuxdeploy on just the Etch binary, then restore and re-package.
+
+      - name: Build AppImage
+        run: |
+          export APPIMAGE_EXTRACT_AND_RUN=1
+
+          # Clean stale state from previous builds (--reuse containers)
+          rm -rf target/release/bundle/appimage /tmp/etch-bundled-appdir
+
+          # Let Tauri create the AppDir (linuxdeploy fails on Mumble's Qt6 deps — expected)
+          cd client/etch-gui && cargo tauri build --bundles appimage 2>&1 || true
+          cd ../..
+
+          APPDIR=$(find target/release/bundle/appimage -name '*.AppDir' -type d | head -1)
+          if [ -z "$APPDIR" ]; then echo "ERROR: AppDir not found" && exit 1; fi
+
+          # Stash Mumble out of AppDir so linuxdeploy only scans Etch
+          mv "$APPDIR/usr/lib/etch-gui/bundled" /tmp/etch-bundled-appdir
+
+          # Run linuxdeploy on the clean AppDir
+          LINUXDEPLOY=$(find /home/runner/.cache/tauri -name 'linuxdeploy-x86_64.AppImage' | head -1)
+          "$LINUXDEPLOY" --appdir "$APPDIR" --plugin gtk
+
+          # Restore Mumble into AppDir
+          mv /tmp/etch-bundled-appdir "$APPDIR/usr/lib/etch-gui/bundled"
+
+          # Package final AppImage with appimagetool
+          APPIMAGETOOL=$(find /tmp -name 'appimagetool' -type f 2>/dev/null | head -1)
+          if [ -z "$APPIMAGETOOL" ]; then echo "ERROR: appimagetool not found" && exit 1; fi
+          ARCH=x86_64 "$APPIMAGETOOL" "$APPDIR"
+          mv etch-gui-x86_64.AppImage target/release/bundle/appimage/
+
+      - name: Upload AppImage to release (GitHub CI)
+        if: ${{ !env.ACT }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: target/release/bundle/appimage/etch-gui-x86_64.AppImage
+
+      - name: Preserve artifacts (local/act)
+        if: ${{ env.ACT == 'true' }}
+        run: |
+          cp target/release/bundle/appimage/etch-gui-x86_64.AppImage /tmp/etch-output.AppImage
+          cp target/release/bundle/rpm/*.rpm /tmp/etch-output.rpm
+
+  build-server:
+    runs-on: ubuntu-22.04
+    needs: build-linux
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check if server version changed
+        id: server-check
+        run: |
+          CURRENT=$(grep -oP '^version = "\K[^"]+' server/Cargo.toml)
+          PREV_TAG=$(git tag --sort=-v:refname | grep '^v' | sed -n '2p')
+          if [ -n "$PREV_TAG" ]; then
+            PREVIOUS=$(git show "$PREV_TAG:server/Cargo.toml" | grep -oP '^version = "\K[^"]+')
+          else
+            PREVIOUS=""
+          fi
+          echo "current=$CURRENT previous=$PREVIOUS"
+          if [ "$CURRENT" != "$PREVIOUS" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Linux dependencies
+        if: steps.server-check.outputs.changed == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            pkg-config \
+            libssl-dev \
+            protobuf-compiler
+
+      - name: Install Rust 1.93
+        if: steps.server-check.outputs.changed == 'true'
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.93'
+
+      - name: Rust cache
+        if: steps.server-check.outputs.changed == 'true'
+        uses: swatinem/rust-cache@v2
+
+      - name: Build server
+        if: steps.server-check.outputs.changed == 'true'
+        run: |
+          cargo build --release -p etch-server
+          mv target/release/etch-server target/release/etch-server-${{ github.ref_name }}-linux-amd64
+
+      - name: Upload server binary to Release
+        if: steps.server-check.outputs.changed == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: target/release/etch-server-${{ github.ref_name }}-linux-amd64

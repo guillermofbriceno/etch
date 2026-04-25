@@ -1,0 +1,6 @@
+/target/
+/secrets/
+/build/
+bump_client_patch_ver.sh
+client/etch-gui/src-tauri/bundled/
+!client/etch-gui/src-tauri/bundled/.gitkeep

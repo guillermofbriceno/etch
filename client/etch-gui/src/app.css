@@ -1,0 +1,18 @@
+* {
+    -webkit-user-select: none;
+    user-select: none;
+}
+
+:root {
+    --titlebar-height: 32px;
+}
+
+body, html {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    background: #000000;
+    background: linear-gradient(180deg,rgba(0, 0, 0, 1) 0%, rgba(18, 18, 18, 1) 51%, rgba(38, 38, 38, 1) 200%);
+    font-family: 'Inter', sans-serif;
+    overflow: hidden;
+}
