@@ -2,7 +2,7 @@ use tokio::sync::mpsc;
 use tokio::time::{Duration, Instant, Sleep};
 use crate::events::{CoreEvent, InternalEvent, MatrixEvent};
 use crate::commands::ServerConnectionForm;
-use crate::models::ConnectionState;
+use crate::models::{ConnectionState, VoiceServerConfig};
 use crate::matrix;
 
 use std::pin::Pin;
@@ -33,14 +33,17 @@ pub(crate) async fn attempt_matrix_connect(
     form: ServerConnectionForm,
     internal_tx: mpsc::Sender<InternalEvent>,
     event_tx: &mpsc::Sender<CoreEvent>,
-) {
+) -> Option<VoiceServerConfig> {
     *state = ConnectionState::Connecting;
     let _ = event_tx.send(matrix_conn_event(ConnectionState::Connecting)).await;
 
-    if service.connect(form, internal_tx).await {
+    let (success, voice_server) = service.connect(form, internal_tx).await;
+    if success {
         *state = ConnectionState::Connected;
         let _ = event_tx.send(matrix_conn_event(ConnectionState::Connected)).await;
+        voice_server
     } else {
         schedule_retry(state, timer, "Connection failed".into(), event_tx, matrix_conn_event).await;
+        None
     }
 }

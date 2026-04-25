@@ -4,7 +4,7 @@ use crate::connection;
 use crate::events::{CoreEvent, InternalEvent, InternalMatrixEvent, InternalMumbleEvent, MumbleEvent, SystemEvent};
 use bridge_types::MumbleCommand as BridgeCommand;
 use crate::commands::{CoreCommand, MumbleCommand, ServerConnectionForm, SystemCommand};
-use crate::models::ConnectionState;
+use crate::models::{ConnectionState, VoiceServerConfig};
 use crate::mumble;
 use crate::settings;
 use crate::matrix;
@@ -18,6 +18,7 @@ pub struct CoreEngine {
 
     matrix_service: matrix::MatrixService,
     mumble_process: Option<mumble::process::MumbleProcess>,
+    mumble_credentials: Option<VoiceServerConfig>,
     pub data_dir: PathBuf,
     pub resource_dir: PathBuf,
 }
@@ -40,6 +41,7 @@ impl CoreEngine {
             event_tx,
             matrix_service,
             mumble_process: None,
+            mumble_credentials: None,
             resource_dir,
             data_dir,
         }
@@ -67,14 +69,10 @@ impl CoreEngine {
                             match sys_cmd {
                                 SystemCommand::ConnectToServer(form) => {
                                     connection_form = Some(form.clone());
-
-                                    connection::attempt_matrix_connect(
-                                        &mut matrix_state, &mut matrix_timer,
-                                        &mut self.matrix_service, form.clone(),
-                                        internal_tx.clone(), &self.event_tx,
+                                    self.connect_to_server(
+                                        &form, &mut matrix_state, &mut matrix_timer,
+                                        internal_tx.clone(),
                                     ).await;
-
-                                    self.launch_mumble(&form, false, "", internal_tx.clone()).await;
                                 }
                                 SystemCommand::LoadBookmarks => {
                                     let s = settings::load(&self.data_dir);
@@ -85,14 +83,10 @@ impl CoreEngine {
                                     if let Some(bm) = s.bookmarks.iter().find(|b| b.auto_connect) {
                                         let form = ServerConnectionForm::from(bm);
                                         connection_form = Some(form.clone());
-
-                                        connection::attempt_matrix_connect(
-                                            &mut matrix_state, &mut matrix_timer,
-                                            &mut self.matrix_service, form.clone(),
-                                            internal_tx.clone(), &self.event_tx,
+                                        self.connect_to_server(
+                                            &form, &mut matrix_state, &mut matrix_timer,
+                                            internal_tx.clone(),
                                         ).await;
-
-                                        self.launch_mumble(&form, false, "", internal_tx.clone()).await;
                                     }
                                 }
                                 SystemCommand::SaveBookmarks(bookmarks) => {
@@ -108,13 +102,13 @@ impl CoreEngine {
                                     self.send_bridge_command(MumbleCommand::DeafenSelf(deafened)).await;
                                 }
                                 SystemCommand::OpenMumbleGui(extra_args) => {
-                                    if let Some(form) = connection_form.clone() {
-                                        self.launch_mumble(&form, true, &extra_args, internal_tx.clone()).await;
+                                    if let Some(ref creds) = self.mumble_credentials {
+                                        self.spawn_mumble(creds.clone(), true, &extra_args, internal_tx.clone()).await;
                                     }
                                 }
                                 SystemCommand::RestartMumble(extra_args) => {
-                                    if let Some(form) = connection_form.clone() {
-                                        self.launch_mumble(&form, false, &extra_args, internal_tx.clone()).await;
+                                    if let Some(ref creds) = self.mumble_credentials {
+                                        self.spawn_mumble(creds.clone(), false, &extra_args, internal_tx.clone()).await;
                                     }
                                 }
                                 SystemCommand::TestError => {
@@ -182,10 +176,9 @@ impl CoreEngine {
                 _ = &mut matrix_timer, if matrix_state.is_failed() => {
                     if let Some(form) = connection_form.clone() {
                         log::info!("Retrying Matrix connection (attempt {})", matrix_state.retries() + 1);
-                        connection::attempt_matrix_connect(
-                            &mut matrix_state, &mut matrix_timer,
-                            &mut self.matrix_service, form,
-                            internal_tx.clone(), &self.event_tx,
+                        self.connect_to_server(
+                            &form, &mut matrix_state, &mut matrix_timer,
+                            internal_tx.clone(),
                         ).await;
                     }
                 }
@@ -224,18 +217,77 @@ impl CoreEngine {
         }
     }
 
-    async fn launch_mumble(&mut self, form: &ServerConnectionForm, show_gui: bool, extra_args: &str, internal_tx: mpsc::Sender<InternalEvent>) {
-        // Kill existing process if any
+    async fn connect_to_server(
+        &mut self,
+        form: &ServerConnectionForm,
+        matrix_state: &mut ConnectionState,
+        matrix_timer: &mut Pin<Box<Sleep>>,
+        internal_tx: mpsc::Sender<InternalEvent>,
+    ) {
+        if form.mumble_host.is_some() {
+            // Explicit Mumble config in bookmark: launch immediately, don't wait for Matrix
+            self.resolve_and_launch_mumble(form, None, false, "", internal_tx.clone()).await;
+            connection::attempt_matrix_connect(
+                matrix_state, matrix_timer,
+                &mut self.matrix_service, form.clone(),
+                internal_tx, &self.event_tx,
+            ).await;
+        } else {
+            // No explicit Mumble config: wait for Matrix to discover voice server
+            let voice_server = connection::attempt_matrix_connect(
+                matrix_state, matrix_timer,
+                &mut self.matrix_service, form.clone(),
+                internal_tx.clone(), &self.event_tx,
+            ).await;
+            if matches!(matrix_state, ConnectionState::Connected) {
+                self.resolve_and_launch_mumble(form, voice_server, false, "", internal_tx).await;
+            }
+        }
+    }
+
+    fn resolve_mumble_credentials(
+        form: &ServerConnectionForm,
+        voice_server: Option<VoiceServerConfig>,
+    ) -> VoiceServerConfig {
+        // Priority: bookmark explicit > state event > fallback defaults
+        VoiceServerConfig {
+            host: form.mumble_host.clone()
+                .or_else(|| voice_server.as_ref().map(|vs| vs.host.clone()))
+                .unwrap_or_else(|| form.hostname.clone()),
+            port: form.mumble_port
+                .or_else(|| voice_server.as_ref().map(|vs| vs.port))
+                .unwrap_or(64738),
+            username: Some(form.mumble_username.clone()
+                .unwrap_or_else(|| form.username.clone())),
+            password: form.mumble_password.clone()
+                .or_else(|| voice_server.and_then(|vs| vs.password)),
+        }
+    }
+
+    async fn resolve_and_launch_mumble(
+        &mut self,
+        form: &ServerConnectionForm,
+        voice_server: Option<VoiceServerConfig>,
+        show_gui: bool,
+        extra_args: &str,
+        internal_tx: mpsc::Sender<InternalEvent>,
+    ) {
+        let creds = Self::resolve_mumble_credentials(form, voice_server);
+        self.mumble_credentials = Some(creds.clone());
+        self.spawn_mumble(creds, show_gui, extra_args, internal_tx).await;
+    }
+
+    async fn spawn_mumble(&mut self, creds: VoiceServerConfig, show_gui: bool, extra_args: &str, internal_tx: mpsc::Sender<InternalEvent>) {
         if let Some(ref mut proc) = self.mumble_process {
             proc.kill().await;
         }
 
-        let host = form.mumble_host.as_deref().unwrap_or(&form.hostname);
-        let port = form.mumble_port.unwrap_or(64738);
-        let username = form.mumble_username.as_deref().unwrap_or(&form.username);
-        let password = form.mumble_password.as_deref();
-
-        match mumble::process::MumbleProcess::spawn(host, port, username, password, self.event_tx.clone(), internal_tx, show_gui, extra_args, &self.data_dir, &self.resource_dir).await {
+        let username = creds.username.as_deref().unwrap_or("unknown");
+        match mumble::process::MumbleProcess::spawn(
+            &creds.host, creds.port, username, creds.password.as_deref(),
+            self.event_tx.clone(), internal_tx, show_gui, extra_args,
+            &self.data_dir, &self.resource_dir,
+        ).await {
             Ok(proc) => {
                 log::info!("Mumble launched, bridge socket: {}", proc.sock_name);
                 self.mumble_process = Some(proc);

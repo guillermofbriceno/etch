@@ -4,7 +4,7 @@
 
     let editLabel = '';
     let editAddress = '';
-    let editPort = 8448;
+    let editPort = 443;
     let editUsername = '';
     let editAutoConnect = false;
     let editMumbleHost = '';

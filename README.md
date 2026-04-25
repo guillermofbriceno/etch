@@ -4,7 +4,7 @@ Etch is an experimental Matrix client that wraps Mumble to create a voice-first 
 
 ## Status
 
-Etch is very early stages and is not recommended for real production use.
+Etch is experimental software and is not recommended for real production use.
 
 ## Architecture
 
@@ -76,4 +76,26 @@ To mark a room as a voice channel, send an `etch.room_config` state event into i
 
 The recommended setup is to create a room mapped to the Mumble root channel (`channel_id: 0`) and mark it as default. This ensures Mumble and Matrix stay in sync on connect.
 
-This can be sent with any Matrix client that supports custom state events.
+To tell Etch where the Mumble server is, send an `etch.voice_server` state event on the default room:
+
+```json
+{
+  "type": "etch.voice_server",
+  "state_key": "",
+  "content": {
+    "host": "mumble.example.com",
+    "port": 64738,
+    "password": "optional"
+  }
+}
+```
+
+| Field | Description |
+|---|---|
+| `host` | Mumble server hostname or IP |
+| `port` | Mumble server port (defaults to 64738 if omitted) |
+| `password` | Server password, if required |
+
+When Etch connects, it reads this from Matrix and uses it to connect to Mumble automatically. Users can still override these values in the bookmark's advanced options.
+
+Both events can be sent with any Matrix client that supports custom state events.

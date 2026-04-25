@@ -6,8 +6,7 @@ use serde_json::Value;
 use matrix_sdk::deserialized_responses::RawAnySyncOrStrippedState;
 use matrix_sdk::room::Room;
 
-use crate::models::RoomInfo;
-use crate::models::RoomType;
+use crate::models::{RoomInfo, RoomType, VoiceServerConfig};
 
 pub async fn build_room_info(room: &Room) -> anyhow::Result<RoomInfo> {
     let config = get_room_config(room).await?;
@@ -72,6 +71,44 @@ async fn get_room_config(room: &Room) -> anyhow::Result<RoomConfig> {
                 RoomType::Text
             };
             Ok(RoomConfig { room_type, channel_id: None, is_default: false })
+        }
+    }
+}
+
+async fn get_voice_server_config(room: &Room) -> anyhow::Result<Option<VoiceServerConfig>> {
+    match room
+        .get_state_event(StateEventType::from("etch.voice_server"), "").await?
+    {
+        Some(raw_event) => {
+            let raw_json = match raw_event {
+                RawAnySyncOrStrippedState::Sync(e) => e.json().to_string(),
+                RawAnySyncOrStrippedState::Stripped(e) => e.json().to_string(),
+            };
+            let json: Value = serde_json::from_str(&raw_json)?;
+            let content = &json["content"];
+
+            let host = content["host"].as_str()
+                .ok_or_else(|| anyhow::anyhow!("etch.voice_server missing 'host' field"))?
+                .to_string();
+            let port = content["port"].as_u64().unwrap_or(64738) as u16;
+            let password = content["password"].as_str().map(|s| s.to_string());
+
+            Ok(Some(VoiceServerConfig { host, port, username: None, password }))
+        }
+        None => Ok(None),
+    }
+}
+
+pub async fn find_voice_server(client: &Client, rooms: &[RoomInfo]) -> Option<VoiceServerConfig> {
+    let default_room_info = rooms.iter().find(|r| r.is_default)?;
+    let room_id = matrix_sdk::ruma::RoomId::parse(&default_room_info.id).ok()?;
+    let room = client.get_room(&room_id)?;
+
+    match get_voice_server_config(&room).await {
+        Ok(config) => config,
+        Err(e) => {
+            log::warn!("Failed to read etch.voice_server from default room {}: {}", default_room_info.id, e);
+            None
         }
     }
 }

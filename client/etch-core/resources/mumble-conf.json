@@ -2,7 +2,7 @@
     "audio": {
         "audio_quality": 192000,
         "echo_cancel_mode": "Disabled",
-        "loudness": 721,
+        "loudness": 20000,
         "mute_cue_popup_shown": true,
         "noise_cancel_mode": "RNN",
         "play_mute_cue": false,

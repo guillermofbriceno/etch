@@ -10,8 +10,9 @@ permissions:
   contents: write
 
 env:
-  MUMBLE_RELEASE_URL: https://github.com/ALS-Experiments/mumble/releases/download/v0.0.0/mumble-linux-x86_64.tar.gz
+  MUMBLE_RELEASE_URL: https://github.com/guillermofbriceno/mumble/releases/download/etch-mumble-patch/mumble-linux-x86_64.tar.gz
   MUMBLE_ARTIFACT: mumble-linux-x86_64.tar.gz
+  MUMBLE_SHA256: 1744d5a48a8d38160d5392dd11a00861526026244aaf3b09bad97cf1c89619e5
 
 jobs:
   build-linux:
@@ -77,11 +78,10 @@ jobs:
       - name: Verify Mumble checksum
         if: ${{ !env.ACT }}
         run: |
-          EXPECTED=$(grep "$MUMBLE_ARTIFACT" build/mumble-checksums.sha256 | awk '{print $1}')
           ACTUAL=$(sha256sum "$MUMBLE_ARTIFACT" | awk '{print $1}')
-          echo "Expected: $EXPECTED"
+          echo "Expected: $MUMBLE_SHA256"
           echo "Actual:   $ACTUAL"
-          if [ "$EXPECTED" != "$ACTUAL" ]; then
+          if [ "$MUMBLE_SHA256" != "$ACTUAL" ]; then
             echo "::error::Checksum mismatch for $MUMBLE_ARTIFACT"
             exit 1
           fi

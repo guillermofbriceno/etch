@@ -92,3 +92,11 @@ pub struct ServerBookmark {
     #[serde(default)]
     pub mumble_password: Option<String>,
 }
+
+#[derive(Clone, Debug)]
+pub struct VoiceServerConfig {
+    pub host: String,
+    pub port: u16,
+    pub username: Option<String>,
+    pub password: Option<String>,
+}

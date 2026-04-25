@@ -9,7 +9,7 @@ use crate::commands::{MatrixCommand, ServerConnectionForm};
 use crate::events::{CoreEvent, MatrixEvent, InternalEvent, InternalMatrixEvent};
 use crate::matrix::client::{start_matrix_client, ConnectionResult};
 use crate::matrix::timeline::TimelineManager;
-use crate::models::{RoomInfo, RoomType};
+use crate::models::{RoomInfo, RoomType, VoiceServerConfig};
 use crate::matrix;
 
 use std::path::PathBuf;
@@ -38,7 +38,7 @@ impl MatrixService {
         &mut self,
         form: ServerConnectionForm,
         internal_tx: mpsc::Sender<InternalEvent>,
-    ) -> bool {
+    ) -> (bool, Option<VoiceServerConfig>) {
         match start_matrix_client(internal_tx.clone(), self.event_tx.clone(), form, &self.data_dir).await {
             Ok(ConnectionResult::Ok(client)) => {
                 self.client = Some(client.clone());
@@ -83,18 +83,27 @@ impl MatrixService {
                 // Phase 1: initial sync — discovers rooms and triggers invite auto-accepts
                 if let Err(e) = client.sync_once(initial_settings.clone()).await {
                     log::error!("Initial sync failed: {:?}", e);
-                    return false;
+                    return (false, None);
                 }
 
                 // Phase 2: settle — fetches full state for rooms joined from invites
                 if let Err(e) = client.sync_once(initial_settings).await {
                     log::error!("Settlement sync failed: {:?}", e);
-                    return false;
+                    return (false, None);
                 }
 
+                let mut voice_server = None;
                 match matrix::fetch_rooms(&client).await {
                     Ok(rooms) => {
                         log::debug!("Rooms list: {:?}", rooms);
+
+                        // Discover voice server from default room
+                        voice_server = matrix::find_voice_server(&client, &rooms).await;
+                        if let Some(ref vs) = voice_server {
+                            log::info!("Discovered voice server from Matrix: {}:{}", vs.host, vs.port);
+                        } else {
+                            log::info!("No etch.voice_server state event found in default room");
+                        }
 
                         // Send channel list immediately so UI is responsive
                         let _ = self.event_tx.send(
@@ -140,24 +149,24 @@ impl MatrixService {
                     }
                 };
 
-                true
+                (true, voice_server)
             }
 
             Ok(ConnectionResult::NeedsPassword) => {
                 let _ = self.event_tx.send(
                     CoreEvent::Matrix(MatrixEvent::PasswordRequest)
                 ).await;
-                false
+                (false, None)
             }
 
             Err(e) => {
                 log::error!("Error attempting to start Matrix client: {:?}", e);
-                false
+                (false, None)
             }
 
             _unhandled => {
                 log::error!("Error attempting to start Matrix client");
-                false
+                (false, None)
             }
         }
     }

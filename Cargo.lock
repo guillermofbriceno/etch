@@ -1647,7 +1647,7 @@ version = "0.1.0"
 
 [[package]]
 name = "etch-core"
-version = "0.1.6"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bridge-types",
@@ -1673,7 +1673,7 @@ dependencies = [
 
 [[package]]
 name = "etch-gui"
-version = "0.1.6"
+version = "0.2.0"
 dependencies = [
  "arboard",
  "cpal",

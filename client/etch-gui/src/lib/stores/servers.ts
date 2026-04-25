@@ -47,7 +47,7 @@ export function addBookmark(): void {
         id: crypto.randomUUID(),
         label: '',
         address: '',
-        port: 8448,
+        port: 443,
         username: '',
         auto_connect: false,
         mumble_host: null,
