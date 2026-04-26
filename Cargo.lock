@@ -573,7 +573,7 @@ dependencies = [
 
 [[package]]
 name = "bridge-types"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "serde",
 ]
@@ -1633,7 +1633,7 @@ checksum = "dea2df4cf52843e0452895c455a1a2cfbb842a1e7329671acf418fdc53ed4c59"
 
 [[package]]
 name = "etch-bridge"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "bindgen",
  "bridge-types",
@@ -1643,11 +1643,11 @@ dependencies = [
 
 [[package]]
 name = "etch-cli"
-version = "0.1.0"
+version = "0.0.0"
 
 [[package]]
 name = "etch-core"
-version = "0.2.0"
+version = "0.0.0"
 dependencies = [
  "anyhow",
  "bridge-types",
@@ -1673,7 +1673,7 @@ dependencies = [
 
 [[package]]
 name = "etch-gui"
-version = "0.2.0"
+version = "0.0.0"
 dependencies = [
  "arboard",
  "cpal",
