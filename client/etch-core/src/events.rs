@@ -68,6 +68,7 @@ pub enum InternalEvent {
 pub enum InternalMatrixEvent {
     Connected,
     Disconnected(String),
+    SubscribeToRoom(matrix_sdk::ruma::OwnedRoomId),
 }
 
 #[derive(Debug)]

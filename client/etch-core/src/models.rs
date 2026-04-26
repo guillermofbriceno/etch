@@ -73,6 +73,7 @@ pub struct RoomInfo {
     pub channel_id: Option<u32>,
     pub is_default: bool,
     pub unread_count: u64,
+    pub is_encrypted: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]

@@ -83,4 +83,5 @@ export type RoomInfo = {
     channel_id: number | null;
     is_default: boolean;
     unread_count: number;
+    is_encrypted: boolean;
 };

@@ -251,6 +251,11 @@ impl MatrixService {
                 request.preset = Some(RoomPreset::TrustedPrivateChat);
                 request.is_direct = true;
                 request.invite = vec![target.to_owned()];
+                request.initial_state.push(
+                    matrix_sdk::ruma::events::InitialStateEvent::with_empty_state_key(
+                        matrix_sdk::ruma::events::room::encryption::RoomEncryptionEventContent::with_recommended_defaults(),
+                    ).to_raw_any(),
+                );
 
                 match client.create_room(request).await {
                     Ok(response) => {
@@ -263,6 +268,7 @@ impl MatrixService {
                             channel_id: None,
                             is_default: false,
                             unread_count: 0,
+                            is_encrypted: true,
                         };
                         let _ = self.event_tx.send(
                             CoreEvent::Matrix(MatrixEvent::DmCreated(room_info))

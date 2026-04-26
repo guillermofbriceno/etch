@@ -10,10 +10,9 @@ use matrix_sdk::{
 use matrix_sdk::store::RoomLoadSettings;
 use matrix_sdk::event_handler::Ctx;
 use tokio::sync::mpsc;
-use crate::events::{InternalEvent, CoreEvent, MatrixEvent, SystemEvent};
+use crate::events::{InternalEvent, InternalMatrixEvent, CoreEvent, MatrixEvent, SystemEvent};
 use crate::commands::ServerConnectionForm;
 use crate::matrix;
-use crate::matrix::timeline::TimelineManager;
 use crate::models::{RoomInfo, RoomType};
 use std::path::Path;
 use matrix_sdk::attachment::AttachmentConfig;
@@ -156,6 +155,7 @@ fn register_event_handlers(client: &Client, tx: mpsc::Sender<InternalEvent>, eve
         |ev: StrippedRoomMemberEvent,
          room: Room,
          client: Client,
+         Ctx(tx): Ctx<mpsc::Sender<InternalEvent>>,
          Ctx(event_tx): Ctx<mpsc::Sender<CoreEvent>>| async move {
             if ev.state_key != client.user_id().unwrap() {
                 return;
@@ -183,17 +183,17 @@ fn register_event_handlers(client: &Client, tx: mpsc::Sender<InternalEvent>, eve
                 channel_id: None,
                 is_default: false,
                 unread_count: 0,
+                is_encrypted: room.latest_encryption_state().await.map(|s| s.is_encrypted()).unwrap_or(false),
             };
             let _ = event_tx.send(
                 CoreEvent::Matrix(MatrixEvent::DmCreated(room_info))
             ).await;
 
-            // Subscribe to the timeline so messages flow through immediately
-            let room_id = room.room_id().to_owned();
-            let etx = event_tx.clone();
-            tokio::spawn(async move {
-                TimelineManager::subscribe_and_paginate(etx, &room, &room_id, 20).await;
-            });
+            // Ask the engine to subscribe via TimelineManager so the
+            // timeline is registered and pagination/reactions work.
+            let _ = tx.send(InternalEvent::Matrix(
+                InternalMatrixEvent::SubscribeToRoom(room.room_id().to_owned())
+            )).await;
         },
     );
 

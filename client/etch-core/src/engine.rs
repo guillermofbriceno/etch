@@ -126,6 +126,13 @@ impl CoreEngine {
                                 InternalMatrixEvent::Connected => {
                                     log::debug!("Internal: Matrix connected");
                                 }
+                                InternalMatrixEvent::SubscribeToRoom(room_id) => {
+                                    if let Some(client) = &self.matrix_service.client {
+                                        if let Some(room) = client.get_room(&room_id) {
+                                            self.matrix_service.timeline_manager.subscribe_to_room(&room).await;
+                                        }
+                                    }
+                                }
                                 InternalMatrixEvent::Disconnected(reason) => {
                                     log::warn!("Matrix disconnected: {}", reason);
                                     connection::schedule_retry(

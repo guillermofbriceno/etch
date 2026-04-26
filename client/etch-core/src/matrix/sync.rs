@@ -18,6 +18,7 @@ pub async fn build_room_info(room: &Room) -> anyhow::Result<RoomInfo> {
         channel_id: config.channel_id,
         is_default: config.is_default,
         unread_count: unread.notification_count,
+        is_encrypted: room.latest_encryption_state().await.map(|s| s.is_encrypted()).unwrap_or(false),
     })
 }
 
