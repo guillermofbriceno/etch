@@ -73,6 +73,7 @@ export type SystemCommand =
     | { type: 'Deafen'; data: boolean }
     | { type: 'OpenMumbleGui'; data: string }
     | { type: 'RestartMumble'; data: string }
+    | { type: 'SetLogLevel'; data: string }
     | { type: 'TestError' };
 
 export type CoreCommand =

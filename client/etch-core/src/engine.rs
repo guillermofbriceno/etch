@@ -111,6 +111,9 @@ impl CoreEngine {
                                         self.spawn_mumble(creds.clone(), false, &extra_args, internal_tx.clone()).await;
                                     }
                                 }
+                                SystemCommand::SetLogLevel(level) => {
+                                    crate::logger::set_level(&level);
+                                }
                                 SystemCommand::TestError => {
                                     log::error!("Test error triggered from Developer Options");
                                 }

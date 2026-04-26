@@ -209,6 +209,18 @@
                     </div>
 
                     <div class="setting-group">
+                        <label>Log Level</label>
+                        <p class="setting-desc">Change the runtime log verbosity. Set ETCH_LOG env var to change the startup default.</p>
+                        <select class="hardware-select" on:change={(e) => sendCoreCommand({ type: 'System', data: { type: 'SetLogLevel', data: e.currentTarget.value } })}>
+                            <option value="error">Error</option>
+                            <option value="warn">Warn</option>
+                            <option value="info">Info</option>
+                            <option value="debug" selected>Debug</option>
+                            <option value="trace">Trace</option>
+                        </select>
+                    </div>
+
+                    <div class="setting-group">
                         <label>Create DM</label>
                         <p class="setting-desc">Start a direct message with a user by their full Matrix ID.</p>
                         <div class="dm-row">

@@ -45,6 +45,7 @@ pub enum SystemCommand {
     Deafen(bool),
     OpenMumbleGui(String),
     RestartMumble(String),
+    SetLogLevel(String),
     TestError,
 }
 
