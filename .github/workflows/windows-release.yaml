@@ -1,0 +1,105 @@
+name: "Windows Release"
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  MUMBLE_RELEASE_URL: https://github.com/guillermofbriceno/mumble/releases/download/etch-mumble-patch/mumble-windows-x86_64-portable.zip
+  MUMBLE_ARTIFACT: mumble-windows-x86_64-portable.zip
+  MUMBLE_SHA256: cbcb269e2bde3e953d211828d912030ec8e8824090a265aa27a986ef30230ead
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust 1.93
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.93'
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Install frontend dependencies
+        run: pnpm install
+        working-directory: client/etch-gui
+
+      # ---- Mumble + Bridge bundling ----
+
+      - name: Download Mumble
+        shell: bash
+        run: curl -L -o "$MUMBLE_ARTIFACT" "$MUMBLE_RELEASE_URL"
+
+      - name: Verify Mumble checksum
+        shell: bash
+        run: |
+          ACTUAL=$(sha256sum "$MUMBLE_ARTIFACT" | awk '{print $1}')
+          echo "Expected: $MUMBLE_SHA256"
+          echo "Actual:   $ACTUAL"
+          if [ "$MUMBLE_SHA256" != "$ACTUAL" ]; then
+            echo "::error::Checksum mismatch for $MUMBLE_ARTIFACT"
+            exit 1
+          fi
+
+      - name: Extract Mumble into bundled/
+        shell: bash
+        run: |
+          mkdir -p client/etch-gui/src-tauri/bundled/mumble
+          7z x "$MUMBLE_ARTIFACT" -oclient/etch-gui/src-tauri/bundled/mumble/
+
+      - name: Build bridge plugin
+        run: cargo build --release -p etch-bridge
+
+      - name: Copy bridge plugin into bundled/
+        shell: bash
+        run: cp target/release/etch_bridge.dll client/etch-gui/src-tauri/bundled/
+
+      - name: Verify bundled contents
+        shell: bash
+        run: |
+          echo "=== Bundled contents ==="
+          find client/etch-gui/src-tauri/bundled/ -type f | head -50
+          echo "=== Mumble binary ==="
+          file client/etch-gui/src-tauri/bundled/mumble/mumble.exe || echo "WARNING: mumble binary not found"
+          echo "=== Bridge plugin ==="
+          file client/etch-gui/src-tauri/bundled/etch_bridge.dll
+
+      - name: Get app version
+        id: version
+        shell: bash
+        run: echo "tag=v$(jq -r .version client/etch-gui/src-tauri/tauri.conf.json)" >> "$GITHUB_OUTPUT"
+
+      # ---- Build MSI ----
+
+      - name: Build MSI
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: client/etch-gui
+          tagName: v__VERSION__
+          releaseName: 'Etch v__VERSION__'
+          releaseBody: 'See the assets below to download this version.'
+          releaseDraft: true
+          prerelease: false
+          args: --bundles msi

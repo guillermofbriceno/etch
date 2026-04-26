@@ -111,6 +111,7 @@
         flex-direction: column;
         background-color: rgba(0, 0, 0, 0.0);
         min-height: 0;
+        min-width: 0;
     }
 
     .chat-window-wrapper {

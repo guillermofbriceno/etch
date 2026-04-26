@@ -239,7 +239,7 @@
         color: #dcddde;
         line-height: 1.5;
         font-size: 15px;
-        word-wrap: break-word;
+        overflow-wrap: anywhere;
     }
 
     .body :global(strong) { font-weight: 600; color: #fff; }

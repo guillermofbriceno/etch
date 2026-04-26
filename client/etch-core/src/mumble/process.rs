@@ -147,7 +147,7 @@ fn init_mumble_config(config_dir: &Path, resource_dir: &Path) -> Result<(), Core
 
     // Install plugin
     let plugins_dir = mumble_plugins_dir();
-    let plugin_dest = plugins_dir.join("libetch_bridge.so");
+    let plugin_dest = plugins_dir.join(BRIDGE_LIB);
     let plugin_src = plugin_build_path(resource_dir);
     let plugin_src = plugin_src.canonicalize()
         .context(PluginNotFoundSnafu { path: &plugin_src })?;
@@ -239,12 +239,15 @@ fn seed_resource_dir(resource_dir: &Path) -> PathBuf {
     }
 }
 
+/// Plugin library filename (platform-specific).
+const BRIDGE_LIB: &str = if cfg!(target_os = "windows") { "etch_bridge.dll" } else { "libetch_bridge.so" };
+
 /// Returns the path to the built plugin shared library (source for copying).
 fn plugin_build_path(resource_dir: &Path) -> PathBuf {
     if cfg!(debug_assertions) {
-        PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/debug/libetch_bridge.so"))
+        PathBuf::from(format!("{}/../../target/debug/{}", env!("CARGO_MANIFEST_DIR"), BRIDGE_LIB))
     } else {
-        resource_dir.join("bundled/libetch_bridge.so")
+        resource_dir.join(format!("bundled/{}", BRIDGE_LIB))
     }
 }
 
@@ -271,7 +274,14 @@ fn mumble_plugins_dir() -> PathBuf {
 /// In debug builds, uses the local dev build; in release, uses the bundled binary.
 fn mumble_bin(resource_dir: &Path) -> PathBuf {
     if cfg!(debug_assertions) {
-        PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../mumble/build/mumble"))
+        if cfg!(target_os = "windows") {
+            PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../mumble/build/mumble.exe"))
+        } else {
+            PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../mumble/build/mumble"))
+        }
+    } else if cfg!(target_os = "windows") {
+        // Windows portable ZIP has flat structure (no bin/ subdir)
+        resource_dir.join("bundled/mumble/mumble.exe")
     } else {
         resource_dir.join("bundled/mumble/bin/mumble")
     }
