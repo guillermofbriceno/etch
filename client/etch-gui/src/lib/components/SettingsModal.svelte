@@ -9,6 +9,7 @@
     let appVersion = '';
     let extraMumbleArgs = '';
     let devMode = false;
+    let dmTargetUserId = '';
     let displayNameInput = $currentUser.displayName ?? $currentUser.username;
     let displayNameLabel = 'Apply';
     $: displayNameChanged = displayNameInput.trim() !== '' && displayNameInput.trim() !== ($currentUser.displayName ?? $currentUser.username);
@@ -205,6 +206,19 @@
                         <label>Error Reporting</label>
                         <p class="setting-desc">Send a mock error through the logging pipeline to verify it appears in the Error Log.</p>
                         <button class="action-btn" on:click={() => sendCoreCommand({ type: 'System', data: { type: 'TestError' } })}>Send Test Error</button>
+                    </div>
+
+                    <div class="setting-group">
+                        <label>Create DM</label>
+                        <p class="setting-desc">Start a direct message with a user by their full Matrix ID.</p>
+                        <div class="dm-row">
+                            <input type="text" bind:value={dmTargetUserId} placeholder="@alice:etchtest.emptytincan.com" class="dm-input" />
+                            <button class="action-btn" on:click={() => {
+                                if (dmTargetUserId.trim()) {
+                                    sendCoreCommand({ type: 'Matrix', data: { type: 'CreateDirectMessage', data: { target_user_id: dmTargetUserId.trim() } } });
+                                }
+                            }}>Send DM</button>
+                        </div>
                     </div>
                 </div>
 
@@ -542,6 +556,21 @@
     .password-error { color: #ed4245; font-size: 13px; margin-bottom: 4px; }
     .text-input:focus { border-color: #5865f2; }
     .text-input::placeholder { color: #4f5660; }
+
+    .dm-row { display: flex; gap: 8px; }
+    .dm-input {
+        flex: 1;
+        background-color: rgba(255, 255, 255, 0.06);
+        color: #dcddde;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 4px;
+        padding: 8px 10px;
+        font-size: 14px;
+        font-family: 'Inter', sans-serif;
+        outline: none;
+    }
+    .dm-input:focus { border-color: #5865f2; }
+    .dm-input::placeholder { color: #4f5660; }
 
     .close-action {
         flex-shrink: 0;

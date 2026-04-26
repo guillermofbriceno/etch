@@ -14,6 +14,9 @@
 
     let showAdvanced = false;
     let statusMessage = '';
+    let savedHash = '';
+
+    function hashOf(...args: unknown[]) { return JSON.stringify(args); }
 
     $: selected = $selectedBookmarkId
         ? $serverBookmarks.find(b => b.id === $selectedBookmarkId) ?? null
@@ -30,7 +33,15 @@
         editMumbleUsername = selected.mumble_username ?? '';
         editMumblePassword = selected.mumble_password ?? '';
         showAdvanced = !!(selected.mumble_host || selected.mumble_port || selected.mumble_username || selected.mumble_password);
+        savedHash = hashOf(selected.label, selected.address, selected.port, selected.username,
+            selected.auto_connect, selected.mumble_host ?? '',
+            selected.mumble_port != null ? String(selected.mumble_port) : '',
+            selected.mumble_username ?? '', selected.mumble_password ?? '');
     }
+
+    $: currentHash = hashOf(editLabel, editAddress, editPort, editUsername, editAutoConnect,
+        editMumbleHost, editMumblePort, editMumbleUsername, editMumblePassword);
+    $: dirty = savedHash !== currentHash;
 
     function handleSave() {
         if (!selected) return;
@@ -49,9 +60,22 @@
 
     async function handleConnect() {
         if (!selected) return;
+        handleSave();
+        const bookmark: ServerBookmark = {
+            ...selected,
+            label: editLabel,
+            address: editAddress,
+            port: editPort,
+            username: editUsername,
+            auto_connect: editAutoConnect,
+            mumble_host: editMumbleHost || null,
+            mumble_port: editMumblePort ? Number(editMumblePort) : null,
+            mumble_username: editMumbleUsername || null,
+            mumble_password: editMumblePassword || null,
+        };
         statusMessage = 'Connecting...';
         try {
-            await connectToServer(selected);
+            await connectToServer(bookmark);
         } catch (e) {
             statusMessage = `Connection failed: ${e}`;
         }
@@ -154,7 +178,7 @@
                     {/if}
 
                     <div class="action-bar">
-                        <button class="action-btn save-btn" on:click={handleSave}>Save</button>
+                        <button class="action-btn save-btn" on:click={handleSave} disabled={!dirty}>Save</button>
                         <button class="action-btn connect-btn" on:click={handleConnect}>Connect</button>
                         <button class="action-btn remove-btn" on:click={handleRemove}>Remove</button>
                     </div>
@@ -382,7 +406,8 @@
     }
 
     .save-btn { background-color: #7289da; color: #fff; }
-    .save-btn:hover { background-color: #677bc4; }
+    .save-btn:hover:not(:disabled) { background-color: #677bc4; }
+    .save-btn:disabled { opacity: 0.4; cursor: default; }
 
     .connect-btn { background-color: #43b581; color: #fff; }
     .connect-btn:hover { background-color: #3ca374; }

@@ -13,8 +13,8 @@
     "windows": [
       {
         "title": "Etch",
-        "width": 800,
-        "height": 600,
+        "width": 820,
+        "height": 640,
         "decorations": false
       }
     ],
