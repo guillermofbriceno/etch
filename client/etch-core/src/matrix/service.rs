@@ -247,6 +247,22 @@ impl MatrixService {
                     }
                 }
             }
+            MatrixCommand::EnableEncryption { room_id } => {
+                let Some(client) = self.client.clone() else { return };
+                let Ok(rid) = matrix_sdk::ruma::RoomId::parse(&room_id) else {
+                    log::error!("Invalid room_id for EnableEncryption: {}", room_id);
+                    return;
+                };
+                let Some(room) = client.get_room(&rid) else {
+                    log::error!("Room not found for EnableEncryption: {}", room_id);
+                    return;
+                };
+                let content = matrix_sdk::ruma::events::room::encryption::RoomEncryptionEventContent::with_recommended_defaults();
+                match room.send_state_event(content).await {
+                    Ok(_) => log::info!("Encryption enabled for room {}", room_id),
+                    Err(e) => log::error!("Failed to enable encryption for room {}: {:?}", room_id, e),
+                }
+            }
             MatrixCommand::CreateDirectMessage { target_user_id } => {
                 let Some(client) = self.client.clone() else { return };
                 let Ok(target) = UserId::parse(&target_user_id) else {
@@ -268,6 +284,11 @@ impl MatrixService {
                     Ok(response) => {
                         let room_id = response.room_id().to_string();
                         let display_name = target.localpart().to_string();
+                        let is_encrypted = match client.get_room(response.room_id()) {
+                            Some(room) => room.latest_encryption_state().await
+                                .map(|s| s.is_encrypted()).unwrap_or(false),
+                            None => false,
+                        };
                         let room_info = RoomInfo {
                             id: room_id.clone(),
                             display_name,
@@ -275,7 +296,7 @@ impl MatrixService {
                             channel_id: None,
                             is_default: false,
                             unread_count: 0,
-                            is_encrypted: true,
+                            is_encrypted,
                         };
                         let _ = self.event_tx.send(
                             CoreEvent::Matrix(MatrixEvent::DmCreated(room_info))

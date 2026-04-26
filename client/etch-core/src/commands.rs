@@ -21,6 +21,7 @@ pub enum MatrixCommand {
     ChangePassword { current_password: String, new_password: String },
     SendReadReceipt { room_id: String, event_id: String },
     PaginateBackwards { room_id: String },
+    EnableEncryption { room_id: String },
 }
 
 #[derive(Debug, Deserialize)]

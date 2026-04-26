@@ -1,6 +1,6 @@
 <script lang="ts">
     import { beforeUpdate, afterUpdate, onMount } from 'svelte';
-    import { activeWindow, loadOlder, activeChannel, openImage, scrollSignal } from '$lib/stores';
+    import { activeWindow, loadOlder, activeChannel, openImage, scrollSignal, showRoomIds } from '$lib/stores';
     import type { ChatMessage, TimelineEntry, TimelineEntryKind, StateEventKind } from '$lib/types';
     import MessageGroup from './MessageGroup.svelte';
 
@@ -125,6 +125,13 @@
                 <path fill="currentColor" d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zM12 17c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zM15.1 8H8.9V6c0-1.71 1.39-3.1 3.1-3.1s3.1 1.39 3.1 3.1v2z"/>
             </svg>
         {/if}
+        {#if $showRoomIds && $activeChannel}
+            <span class="room-id" role="button" tabindex="0" title="Click to copy" on:click={() => {
+                if ($activeChannel) navigator.clipboard.writeText($activeChannel.id);
+            }} on:keydown={(e) => {
+                if (e.key === 'Enter' && $activeChannel) navigator.clipboard.writeText($activeChannel.id);
+            }}>{$activeChannel.id}</span>
+        {/if}
     </header>
 
     <div class="messages-scroller" bind:this={scrollerElement} on:click={handleChatClick}>
@@ -178,6 +185,16 @@
 
     .chat-header h2 { font-size: 16px; font-weight: 600; margin: 0; }
     .lock-icon { color: #43b581; margin-left: 8px; flex-shrink: 0; }
+    .room-id {
+        margin-left: 10px;
+        font-size: 12px;
+        color: #72767d;
+        font-family: monospace;
+        cursor: pointer;
+        user-select: none;
+    }
+    .room-id:hover { color: #dcddde; }
+    .room-id:active { color: #43b581; }
 
     .messages-scroller {
         flex-grow: 1;

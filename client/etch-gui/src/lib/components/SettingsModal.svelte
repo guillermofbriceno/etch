@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { closeOverlay, settingsTab, currentUser, errorLog, sfxVolume, transmissionMode, setTransmissionMode, vadThreshold, setVadThreshold, voiceHold, setVoiceHold } from '$lib/stores';
+    import { closeOverlay, settingsTab, currentUser, errorLog, sfxVolume, transmissionMode, setTransmissionMode, vadThreshold, setVadThreshold, voiceHold, setVoiceHold, activeChannel, showRoomIds } from '$lib/stores';
     import type { TransmissionMode } from '$lib/stores';
     import { sendCoreCommand } from '$lib/ipc';
     import { open } from '@tauri-apps/plugin-dialog';
@@ -231,6 +231,27 @@
                                 }
                             }}>Send DM</button>
                         </div>
+                    </div>
+
+                    <div class="setting-group">
+                        <label>Display</label>
+                        <label class="checkbox-row">
+                            <input type="checkbox" bind:checked={$showRoomIds} />
+                            <span class="checkbox-label">Show Room IDs in chat header</span>
+                        </label>
+                    </div>
+
+                    <div class="setting-group">
+                        <label>Encryption</label>
+                        <p class="setting-desc">Enable encryption on the currently active room.</p>
+                        {#if !$activeChannel?.is_encrypted}
+                            <p class="setting-desc" style="color: #ed4245;">This is irreversible, do you have permission to do this?</p>
+                        {/if}
+                        <button class="action-btn danger" disabled={!$activeChannel || $activeChannel.is_encrypted} on:click={() => {
+                            if ($activeChannel) {
+                                sendCoreCommand({ type: 'Matrix', data: { type: 'EnableEncryption', data: { room_id: $activeChannel.id } } });
+                            }
+                        }}>{$activeChannel?.is_encrypted ? 'Already encrypted' : $activeChannel ? `Encrypt "${$activeChannel.display_name}"` : 'No room selected'}</button>
                     </div>
                 </div>
 
@@ -549,6 +570,8 @@
     .action-btn:disabled { opacity: 0.4; cursor: default; }
     .action-btn.secondary { background-color: rgba(255, 255, 255, 0.08); }
     .action-btn.secondary:hover { background-color: rgba(255, 255, 255, 0.12); }
+    .action-btn.danger { background-color: #ed4245; }
+    .action-btn.danger:hover:not(:disabled) { background-color: #c93b3e; }
 
     .action-row { display: flex; gap: 8px; }
 

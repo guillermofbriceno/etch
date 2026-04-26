@@ -5,6 +5,7 @@ export type OverlayType = 'none' | 'settings' | 'image' | 'connect';
 export const activeOverlay = writable<OverlayType>('none');
 export const overlayImageUrl = writable<string | null>(null);
 export const settingsTab = writable<string>('voice');
+export const showRoomIds = writable<boolean>(false);
 
 export function openSettings(tab: string = 'voice'): void {
     settingsTab.set(tab);

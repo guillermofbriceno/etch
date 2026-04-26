@@ -3,7 +3,7 @@ export { activeWindow, activeChannelId, setActiveChannel, loadOlder, sendMessage
 export { channels, activeChannel } from './channels';
 export { currentUser } from './user';
 export { isMuted, isDeafened, toggleMute, toggleDeafen } from './audio';
-export { activeOverlay, overlayImageUrl, settingsTab, openSettings, openImage, openConnect, closeOverlay } from './overlay';
+export { activeOverlay, overlayImageUrl, settingsTab, showRoomIds, openSettings, openImage, openConnect, closeOverlay } from './overlay';
 export { serverBookmarks, selectedBookmarkId, connectingBookmark, passwordRequested, matrixConnecting, mediaBaseUrl, loadBookmarks, addBookmark, updateBookmark, removeBookmark, connectToServer } from './servers';
 export { replyingTo, setReply, clearReply } from './compose';
 export { voiceChannels, voiceUsers, voiceConnected, mumbleStatus, usersByChannel } from './voiceState';

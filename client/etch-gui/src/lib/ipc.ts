@@ -54,7 +54,8 @@ export type MatrixCommand =
     | { type: 'SetAvatar'; data: string }
     | { type: 'ChangePassword'; data: { current_password: string; new_password: string } }
     | { type: 'SendReadReceipt'; data: { room_id: string; event_id: string } }
-    | { type: 'PaginateBackwards'; data: { room_id: string } };
+    | { type: 'PaginateBackwards'; data: { room_id: string } }
+    | { type: 'EnableEncryption'; data: { room_id: string } };
 
 export type MumbleCommand =
     | { type: 'SwitchChannel'; data: number }
