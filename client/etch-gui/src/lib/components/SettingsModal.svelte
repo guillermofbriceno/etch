@@ -1,6 +1,6 @@
 <script lang="ts">
-    import { closeOverlay, settingsTab, currentUser, errorLog, sfxVolume, transmissionMode, setTransmissionMode, vadThreshold, setVadThreshold, voiceHold, setVoiceHold, activeChannel, showRoomIds } from '$lib/stores';
-    import type { TransmissionMode } from '$lib/stores';
+    import { closeOverlay, settingsTab, currentUser, errorLog, sfxVolume, transmissionMode, setTransmissionMode, vadThreshold, setVadThreshold, voiceHold, setVoiceHold, activeChannel, showRoomIds, theme } from '$lib/stores';
+    import type { TransmissionMode, Theme } from '$lib/stores';
     import { sendCoreCommand } from '$lib/ipc';
     import { open } from '@tauri-apps/plugin-dialog';
     import { getVersion } from '@tauri-apps/api/app';
@@ -322,6 +322,18 @@
                         <button class="action-btn" on:click={changePassword} disabled={!passwordValid}>{passwordLabel}</button>
                     </div>
                 </div>
+            {:else if activeTab === 'appearance'}
+                <div class="tab-pane">
+                    <h2>Appearance</h2>
+
+                    <div class="setting-group">
+                        <label>Theme</label>
+                        <select class="hardware-select" value={$theme} on:change={(e) => theme.set(e.currentTarget.value as Theme)}>
+                            <option value="default">Default</option>
+                            <option value="oled">OLED Optimized</option>
+                        </select>
+                    </div>
+                </div>
             {:else}
                 <div class="tab-pane">
                     <h2>{activeTab.charAt(0).toUpperCase() + activeTab.slice(1)}</h2>
@@ -347,14 +359,14 @@
         display: flex;
         width: 100%;
         height: 100%;
-        background-color: #121212;
+        background-color: var(--bg-primary);
     }
 
     .settings-sidebar {
         flex: 1 1 auto;
         display: flex;
         justify-content: flex-end;
-        background-color: #0a0a0a;
+        background-color: var(--bg-secondary);
         padding-top: 60px;
         padding-right: 20px;
     }
@@ -391,16 +403,16 @@
         transition: background-color 0.15s, color 0.15s;
     }
 
-    .tab:hover { background-color: rgba(255, 255, 255, 0.06); color: #dcddde; }
-    .tab.active { background-color: rgba(255, 255, 255, 0.08); color: #fff; }
+    .tab:hover { background-color: var(--bg-hover); color: #dcddde; }
+    .tab.active { background-color: var(--bg-active); color: #fff; }
 
-    .divider { height: 1px; background-color: rgba(255, 255, 255, 0.08); margin: 10px 10px 14px 10px; }
+    .divider { height: 1px; background-color: var(--bg-active); margin: 10px 10px 14px 10px; }
 
     .settings-content {
         flex: 1 1 800px;
         display: flex;
         position: relative;
-        background-color: #121212;
+        background-color: var(--bg-primary);
         padding-top: 60px;
         padding-left: 40px;
         overflow-y: auto;
@@ -479,9 +491,9 @@
     .device-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
 
     .hardware-select {
-        background-color: rgba(255, 255, 255, 0.06);
+        background-color: var(--bg-input);
         color: #dcddde;
-        border: 1px solid rgba(255, 255, 255, 0.08);
+        border: 1px solid var(--border-input);
         border-radius: 4px;
         padding: 10px;
         font-size: 16px;
@@ -568,7 +580,7 @@
 
     .action-btn:hover:not(:disabled) { background-color: #4752c4; }
     .action-btn:disabled { opacity: 0.4; cursor: default; }
-    .action-btn.secondary { background-color: rgba(255, 255, 255, 0.08); }
+    .action-btn.secondary { background-color: var(--bg-active); }
     .action-btn.secondary:hover { background-color: rgba(255, 255, 255, 0.12); }
     .action-btn.danger { background-color: #ed4245; }
     .action-btn.danger:hover:not(:disabled) { background-color: #c93b3e; }
@@ -576,9 +588,9 @@
     .action-row { display: flex; gap: 8px; }
 
     .text-input {
-        background-color: rgba(255, 255, 255, 0.06);
+        background-color: var(--bg-input);
         color: #dcddde;
-        border: 1px solid rgba(255, 255, 255, 0.08);
+        border: 1px solid var(--border-input);
         border-radius: 4px;
         padding: 8px 10px;
         font-size: 14px;
@@ -595,9 +607,9 @@
     .dm-row { display: flex; gap: 8px; }
     .dm-input {
         flex: 1;
-        background-color: rgba(255, 255, 255, 0.06);
+        background-color: var(--bg-input);
         color: #dcddde;
-        border: 1px solid rgba(255, 255, 255, 0.08);
+        border: 1px solid var(--border-input);
         border-radius: 4px;
         padding: 8px 10px;
         font-size: 14px;

@@ -5,6 +5,29 @@
 
 :root {
     --titlebar-height: 32px;
+    --bg-base: linear-gradient(180deg, rgba(0, 0, 0, 1) 0%, rgba(18, 18, 18, 1) 51%, rgba(38, 38, 38, 1) 200%);
+    --bg-primary: #121212;
+    --bg-secondary: #0a0a0a;
+    --bg-tertiary: #1e1e1e;
+    --bg-input: rgba(255, 255, 255, 0.06);
+    --border-input: rgba(255, 255, 255, 0.08);
+    --bg-hover: rgba(255, 255, 255, 0.06);
+    --bg-active: rgba(255, 255, 255, 0.08);
+    --bg-panel: rgba(255, 255, 255, 0.04);
+    --border-panel: transparent;
+}
+
+[data-theme="oled"] {
+    --bg-base: #000000;
+    --bg-primary: #000000;
+    --bg-secondary: #000000;
+    --bg-tertiary: #0a0a0a;
+    --bg-input: rgba(255, 255, 255, 0.04);
+    --border-input: rgba(255, 255, 255, 0.06);
+    --bg-hover: rgba(255, 255, 255, 0.04);
+    --bg-active: rgba(255, 255, 255, 0.06);
+    --bg-panel: #000000;
+    --border-panel: 2px solid rgba(255, 255, 255, 0.08);
 }
 
 body, html {
@@ -12,7 +35,7 @@ body, html {
     padding: 0;
     height: 100%;
     background: #000000;
-    background: linear-gradient(180deg,rgba(0, 0, 0, 1) 0%, rgba(18, 18, 18, 1) 51%, rgba(38, 38, 38, 1) 200%);
+    background: var(--bg-base);
     font-family: 'Inter', sans-serif;
     overflow: hidden;
 }

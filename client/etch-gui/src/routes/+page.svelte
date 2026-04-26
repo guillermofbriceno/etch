@@ -11,10 +11,11 @@
     import ErrorToast from '$lib/components/ErrorToast.svelte';
 
     import { onMount } from 'svelte';
-    import { activeOverlay, overlayImageUrl, closeOverlay, loadBookmarks } from '$lib/stores';
+    import { activeOverlay, overlayImageUrl, closeOverlay, loadBookmarks, initTheme } from '$lib/stores';
 
     onMount(() => {
         loadBookmarks();
+        initTheme();
     });
 </script>
 
@@ -93,7 +94,8 @@
         margin-bottom: 10px;
         margin-left: 10px;
         margin-top: 10px;
-        background-color: rgba(255, 255, 255, 0.04);
+        background-color: var(--bg-panel);
+        border: var(--border-panel);
         min-height: 0;
     }
 
@@ -103,7 +105,8 @@
         border-radius: 10px;
         margin-bottom: 10px;
         margin-left: 10px;
-        background-color: rgba(255, 255, 255, 0.04);
+        background-color: var(--bg-panel);
+        border: var(--border-panel);
     }
 
     .chat-area {
@@ -124,7 +127,8 @@
 
     .message-input-wrapper {
         flex-shrink: 0;
-        background-color: rgba(255, 255, 255, 0.04);
+        background-color: var(--bg-panel);
+        border: var(--border-panel);
         border-radius: 10px;
         margin-bottom: 10px;
         margin-left: 10px;

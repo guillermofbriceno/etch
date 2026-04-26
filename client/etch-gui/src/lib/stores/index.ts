@@ -15,3 +15,5 @@ export { sfxVolume, playSfx, setSfxDeafened } from './sfx';
 export type { SfxName } from './sfx';
 export { transmissionMode, setTransmissionMode, vadThreshold, setVadThreshold, voiceHold, setVoiceHold } from './voiceSettings';
 export type { TransmissionMode } from './voiceSettings';
+export { theme, initTheme } from './theme';
+export type { Theme } from './theme';

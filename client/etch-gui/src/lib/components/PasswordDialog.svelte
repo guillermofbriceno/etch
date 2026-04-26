@@ -81,7 +81,7 @@
     }
 
     .password-dialog {
-        background-color: #1e1e1e;
+        background-color: var(--bg-tertiary);
         border-radius: 8px;
         padding: 32px;
         width: 400px;
@@ -113,9 +113,9 @@
 
     .password-dialog input[type="password"] {
         width: 100%;
-        background-color: rgba(255, 255, 255, 0.06);
+        background-color: var(--bg-input);
         color: #dcddde;
-        border: 1px solid rgba(255, 255, 255, 0.08);
+        border: 1px solid var(--border-input);
         border-radius: 4px;
         padding: 10px;
         font-size: 16px;

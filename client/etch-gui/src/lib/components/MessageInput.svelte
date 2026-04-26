@@ -249,7 +249,7 @@
         align-items: center;
         justify-content: space-between;
         padding: 6px 16px 4px 16px;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+        border-bottom: 1px solid var(--bg-hover);
     }
 
     .reply-info {
@@ -292,7 +292,7 @@
         align-items: center;
         justify-content: space-between;
         padding: 6px 16px 4px 16px;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+        border-bottom: 1px solid var(--bg-hover);
     }
 
     .attachment-info {
@@ -408,7 +408,7 @@
         transition: background-color 0.1s;
     }
 
-    .emoji-tab:hover { background-color: rgba(255, 255, 255, 0.06); }
+    .emoji-tab:hover { background-color: var(--bg-hover); }
     .emoji-tab.active { border-bottom-color: #7289da; }
 
     .emoji-grid {
@@ -438,7 +438,7 @@
         transition: background-color 0.1s;
     }
 
-    .emoji-cell:hover { background-color: rgba(255, 255, 255, 0.06); }
+    .emoji-cell:hover { background-color: var(--bg-hover); }
 
     .message-box::placeholder { color: #72767d; }
 

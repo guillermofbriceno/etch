@@ -210,14 +210,14 @@
         display: flex;
         width: 100%;
         height: 100%;
-        background-color: #121212;
+        background-color: var(--bg-primary);
     }
 
     .connect-sidebar {
         flex: 1 1 auto;
         display: flex;
         justify-content: flex-end;
-        background-color: #0a0a0a;
+        background-color: var(--bg-secondary);
         padding-top: 60px;
         padding-right: 20px;
     }
@@ -260,8 +260,8 @@
         text-overflow: ellipsis;
     }
 
-    .bookmark-item:hover { background-color: rgba(255, 255, 255, 0.06); color: #dcddde; }
-    .bookmark-item.active { background-color: rgba(255, 255, 255, 0.08); color: #fff; }
+    .bookmark-item:hover { background-color: var(--bg-hover); color: #dcddde; }
+    .bookmark-item.active { background-color: var(--bg-active); color: #fff; }
 
     .add-btn {
         background: transparent;
@@ -276,13 +276,13 @@
         transition: background-color 0.15s, color 0.15s, border-color 0.15s;
     }
 
-    .add-btn:hover { background-color: rgba(255, 255, 255, 0.06); color: #dcddde; border-color: rgba(255, 255, 255, 0.25); }
+    .add-btn:hover { background-color: var(--bg-hover); color: #dcddde; border-color: rgba(255, 255, 255, 0.25); }
 
     .connect-content {
         flex: 1 1 800px;
         display: flex;
         position: relative;
-        background-color: #121212;
+        background-color: var(--bg-primary);
         padding-top: 60px;
         padding-left: 40px;
         overflow-y: auto;
@@ -308,9 +308,9 @@
 
     .field-group input[type="text"],
     .field-group input[type="number"] {
-        background-color: rgba(255, 255, 255, 0.06);
+        background-color: var(--bg-input);
         color: #dcddde;
-        border: 1px solid rgba(255, 255, 255, 0.08);
+        border: 1px solid var(--border-input);
         border-radius: 4px;
         padding: 10px;
         font-size: 16px;
@@ -377,9 +377,9 @@
 
     .advanced-section .field-group input[type="text"],
     .advanced-section .field-group input[type="password"] {
-        background-color: rgba(255, 255, 255, 0.06);
+        background-color: var(--bg-input);
         color: #dcddde;
-        border: 1px solid rgba(255, 255, 255, 0.08);
+        border: 1px solid var(--border-input);
         border-radius: 4px;
         padding: 10px;
         font-size: 16px;
