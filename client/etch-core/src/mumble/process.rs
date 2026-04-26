@@ -95,7 +95,19 @@ impl MumbleProcess {
             job.set_extended_limit_info(&mut info)
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
                 .context(MumbleSpawnSnafu { path: "win32job" })?;
-            job.assign_process(child.id().unwrap_or(0))
+            let pid = child.id().unwrap_or(0);
+            let handle = unsafe {
+                windows_sys::Win32::System::Threading::OpenProcess(
+                    windows_sys::Win32::System::Threading::PROCESS_ALL_ACCESS,
+                    0, // don't inherit
+                    pid,
+                )
+            };
+            if handle == 0 {
+                return Err(std::io::Error::last_os_error())
+                    .context(MumbleSpawnSnafu { path: "win32job: OpenProcess" });
+            }
+            job.assign_process(handle as isize)
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
                 .context(MumbleSpawnSnafu { path: "win32job" })?;
             job

@@ -27,3 +27,4 @@ libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 win32job = "2"
+windows-sys = { version = "0.61", features = ["Win32_System_Threading"] }
