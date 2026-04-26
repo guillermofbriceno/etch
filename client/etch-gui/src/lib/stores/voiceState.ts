@@ -74,7 +74,19 @@ export function handleMumbleEvent(me: MumbleEvent): void {
             const u = me.data;
             voiceUsers.update((m) => {
                 const existing = m.get(u.session_id);
-                if (!existing && settled && u.session_id !== localSession) playSfx('user_join');
+                if (settled && u.session_id !== localSession) {
+                    const localUser = localSession != null ? m.get(localSession) : null;
+                    if (localUser) {
+                        const oldCh = existing?.channel_id;
+                        const newCh = u.channel_id ?? oldCh;
+                        if (!existing && newCh === localUser.channel_id) {
+                            playSfx('user_join');
+                        } else if (existing && newCh !== oldCh) {
+                            if (newCh === localUser.channel_id) playSfx('user_join');
+                            else if (oldCh === localUser.channel_id) playSfx('user_leave');
+                        }
+                    }
+                }
                 m.set(u.session_id, {
                     session_id: u.session_id,
                     name: u.name ?? existing?.name ?? '',
@@ -113,10 +125,14 @@ export function handleMumbleEvent(me: MumbleEvent): void {
         }
         case 'UserRemoved': {
             voiceUsers.update((m) => {
+                const removed = m.get(me.data);
+                const localUser = localSession != null ? m.get(localSession) : null;
                 m.delete(me.data);
+                if (removed && localUser && removed.channel_id === localUser.channel_id) {
+                    playSfx('user_leave');
+                }
                 return new Map(m);
             });
-            playSfx('user_leave');
             break;
         }
         case 'TransmissionModeChanged': {

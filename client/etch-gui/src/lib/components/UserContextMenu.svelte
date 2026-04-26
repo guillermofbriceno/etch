@@ -51,7 +51,7 @@
             type="range"
             min="-30"
             max="30"
-            step="0.1"
+            step="0.5"
             value={$userVolumes[user.session_id] ?? 0}
             on:input={handleVolumeInput}
             on:dblclick={handleVolumeDblClick}
