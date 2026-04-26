@@ -120,6 +120,13 @@ impl MatrixService {
                             }
                         }
 
+                        // Ensure the crypto store has device keys for members of
+                        // encrypted rooms. Without this, messages sent while the
+                        // other party was offline produce UTDs because the SDK
+                        // never fetched their device keys. Runs synchronously so
+                        // keys are available before any messages can be sent.
+                        Self::query_member_device_keys(&client, &rooms).await;
+
                         // Now start the sync loop — new events will hit the subscriptions above
                         let sync_client = client.clone();
                         let itx = internal_tx.clone();
@@ -274,6 +281,11 @@ impl MatrixService {
                             CoreEvent::Matrix(MatrixEvent::DmCreated(room_info))
                         ).await;
 
+                        // Fetch the target user's device keys so we can
+                        // encrypt for them immediately.
+                        let _ = client.encryption()
+                            .request_user_identity(&target).await;
+
                         // Subscribe to the new room's timeline in the background
                         if let Ok(rid) = matrix_sdk::ruma::RoomId::parse(&room_id) {
                             if let Some(room) = client.get_room(&rid) {
@@ -290,6 +302,24 @@ impl MatrixService {
                         log::error!("Failed to create DM with {}: {:?}", target_user_id, e);
                     }
                 }
+            }
+        }
+    }
+
+    /// Force a /keys/query for all members of encrypted rooms so the crypto
+    /// store has their device keys. Prevents UTDs when the sender was offline
+    /// while the recipient registered their device.
+    async fn query_member_device_keys(client: &matrix_sdk::Client, rooms: &[RoomInfo]) {
+        let enc = client.encryption();
+        let own_user = client.user_id().map(|u| u.to_owned());
+        for room_info in rooms {
+            if !room_info.is_encrypted { continue; }
+            let Ok(room_id) = matrix_sdk::ruma::RoomId::parse(&room_info.id) else { continue };
+            let Some(room) = client.get_room(&room_id) else { continue };
+            let Ok(members) = room.members(matrix_sdk::RoomMemberships::ACTIVE).await else { continue };
+            for member in &members {
+                if Some(member.user_id()) == own_user.as_deref() { continue; }
+                let _ = enc.request_user_identity(member.user_id()).await;
             }
         }
     }
