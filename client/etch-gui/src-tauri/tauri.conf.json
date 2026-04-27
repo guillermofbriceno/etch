@@ -40,6 +40,15 @@
       "appimage": {
         "bundleMediaFramework": true
       }
+    },
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU2QTk4OEMyRkFDNEM1MzQKUldRMHhjVDZ3b2lwNWtseTZZQ08wVEQvTDVmWVEwc0hyd3I4SHhBOVJ1Tzg5V1RwaGNRd0pLcnoK",
+      "endpoints": [
+        "https://github.com/guillermofbriceno/etch/releases/latest/download/latest.json"
+      ]
     }
   }
 }

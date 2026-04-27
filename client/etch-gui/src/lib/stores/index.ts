@@ -17,3 +17,5 @@ export { transmissionMode, setTransmissionMode, vadThreshold, setVadThreshold, v
 export type { TransmissionMode } from './voiceSettings';
 export { theme, initTheme } from './theme';
 export type { Theme } from './theme';
+export { updateStatus, updateVersion, updateError, checkForUpdate, restartApp } from './updater';
+export type { UpdateStatus } from './updater';

@@ -1,6 +1,6 @@
 <script lang="ts">
-    import { closeOverlay, settingsTab, currentUser, errorLog, sfxVolume, transmissionMode, setTransmissionMode, vadThreshold, setVadThreshold, voiceHold, setVoiceHold, activeChannel, showRoomIds, theme } from '$lib/stores';
-    import type { TransmissionMode, Theme } from '$lib/stores';
+    import { closeOverlay, settingsTab, currentUser, errorLog, sfxVolume, transmissionMode, setTransmissionMode, vadThreshold, setVadThreshold, voiceHold, setVoiceHold, activeChannel, showRoomIds, theme, updateStatus, updateVersion, updateError, checkForUpdate, restartApp } from '$lib/stores';
+    import type { TransmissionMode, Theme, UpdateStatus } from '$lib/stores';
     import { sendCoreCommand } from '$lib/ipc';
     import { open } from '@tauri-apps/plugin-dialog';
     import { getVersion } from '@tauri-apps/api/app';
@@ -98,6 +98,7 @@
             <h3 class="group-header">App Settings</h3>
             <button class="tab {activeTab === 'voice'    ? 'active' : ''}" on:click={() => activeTab = 'voice'}>Voice & Audio</button>
             <button class="tab {activeTab === 'keybinds' ? 'active' : ''}" on:click={() => activeTab = 'keybinds'}>Keybinds</button>
+            <button class="tab {activeTab === 'updates'  ? 'active' : ''}" on:click={() => activeTab = 'updates'}>Updates</button>
             <button class="tab {activeTab === 'advanced' ? 'active' : ''}" on:click={() => activeTab = 'advanced'}>Advanced</button>
             {#if devMode}
                 <button class="tab {activeTab === 'developer' ? 'active' : ''}" on:click={() => activeTab = 'developer'}>Developer</button>
@@ -332,6 +333,31 @@
                             <option value="default">Default</option>
                             <option value="oled">OLED Optimized</option>
                         </select>
+                    </div>
+                </div>
+            {:else if activeTab === 'updates'}
+                <div class="tab-pane">
+                    <h2>Updates</h2>
+
+                    <div class="setting-group">
+                        <p class="setting-desc">Current version: {appVersion}</p>
+
+                        {#if $updateStatus === 'idle'}
+                            <button class="action-btn" on:click={checkForUpdate}>Check for Updates</button>
+                        {:else if $updateStatus === 'checking'}
+                            <button class="action-btn" disabled>Checking...</button>
+                        {:else if $updateStatus === 'available'}
+                            <p class="update-info">Downloading v{$updateVersion}...</p>
+                        {:else if $updateStatus === 'ready'}
+                            <p class="update-info">v{$updateVersion} is ready. Restart to apply.</p>
+                            <button class="action-btn" on:click={restartApp}>Restart Now</button>
+                        {:else if $updateStatus === 'up_to_date'}
+                            <p class="update-info">You're on the latest version.</p>
+                            <button class="action-btn secondary" on:click={checkForUpdate}>Check Again</button>
+                        {:else if $updateStatus === 'error'}
+                            <p class="update-error">{$updateError}</p>
+                            <button class="action-btn" on:click={checkForUpdate}>Retry</button>
+                        {/if}
                     </div>
                 </div>
             {:else}
@@ -722,4 +748,7 @@
     }
 
     .checkbox-label { color: #dcddde; font-size: 14px; font-weight: 500; text-transform: none; }
+
+    .update-info { color: #b9bbbe; font-size: 14px; margin: 0 0 12px; }
+    .update-error { color: #ed4245; font-size: 14px; margin: 0 0 12px; }
 </style>

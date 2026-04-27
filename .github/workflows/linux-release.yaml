@@ -143,6 +143,9 @@ jobs:
         run: cargo install tauri-cli --locked
 
       - name: Build AppImage
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           export APPIMAGE_EXTRACT_AND_RUN=1
 
@@ -172,12 +175,40 @@ jobs:
           ARCH=x86_64 "$APPIMAGETOOL" "$APPDIR"
           mv etch-gui-x86_64.AppImage target/release/bundle/appimage/
 
-      - name: Upload AppImage to release (GitHub CI)
+      - name: Sign AppImage
+        if: ${{ !env.ACT }}
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: cargo tauri signer sign target/release/bundle/appimage/etch-gui-x86_64.AppImage
+
+      - name: Generate updater JSON
+        if: ${{ !env.ACT }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=$(jq -r .version client/etch-gui/src-tauri/tauri.conf.json)
+          SIGNATURE=$(cat target/release/bundle/appimage/etch-gui-x86_64.AppImage.sig)
+          RELEASE_URL="https://github.com/guillermofbriceno/etch/releases/download/v${VERSION}"
+
+          # Download existing latest.json from the release (Windows may have uploaded it first)
+          EXISTING=$(gh release download "v${VERSION}" -p "latest.json" -O - 2>/dev/null || echo '{"version":"","platforms":{}}')
+
+          echo "$EXISTING" | jq \
+            --arg ver "$VERSION" \
+            --arg sig "$SIGNATURE" \
+            --arg url "${RELEASE_URL}/etch-gui-x86_64.AppImage" \
+            '.version = $ver | .platforms["linux-x86_64"] = {signature: $sig, url: $url}' \
+            > latest.json
+
+      - name: Upload AppImage and updater JSON to release (GitHub CI)
         if: ${{ !env.ACT }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
-          files: target/release/bundle/appimage/etch-gui-x86_64.AppImage
+          files: |
+            target/release/bundle/appimage/etch-gui-x86_64.AppImage
+            latest.json
 
       - name: Preserve artifacts (local/act)
         if: ${{ env.ACT == 'true' }}
