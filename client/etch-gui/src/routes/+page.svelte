@@ -11,10 +11,10 @@
     import ErrorToast from '$lib/components/ErrorToast.svelte';
 
     import { onMount } from 'svelte';
-    import { activeOverlay, overlayImageUrl, closeOverlay, loadBookmarks, initTheme } from '$lib/stores';
+    import { activeOverlay, overlayImageUrl, closeOverlay, loadSettings, initTheme } from '$lib/stores';
 
     onMount(() => {
-        loadBookmarks();
+        loadSettings();
         initTheme();
     });
 </script>

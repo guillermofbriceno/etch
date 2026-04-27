@@ -6,6 +6,7 @@ export type TransmissionMode = 'voice_activation' | 'continuous' | 'push_to_talk
 export const transmissionMode = writable<TransmissionMode>('voice_activation');
 export const vadThreshold = writable<number>(60);
 export const voiceHold = writable<number>(250);
+export const useMumbleSettings = writable<boolean>(false);
 
 export function setTransmissionMode(mode: TransmissionMode): void {
     transmissionMode.set(mode);
@@ -28,5 +29,13 @@ export function setVoiceHold(ms: number): void {
     sendCoreCommand({
         type: 'Mumble',
         data: { type: 'SetVoiceHold', data: ms }
+    });
+}
+
+export function setUseMumbleSettings(value: boolean): void {
+    useMumbleSettings.set(value);
+    sendCoreCommand({
+        type: 'Mumble',
+        data: { type: 'SetUseMumbleSettings', data: value }
     });
 }

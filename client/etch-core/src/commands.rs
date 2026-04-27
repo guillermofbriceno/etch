@@ -34,13 +34,14 @@ pub enum MumbleCommand {
     SetTransmissionMode(String),
     SetVadThreshold(f64),
     SetVoiceHold(i64),
+    SetUseMumbleSettings(bool),
 }
 
 #[derive(Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum SystemCommand {
     ConnectToServer(ServerConnectionForm),
-    LoadBookmarks,
+    LoadSettings,
     SaveBookmarks(Vec<ServerBookmark>),
     MuteMic(bool),
     Deafen(bool),

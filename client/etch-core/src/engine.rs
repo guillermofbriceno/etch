@@ -74,10 +74,10 @@ impl CoreEngine {
                                         internal_tx.clone(),
                                     ).await;
                                 }
-                                SystemCommand::LoadBookmarks => {
+                                SystemCommand::LoadSettings => {
                                     let s = settings::load(&self.data_dir);
                                     let _ = self.event_tx.send(CoreEvent::System(
-                                        SystemEvent::BookmarksLoaded(s.bookmarks.clone()),
+                                        SystemEvent::SettingsLoaded(s.clone()),
                                     )).await;
 
                                     if let Some(bm) = s.bookmarks.iter().find(|b| b.auto_connect) {
@@ -90,9 +90,10 @@ impl CoreEngine {
                                     }
                                 }
                                 SystemCommand::SaveBookmarks(bookmarks) => {
-                                    settings::update_bookmarks(&self.data_dir, bookmarks.clone());
+                                    settings::update_bookmarks(&self.data_dir, bookmarks);
+                                    let s = settings::load(&self.data_dir);
                                     let _ = self.event_tx.send(CoreEvent::System(
-                                        SystemEvent::BookmarksLoaded(bookmarks),
+                                        SystemEvent::SettingsLoaded(s),
                                     )).await;
                                 }
                                 SystemCommand::MuteMic(muted) => {
@@ -166,8 +167,16 @@ impl CoreEngine {
                                 }
                                 InternalMumbleEvent::Connected => {
                                     let s = settings::load(&self.data_dir);
-                                    if let Some(mode) = s.transmission_mode {
-                                        self.send_bridge_command(MumbleCommand::SetTransmissionMode(mode)).await;
+                                    if s.use_mumble_settings != Some(true) {
+                                        if let Some(mode) = s.transmission_mode {
+                                            self.send_bridge_command(MumbleCommand::SetTransmissionMode(mode)).await;
+                                        }
+                                        if let Some(value) = s.vad_threshold {
+                                            self.send_bridge_command(MumbleCommand::SetVadThreshold(value)).await;
+                                        }
+                                        if let Some(value) = s.voice_hold {
+                                            self.send_bridge_command(MumbleCommand::SetVoiceHold(value)).await;
+                                        }
                                     }
                                 }
                                 _ => {
@@ -197,6 +206,18 @@ impl CoreEngine {
     }
 
     async fn send_bridge_command(&self, cmd: MumbleCommand) {
+        // Persist settings regardless of whether Mumble is connected
+        match &cmd {
+            MumbleCommand::SetTransmissionMode(mode) => settings::set_transmission_mode(&self.data_dir, mode.clone()),
+            MumbleCommand::SetVadThreshold(value) => settings::set_vad_threshold(&self.data_dir, *value),
+            MumbleCommand::SetVoiceHold(value) => settings::set_voice_hold(&self.data_dir, *value),
+            MumbleCommand::SetUseMumbleSettings(value) => {
+                settings::set_use_mumble_settings(&self.data_dir, *value);
+                return;
+            }
+            _ => {}
+        }
+
         if let Some(ref proc) = self.mumble_process {
             let bridge_cmd = match cmd {
                 MumbleCommand::SwitchChannel(id) => BridgeCommand::SwitchChannel { channel_id: id as i32 },
@@ -208,7 +229,6 @@ impl CoreEngine {
                     BridgeCommand::SetUserVolume { session: session_id, volume }
                 }
                 MumbleCommand::SetTransmissionMode(ref mode_str) => {
-                    settings::set_transmission_mode(&self.data_dir, mode_str.clone());
                     let mode = match mode_str.as_str() {
                         "continuous" => bridge_types::TransmissionMode::Continuous,
                         "push_to_talk" => bridge_types::TransmissionMode::PushToTalk,
@@ -222,6 +242,7 @@ impl CoreEngine {
                 MumbleCommand::SetVoiceHold(value) => {
                     BridgeCommand::SetVoiceHold { value }
                 }
+                MumbleCommand::SetUseMumbleSettings(_) => unreachable!(),
             };
             let _ = proc.cmd_tx.send(bridge_cmd).await;
         }

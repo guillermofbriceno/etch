@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { closeOverlay, settingsTab, currentUser, errorLog, sfxVolume, transmissionMode, setTransmissionMode, vadThreshold, setVadThreshold, voiceHold, setVoiceHold, activeChannel, showRoomIds, theme, updateStatus, updateVersion, updateError, checkForUpdate, restartApp } from '$lib/stores';
+    import { closeOverlay, settingsTab, currentUser, errorLog, sfxVolume, transmissionMode, setTransmissionMode, vadThreshold, setVadThreshold, voiceHold, setVoiceHold, useMumbleSettings, setUseMumbleSettings, activeChannel, showRoomIds, theme, updateStatus, updateVersion, updateError, checkForUpdate, restartApp } from '$lib/stores';
     import type { TransmissionMode, Theme, UpdateStatus } from '$lib/stores';
     import { sendCoreCommand } from '$lib/ipc';
     import { open } from '@tauri-apps/plugin-dialog';
@@ -119,9 +119,19 @@
 
             {#if activeTab === 'voice'}
                 <div class="tab-pane">
-                    <h2>Voice Settings</h2>
+                    <h2>Voice & Audio</h2>
+
+                    <h3 class="section-header">Voice</h3>
 
                     <div class="setting-group">
+                        <label class="checkbox-option">
+                            <input type="checkbox" checked={$useMumbleSettings} on:change={(e) => setUseMumbleSettings(e.currentTarget.checked)} />
+                            <span class="checkbox-label">Use Mumble's Settings</span>
+                        </label>
+                        <p class="setting-desc">Defer to Mumble's built-in voice settings. Requires Restart.</p>
+                    </div>
+
+                    <div class="setting-group" class:disabled={$useMumbleSettings}>
                         <label>Input Profile</label>
                         <div class="radio-group">
                             <label class="radio-option">
@@ -148,21 +158,23 @@
                         </div>
                     </div>
 
-                    <div class="setting-group volume-slider" class:disabled={$transmissionMode !== 'voice_activation'}>
+                    <div class="setting-group volume-slider" class:disabled={$useMumbleSettings || $transmissionMode !== 'voice_activation'}>
                         <label for="speech-threshold">Speech Threshold</label>
                         <div class="slider-container">
-                            <input type="range" id="speech-threshold" min="0" max="100" value={$vadThreshold} on:change={(e) => setVadThreshold(+e.currentTarget.value)} class="range-input" disabled={$transmissionMode !== 'voice_activation'} />
+                            <input type="range" id="speech-threshold" min="0" max="100" value={$vadThreshold} on:change={(e) => setVadThreshold(+e.currentTarget.value)} class="range-input" disabled={$useMumbleSettings || $transmissionMode !== 'voice_activation'} />
                             <span class="volume-readout">{$vadThreshold}%</span>
                         </div>
                     </div>
 
-                    <div class="setting-group volume-slider">
+                    <div class="setting-group volume-slider" class:disabled={$useMumbleSettings}>
                         <label for="voice-hold">Voice Hold</label>
                         <div class="slider-container">
                             <input type="range" id="voice-hold" min="50" max="1000" step="10" value={$voiceHold} on:change={(e) => setVoiceHold(+e.currentTarget.value)} class="range-input" />
                             <span class="volume-readout">{$voiceHold}ms</span>
                         </div>
                     </div>
+
+                    <h3 class="section-header">Audio</h3>
 
                     <div class="setting-group volume-slider">
                         <label for="sfx-volume">Sound Effects Volume</label>
@@ -453,6 +465,17 @@
     .tab-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
     .tab-header h2 { margin: 0; }
     .tab-pane h2 { color: #fff; font-size: 20px; font-weight: 600; margin-top: 0; margin-bottom: 20px; }
+
+    .section-header {
+        color: #fff;
+        font-size: 13px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.3px;
+        margin: 8px 0 16px;
+    }
+
+    .section-header:not(:first-of-type) { margin-top: 20px; }
 
     .placeholder-text { color: #b9bbbe; }
 

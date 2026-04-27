@@ -1,5 +1,5 @@
 use serde::Serialize;
-use crate::models::{ConnectionState, RoomInfo, ServerBookmark};
+use crate::models::{ConnectionState, RoomInfo};
 use crate::matrix::timeline::TimelineEntry;
 
 // core -> gui
@@ -51,7 +51,7 @@ pub enum MumbleEvent {
 #[serde(tag = "type", content = "data")]
 pub enum SystemEvent {
     ConnectionLost,
-    BookmarksLoaded(Vec<ServerBookmark>),
+    SettingsLoaded(crate::settings::Settings),
     LogError { message: String, target: String },
     UserProfileChanged { username: String, display_name: Option<String>, avatar_url: Option<String> },
 }

@@ -1,9 +1,9 @@
-import { writable, derived } from 'svelte/store';
+import { writable, derived, get } from 'svelte/store';
 import type { MumbleEvent, SystemEvent } from '$lib/ipc';
 import { playSfx } from './sfx';
 import { isMuted, isDeafened } from './audio';
 import { userVolumes } from './userVolumes';
-import { transmissionMode, vadThreshold, voiceHold } from './voiceSettings';
+import { transmissionMode, vadThreshold, voiceHold, useMumbleSettings } from './voiceSettings';
 import type { TransmissionMode } from './voiceSettings';
 
 export type VoiceChannel = {
@@ -136,15 +136,15 @@ export function handleMumbleEvent(me: MumbleEvent): void {
             break;
         }
         case 'TransmissionModeChanged': {
-            transmissionMode.set(me.data as TransmissionMode);
+            if (get(useMumbleSettings)) transmissionMode.set(me.data as TransmissionMode);
             break;
         }
         case 'VadThresholdChanged': {
-            vadThreshold.set(Math.round(me.data * 100));
+            if (get(useMumbleSettings)) vadThreshold.set(Math.round(me.data * 100));
             break;
         }
         case 'VoiceHoldChanged': {
-            voiceHold.set(me.data);
+            if (get(useMumbleSettings)) voiceHold.set(me.data);
             break;
         }
         case 'ConnectionState': {

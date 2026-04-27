@@ -2,7 +2,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use crate::models::ServerBookmark;
 
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Clone, Serialize, Deserialize, Default)]
 pub struct Settings {
     #[serde(default)]
     pub bookmarks: Vec<ServerBookmark>,
@@ -10,6 +10,12 @@ pub struct Settings {
     pub mumble_initialized: bool,
     #[serde(default)]
     pub transmission_mode: Option<String>,
+    #[serde(default)]
+    pub vad_threshold: Option<f64>,
+    #[serde(default)]
+    pub voice_hold: Option<i64>,
+    #[serde(default)]
+    pub use_mumble_settings: Option<bool>,
 }
 
 pub fn load(data_dir: &Path) -> Settings {
@@ -41,6 +47,24 @@ pub fn update_bookmarks(data_dir: &Path, bookmarks: Vec<ServerBookmark>) {
 pub fn set_transmission_mode(data_dir: &Path, mode: String) {
     let mut settings = load(data_dir);
     settings.transmission_mode = Some(mode);
+    save(data_dir, &settings);
+}
+
+pub fn set_vad_threshold(data_dir: &Path, value: f64) {
+    let mut settings = load(data_dir);
+    settings.vad_threshold = Some(value);
+    save(data_dir, &settings);
+}
+
+pub fn set_voice_hold(data_dir: &Path, value: i64) {
+    let mut settings = load(data_dir);
+    settings.voice_hold = Some(value);
+    save(data_dir, &settings);
+}
+
+pub fn set_use_mumble_settings(data_dir: &Path, value: bool) {
+    let mut settings = load(data_dir);
+    settings.use_mumble_settings = Some(value);
     save(data_dir, &settings);
 }
 

@@ -35,7 +35,7 @@ export type MumbleEvent =
 
 export type SystemEvent =
     | { type: 'ConnectionLost' }
-    | { type: 'BookmarksLoaded'; data: ServerBookmark[] }
+    | { type: 'SettingsLoaded'; data: { bookmarks: ServerBookmark[]; transmission_mode: string | null; vad_threshold: number | null; voice_hold: number | null; use_mumble_settings: boolean | null } }
     | { type: 'LogError'; data: { message: string; target: string } }
     | { type: 'UserProfileChanged'; data: { username: string; display_name: string | null; avatar_url: string | null } };
 
@@ -64,11 +64,12 @@ export type MumbleCommand =
     | { type: 'SetUserVolume'; data: { session_id: number; volume_db: number } }
     | { type: 'SetTransmissionMode'; data: 'voice_activation' | 'continuous' | 'push_to_talk' }
     | { type: 'SetVadThreshold'; data: number }
-    | { type: 'SetVoiceHold'; data: number };
+    | { type: 'SetVoiceHold'; data: number }
+    | { type: 'SetUseMumbleSettings'; data: boolean };
 
 export type SystemCommand =
     | { type: 'ConnectToServer'; data: { username: string; hostname: string; port: string; password: string | null; mumble_host: string | null; mumble_port: number | null; mumble_username: string | null; mumble_password: string | null } }
-    | { type: 'LoadBookmarks' }
+    | { type: 'LoadSettings' }
     | { type: 'SaveBookmarks'; data: ServerBookmark[] }
     | { type: 'MuteMic'; data: boolean }
     | { type: 'Deafen'; data: boolean }

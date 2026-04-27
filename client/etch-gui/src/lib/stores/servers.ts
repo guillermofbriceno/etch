@@ -3,6 +3,8 @@ import type { ServerBookmark } from '$lib/types';
 import type { MatrixEvent, SystemEvent } from '$lib/ipc';
 import { sendCoreCommand } from '$lib/ipc';
 import { closeOverlay } from './overlay';
+import { transmissionMode, vadThreshold, voiceHold, useMumbleSettings } from './voiceSettings';
+import type { TransmissionMode } from './voiceSettings';
 
 export const serverBookmarks = writable<ServerBookmark[]>([]);
 export const selectedBookmarkId = writable<string | null>(null);
@@ -11,8 +13,8 @@ export const passwordRequested = writable<boolean>(false);
 export const matrixConnecting = writable<boolean>(false);
 export const mediaBaseUrl = writable<string | null>(null);
 
-export function loadBookmarks(): void {
-    sendCoreCommand({ type: 'System', data: { type: 'LoadBookmarks' } });
+export function loadSettings(): void {
+    sendCoreCommand({ type: 'System', data: { type: 'LoadSettings' } });
 }
 
 function saveBookmarks(bookmarks: ServerBookmark[]): void {
@@ -97,10 +99,14 @@ export function handleMatrixEvent(me: MatrixEvent): void {
 }
 
 export function handleSystemEvent(se: SystemEvent): void {
-    if (se.type === 'BookmarksLoaded') {
-        serverBookmarks.set(se.data);
+    if (se.type === 'SettingsLoaded') {
+        serverBookmarks.set(se.data.bookmarks);
+        if (se.data.transmission_mode != null) transmissionMode.set(se.data.transmission_mode as TransmissionMode);
+        if (se.data.vad_threshold != null) vadThreshold.set(Math.round(se.data.vad_threshold * 100));
+        if (se.data.voice_hold != null) voiceHold.set(se.data.voice_hold);
+        useMumbleSettings.set(se.data.use_mumble_settings ?? false);
         // Mirror the backend's auto-connect: set the active bookmark so mediaBaseUrl resolves
-        const autoConnect = se.data.find(b => b.auto_connect);
+        const autoConnect = se.data.bookmarks.find(b => b.auto_connect);
         if (autoConnect) {
             connectingBookmark.set(autoConnect);
         }
