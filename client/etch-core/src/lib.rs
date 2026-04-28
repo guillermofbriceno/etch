@@ -15,8 +15,12 @@ use tokio::sync::mpsc;
 use std::path::PathBuf;
 use crate::engine::*;
 
-pub fn init_core(data_dir: PathBuf, resource_dir: PathBuf) -> (CoreHandle, CoreEngine) {
-    let (cmd_tx, cmd_rx) = mpsc::channel(32);
+pub fn init_core(
+    data_dir: PathBuf,
+    resource_dir: PathBuf,
+    cmd_tx: mpsc::Sender<commands::CoreCommand>,
+    cmd_rx: mpsc::Receiver<commands::CoreCommand>,
+) -> (CoreHandle, CoreEngine) {
     let (event_tx, event_rx) = mpsc::channel(100);
 
     logger::init(event_tx.clone());

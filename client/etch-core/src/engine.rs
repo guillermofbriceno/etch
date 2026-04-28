@@ -65,6 +65,16 @@ impl CoreEngine {
                         CoreCommand::Mumble(mumble_cmd) => {
                             self.send_bridge_command(mumble_cmd).await;
                         }
+                        CoreCommand::FetchMedia { mxc_url, respond } => {
+                            let client = self.matrix_service.client.clone();
+                            let sources = self.matrix_service.timeline_manager.media_sources.clone();
+                            tokio::spawn(async move {
+                                let result = matrix::service::MatrixService::fetch_media_static(
+                                    client.as_ref(), &sources, &mxc_url,
+                                ).await;
+                                let _ = respond.send(result);
+                            });
+                        }
                         CoreCommand::System(sys_cmd) => {
                             match sys_cmd {
                                 SystemCommand::ConnectToServer(form) => {

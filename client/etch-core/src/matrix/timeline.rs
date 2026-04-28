@@ -1,12 +1,13 @@
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, RwLock};
 use matrix_sdk::Room;
+use matrix_sdk::ruma::events::room::MediaSource;
 use matrix_sdk_ui::timeline::{Timeline, TimelineItem, TimelineItemContent,
     TimelineItemKind, RoomExt, EventTimelineItem, VirtualTimelineItem,
     MsgLikeKind, MembershipChange, AnyOtherFullStateEventContent,
     TimelineDetails, TimelineEventItemId};
 use matrix_sdk::ruma::events::FullStateEventContent;
-use matrix_sdk::ruma::{OwnedRoomId, events::room::message::MessageType, events::room::MediaSource};
+use matrix_sdk::ruma::{OwnedRoomId, events::room::message::MessageType};
 use matrix_sdk_ui::eyeball_im::VectorDiff;
 use futures_util::StreamExt;
 use tokio::sync::mpsc;
@@ -16,9 +17,51 @@ use crate::models::MediaInfo;
 use crate::models::SenderProfile;
 use serde::{Deserialize, Serialize};
 
+/// Bounded cache for encrypted media source metadata (key material, IV, hashes).
+/// Entries are evicted in insertion order when the cap is reached. This is safe
+/// because the Matrix SDK caches decrypted media bytes separately; the source
+/// metadata is only needed for the first decryption of a given mxc URL.
+pub struct BoundedMediaSources {
+    map: HashMap<String, MediaSource>,
+    order: VecDeque<String>,
+    capacity: usize,
+}
+
+const MEDIA_SOURCE_CACHE_CAP: usize = 1024;
+
+impl BoundedMediaSources {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            map: HashMap::with_capacity(capacity),
+            order: VecDeque::with_capacity(capacity),
+            capacity,
+        }
+    }
+
+    pub fn insert(&mut self, key: String, source: MediaSource) {
+        if self.map.contains_key(&key) {
+            return;
+        }
+        if self.order.len() >= self.capacity {
+            if let Some(oldest) = self.order.pop_front() {
+                self.map.remove(&oldest);
+            }
+        }
+        self.order.push_back(key.clone());
+        self.map.insert(key, source);
+    }
+
+    pub fn get(&self, key: &str) -> Option<&MediaSource> {
+        self.map.get(key)
+    }
+}
+
+pub type MediaSourceMap = Arc<RwLock<BoundedMediaSources>>;
+
 pub struct TimelineManager {
     timelines: HashMap<OwnedRoomId, Arc<Timeline>>,
     event_tx: mpsc::Sender<CoreEvent>,
+    pub media_sources: MediaSourceMap,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -54,6 +97,7 @@ impl TimelineManager {
         Self {
             timelines: HashMap::new(),
             event_tx,
+            media_sources: Arc::new(RwLock::new(BoundedMediaSources::new(MEDIA_SOURCE_CACHE_CAP))),
         }
     }
 
@@ -73,7 +117,7 @@ impl TimelineManager {
         let room_id_str = room_id.to_string();
         let messages: Vec<TimelineEntry> = initial_items
             .iter()
-            .map(|item| timeline_item_to_entry(item))
+            .map(|item| timeline_item_to_entry(item, &self.media_sources))
             .collect();
 
         if !messages.is_empty() {
@@ -89,11 +133,12 @@ impl TimelineManager {
         // Spawn a task to process the diff stream
         let event_tx = self.event_tx.clone();
         let rid = room_id_str.clone();
+        let sources = self.media_sources.clone();
 
         tokio::spawn(async move {
             while let Some(diffs) = stream.next().await {
                 for diff in diffs {
-                    if let Some(entry) = map_diff(diff, &rid) {
+                    if let Some(entry) = map_diff(diff, &rid, &sources) {
                         let _ = event_tx.send(entry).await;
                     }
                 }
@@ -151,6 +196,7 @@ impl TimelineManager {
         room: &Room,
         room_id: &OwnedRoomId,
         back_count: u16,
+        media_sources: MediaSourceMap,
     ) {
         let Ok(timeline) = room.timeline().await else {
             log::error!("Failed to get timeline for room: {}", room_id);
@@ -161,7 +207,7 @@ impl TimelineManager {
         let room_id_str = room_id.to_string();
         let messages: Vec<TimelineEntry> = initial_items
             .iter()
-            .map(|item| timeline_item_to_entry(item))
+            .map(|item| timeline_item_to_entry(item, &media_sources))
             .collect();
 
         if !messages.is_empty() {
@@ -178,11 +224,12 @@ impl TimelineManager {
         // Spawn diff stream listener; moves `timeline` to keep it alive
         let tx = event_tx.clone();
         let rid = room_id_str.clone();
+        let sources = media_sources.clone();
         tokio::spawn(async move {
             let _timeline = timeline; // prevent drop
             while let Some(diffs) = stream.next().await {
                 for diff in diffs {
-                    if let Some(entry) = map_diff(diff, &rid) {
+                    if let Some(entry) = map_diff(diff, &rid, &sources) {
                         let _ = tx.send(entry).await;
                     }
                 }
@@ -194,11 +241,12 @@ impl TimelineManager {
 
 // Convert a TimelineItem into our ChatMessageReceive model.
 fn timeline_item_to_entry(
-    item: &TimelineItem
+    item: &TimelineItem,
+    sources: &MediaSourceMap,
 ) -> TimelineEntry {
     match item.kind() {
         TimelineItemKind::Event(event) => {
-            event_item_to_entry(event)
+            event_item_to_entry(event, sources)
         }
         TimelineItemKind::Virtual(virt) => {
             virtual_item_to_entry(virt)
@@ -218,14 +266,28 @@ fn extract_sender_profile(event: &EventTimelineItem) -> Option<SenderProfile> {
     }
 }
 
-fn event_item_to_entry(event: &EventTimelineItem) -> TimelineEntry {
+fn extract_media_url(source: &MediaSource, sources: &MediaSourceMap) -> String {
+    match source {
+        MediaSource::Plain(uri) => uri.to_string(),
+        MediaSource::Encrypted(file) => {
+            let url = file.url.to_string();
+            sources.write().expect("media source lock").insert(url.clone(), source.clone());
+            url
+        }
+    }
+}
+
+fn event_item_to_entry(
+    event: &EventTimelineItem,
+    sources: &MediaSourceMap,
+) -> TimelineEntry {
     let sender = extract_sender_profile(event);
 
     let kind = match event.content() {
         TimelineItemContent::MsgLike(content) => {
             match &content.kind {
                 MsgLikeKind::Message(message) => {
-                    let (html_body, media)= match message.msgtype() {
+                    let (html_body, media) = match message.msgtype() {
                         MessageType::Text(text) => {
                             let html = text.formatted.as_ref().map(|f| f.body.clone());
                             (html, None)
@@ -234,7 +296,7 @@ fn event_item_to_entry(event: &EventTimelineItem) -> TimelineEntry {
                         MessageType::File(file) => {
                             let info = file.info.as_deref();
                             (None, Some(MediaInfo {
-                                  mxc_url: mxc_url_from(&file.source),
+                                  mxc_url: extract_media_url(&file.source, sources),
                                   mimetype: info.and_then(|i| i.mimetype.clone()).unwrap_or_default(),
                                   size: info.and_then(|i| i.size).unwrap_or_default().into(),
                                   width: 0,
@@ -246,7 +308,7 @@ fn event_item_to_entry(event: &EventTimelineItem) -> TimelineEntry {
                         MessageType::Image(image) => {
                             let info = image.info.as_deref();
                             (None, Some(MediaInfo {
-                                  mxc_url: mxc_url_from(&image.source),
+                                  mxc_url: extract_media_url(&image.source, sources),
                                   mimetype: info.and_then(|i| i.mimetype.clone()).unwrap_or_default(),
                                   size: info.and_then(|i| i.size).unwrap_or_default().into(),
                                   width: info.and_then(|i| i.width).unwrap_or_default().into(),
@@ -258,7 +320,7 @@ fn event_item_to_entry(event: &EventTimelineItem) -> TimelineEntry {
                         MessageType::Video(video) => {
                             let info = video.info.as_deref();
                             (None, Some(MediaInfo {
-                                  mxc_url: mxc_url_from(&video.source),
+                                  mxc_url: extract_media_url(&video.source, sources),
                                   mimetype: info.and_then(|i| i.mimetype.clone()).unwrap_or_default(),
                                   size: info.and_then(|i| i.size).unwrap_or_default().into(),
                                   width: info.and_then(|i| i.width).unwrap_or_default().into(),
@@ -270,7 +332,7 @@ fn event_item_to_entry(event: &EventTimelineItem) -> TimelineEntry {
                         MessageType::Audio(audio) => {
                             let info = audio.info.as_deref();
                             (None, Some(MediaInfo {
-                                  mxc_url: mxc_url_from(&audio.source),
+                                  mxc_url: extract_media_url(&audio.source, sources),
                                   mimetype: info.and_then(|i| i.mimetype.clone()).unwrap_or_default(),
                                   size: info.and_then(|i| i.size).unwrap_or_default().into(),
                                   width: 0,
@@ -365,30 +427,27 @@ fn virtual_item_to_entry(virt: &VirtualTimelineItem) -> TimelineEntry {
     TimelineEntry { sender: None, kind }
 }
 
-fn mxc_url_from(source: &MediaSource) -> String {
-    match source {
-        MediaSource::Plain(uri) => uri.to_string(),
-        _ => String::new()
-    }
-}
-
-fn map_diff(diff: VectorDiff<Arc<TimelineItem>>, rid: &str) -> Option<CoreEvent> {
+fn map_diff(
+    diff: VectorDiff<Arc<TimelineItem>>,
+    rid: &str,
+    sources: &MediaSourceMap,
+) -> Option<CoreEvent> {
     let matrix_event = match diff {
         VectorDiff::PushBack { value } => {
-            Some(MatrixEvent::TimelinePushBack(rid.to_owned(), timeline_item_to_entry(&value)))
+            Some(MatrixEvent::TimelinePushBack(rid.to_owned(), timeline_item_to_entry(&value, sources)))
         }
         VectorDiff::PushFront { value } => {
-            Some(MatrixEvent::TimelinePushFront(rid.to_owned(), timeline_item_to_entry(&value)))
+            Some(MatrixEvent::TimelinePushFront(rid.to_owned(), timeline_item_to_entry(&value, sources)))
         }
         VectorDiff::Append { values } => {
             Some(MatrixEvent::TimelineAppend(rid.to_owned(),
-                values.iter().map(|item| timeline_item_to_entry(item)).collect()))
+                values.iter().map(|item| timeline_item_to_entry(item, sources)).collect()))
         }
         VectorDiff::Set { index, value } => {
-            Some(MatrixEvent::TimelineSet(rid.to_owned(), index, timeline_item_to_entry(&value)))
+            Some(MatrixEvent::TimelineSet(rid.to_owned(), index, timeline_item_to_entry(&value, sources)))
         }
         VectorDiff::Insert { index, value } => {
-            Some(MatrixEvent::TimelineInsert(rid.to_owned(), index, timeline_item_to_entry(&value)))
+            Some(MatrixEvent::TimelineInsert(rid.to_owned(), index, timeline_item_to_entry(&value, sources)))
         }
         VectorDiff::Remove { index } => {
             Some(MatrixEvent::TimelineRemove(rid.to_owned(), index))
@@ -396,7 +455,7 @@ fn map_diff(diff: VectorDiff<Arc<TimelineItem>>, rid: &str) -> Option<CoreEvent>
         VectorDiff::Clear => Some(MatrixEvent::TimelineCleared(rid.to_owned())),
         VectorDiff::Reset { values } => {
             Some(MatrixEvent::TimelineReset(rid.to_owned(),
-                values.iter().map(|item| timeline_item_to_entry(item)).collect()))
+                values.iter().map(|item| timeline_item_to_entry(item, sources)).collect()))
         }
         _ => {
             log::warn!("Unhandled VectorDiff variant");
@@ -405,4 +464,3 @@ fn map_diff(diff: VectorDiff<Arc<TimelineItem>>, rid: &str) -> Option<CoreEvent>
     };
     matrix_event.map(CoreEvent::Matrix)
 }
-

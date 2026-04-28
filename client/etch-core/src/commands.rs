@@ -8,6 +8,11 @@ pub enum CoreCommand {
     Matrix(MatrixCommand),
     Mumble(MumbleCommand),
     System(SystemCommand),
+    #[serde(skip)]
+    FetchMedia {
+        mxc_url: String,
+        respond: tokio::sync::oneshot::Sender<Result<Vec<u8>, String>>,
+    },
 }
 
 #[derive(Deserialize)]

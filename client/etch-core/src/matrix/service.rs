@@ -2,8 +2,10 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use std::time::Duration;
 use matrix_sdk::config::SyncSettings;
+use matrix_sdk::media::{MediaRequestParameters, MediaFormat};
 use matrix_sdk::ruma::api::client::room::create_room::v3::{Request as CreateRoomRequest, RoomPreset};
 use matrix_sdk::ruma::api::client::{account::change_password, uiaa};
+use matrix_sdk::ruma::events::room::MediaSource;
 use matrix_sdk::ruma::UserId;
 use crate::commands::{MatrixCommand, ServerConnectionForm};
 use crate::events::{CoreEvent, MatrixEvent, InternalEvent, InternalMatrixEvent};
@@ -311,9 +313,10 @@ impl MatrixService {
                         if let Ok(rid) = matrix_sdk::ruma::RoomId::parse(&room_id) {
                             if let Some(room) = client.get_room(&rid) {
                                 let event_tx = self.event_tx.clone();
+                                let media_sources = self.timeline_manager.media_sources.clone();
                                 tokio::spawn(async move {
                                     TimelineManager::subscribe_and_paginate(
-                                        event_tx, &room, &rid, 20,
+                                        event_tx, &room, &rid, 20, media_sources,
                                     ).await;
                                 });
                             }
@@ -343,6 +346,28 @@ impl MatrixService {
                 let _ = enc.request_user_identity(member.user_id()).await;
             }
         }
+    }
+
+    pub async fn fetch_media_static(
+        client: Option<&matrix_sdk::Client>,
+        sources: &crate::matrix::timeline::MediaSourceMap,
+        mxc_url: &str,
+    ) -> Result<Vec<u8>, String> {
+        let client = client.ok_or("Not connected")?;
+
+        let source = match sources.read().expect("media source lock").get(mxc_url).cloned() {
+            Some(s) => s,
+            None => {
+                let uri = matrix_sdk::ruma::OwnedMxcUri::from(mxc_url.to_owned());
+                MediaSource::Plain(uri)
+            }
+        };
+
+        let params = MediaRequestParameters { source, format: MediaFormat::File };
+        client.media().get_media_content(&params, true)
+            .await
+            .map(|bytes| bytes.to_vec())
+            .map_err(|e| format!("Failed to fetch media: {e}"))
     }
 
     /// Look up a user's Matrix profile by their localpart username.
