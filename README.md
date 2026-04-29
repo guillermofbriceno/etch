@@ -2,6 +2,10 @@
 
 Etch is an experimental Matrix client that wraps Mumble to create a voice-first desktop communications app. It bridges two proven applications: one with excellent rich-text group chat, and another with high-fidelity, low-latency voice. The goal is to bring back the traditional voice-channel experience of TeamSpeak and Mumble while adding the rich-text messaging that modern users expect.
 
+<p align="center">
+  <img src="client/etch-gui/static/demo_default.png" alt="Etch screenshot" />
+</p>
+
 ## Status
 
 Etch is experimental software and is not recommended for real production use.

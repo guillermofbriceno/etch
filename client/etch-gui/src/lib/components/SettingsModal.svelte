@@ -2,6 +2,7 @@
     import { closeOverlay, settingsTab, currentUser, errorLog, sfxVolume, transmissionMode, setTransmissionMode, vadThreshold, setVadThreshold, voiceHold, setVoiceHold, useMumbleSettings, setUseMumbleSettings, activeChannel, showRoomIds, theme, updateStatus, updateVersion, updateError, checkForUpdate, restartApp } from '$lib/stores';
     import type { TransmissionMode, Theme, UpdateStatus } from '$lib/stores';
     import { sendCoreCommand } from '$lib/ipc';
+    import { injectDemoData } from '$lib/demoData';
     import { open } from '@tauri-apps/plugin-dialog';
     import { getVersion } from '@tauri-apps/api/app';
 
@@ -255,6 +256,12 @@
                     </div>
 
                     <div class="setting-group">
+                        <label>Demo Mode</label>
+                        <p class="setting-desc">Populate the UI with fake channels, messages, and voice users for screenshots and mockups.</p>
+                        <button class="action-btn" on:click={() => { injectDemoData(); closeOverlay(); }}>Activate Demo Mode</button>
+                    </div>
+
+                    <div class="setting-group">
                         <label>Encryption</label>
                         <p class="setting-desc">Enable encryption on the currently active room.</p>
                         {#if !$activeChannel?.is_encrypted}
@@ -300,7 +307,7 @@
                     <div class="profile-row">
                         <button class="avatar-edit-wrapper" on:click={pickAvatar}>
                             {#if $currentUser.avatarUrl}
-                                <img src={$currentUser.avatarUrl.replace('mxc://', 'etch-media://')} alt="avatar" class="profile-avatar" />
+                                <img src={$currentUser.avatarUrl.startsWith('mxc://') ? $currentUser.avatarUrl.replace('mxc://', 'etch-media://') : $currentUser.avatarUrl} alt="avatar" class="profile-avatar" />
                             {:else}
                                 <div class="profile-avatar profile-avatar-fallback">{($currentUser.displayName ?? $currentUser.username ?? '?').charAt(0).toUpperCase()}</div>
                             {/if}

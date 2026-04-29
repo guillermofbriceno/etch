@@ -6,7 +6,7 @@
     <div class="user-identity" on:click={() => openSettings('account')}>
         <div class="avatar-wrapper">
             {#if $currentUser.avatarUrl}
-                <img src={$currentUser.avatarUrl.replace('mxc://', 'etch-media://')} alt="avatar" class="avatar" />
+                <img src={$currentUser.avatarUrl.startsWith('mxc://') ? $currentUser.avatarUrl.replace('mxc://', 'etch-media://') : $currentUser.avatarUrl} alt="avatar" class="avatar" />
             {:else}
                 <div class="avatar avatar-fallback">{($currentUser.displayName ?? $currentUser.username ?? '?').charAt(0).toUpperCase()}</div>
             {/if}

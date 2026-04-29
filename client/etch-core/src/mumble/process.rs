@@ -103,7 +103,7 @@ impl MumbleProcess {
                     pid,
                 )
             };
-            if handle == 0 {
+            if handle.is_null() {
                 return Err(std::io::Error::last_os_error())
                     .context(MumbleSpawnSnafu { path: "win32job: OpenProcess" });
             }

@@ -13,6 +13,7 @@
 
     function mxcToUrl(mxc: string): string {
         if (!mxc) return '';
+        if (!mxc.startsWith('mxc://')) return mxc;
         return mxc.replace('mxc://', 'etch-media://');
     }
 
