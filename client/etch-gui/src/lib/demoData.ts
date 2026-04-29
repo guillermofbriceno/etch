@@ -146,16 +146,16 @@ const generalEntries: TimelineEntry[] = [
         media: {
             mxc_url: '/demo_dino.png',
             mimetype: 'image/png',
-            size: 465672,
-            width: 480,
-            height: 320,
+            size: 447679,
+            width: 639,
+            height: 429,
             duration: 0,
         },
         reactions: { '\u{2764}\u{FE0F}': [USER.sol, USER.wren, USER.juno, USER.self] },
     }),
     msg(USER.sol, PROFILE.sol, 'FINALLY', t(NOW, -5, 22)),
-    msg(USER.wren, PROFILE.wren, 'I was in ensenada in a small museum', t(NOW, -5, 10)),
-    msg(USER.sol, PROFILE.sol, 'The third one especially looks really great.', t(NOW, -3, 59)),
+    msg(USER.wren, PROFILE.wren, 'I was downtown in a small museum', t(NOW, -5, 10)),
+    msg(USER.sol, PROFILE.sol, 'That one looks really great.', t(NOW, -3, 59)),
     msg(USER.self, PROFILE.self, 'It found something really interesting in the grass', t(NOW, -3, 58)),
     msg(USER.self, PROFILE.self, 'Totally psyched out', t(NOW, -3, 57)),
     msg(USER.wren, PROFILE.wren, 'Like a dog with a chew toy', t(NOW, -3, 55)),
@@ -169,12 +169,12 @@ const devEntries: TimelineEntry[] = [
     divider(YESTERDAY),
 
     msg(USER.kira, PROFILE.kira, 'anyone tried the new build yet?', t(YESTERDAY, 10)),
-    msg(USER.sol, PROFILE.sol, 'yeah the voice quality is noticeably better', t(YESTERDAY, 10, 2)),
-    msg(USER.wren, PROFILE.wren, 'agreed, latency feels lower too. whatever you changed with the codec is working', t(YESTERDAY, 10, 4)),
+    msg(USER.sol, PROFILE.sol, 'Yeah the voice quality is noticeably better', t(YESTERDAY, 10, 2)),
+    msg(USER.wren, PROFILE.wren, 'Agreed, latency feels lower too. whatever you changed with the codec is working', t(YESTERDAY, 10, 4)),
     msg(USER.kira, PROFILE.kira, 'nice. also pushed a fix for the echo cancellation issue, lmk if it comes back', t(YESTERDAY, 10, 6), {
         reactions: { '\u{1F44D}': [USER.sol, USER.wren, USER.self], '\u{1F389}': [USER.juno] },
     }),
-    msg(USER.self, PROFILE.self, 'just tested it, sounds great on my end', t(YESTERDAY, 10, 12)),
+    msg(USER.self, PROFILE.self, 'Just tested it, sounds great on my end', t(YESTERDAY, 10, 12)),
     msg(USER.juno, PROFILE.juno, 'the UI update looks really clean btw', t(YESTERDAY, 10, 15), {
         reactions: { '\u{2764}\u{FE0F}': [USER.kira, USER.self] },
     }),
@@ -184,7 +184,7 @@ const devEntries: TimelineEntry[] = [
     msg(USER.wren, PROFILE.wren, 'PR is up for the encrypted media fix. turned out the SDK caches the source separately from the event', t(NOW, -4)),
     msg(USER.kira, PROFILE.kira, 'looking at it now', t(NOW, -3, 50)),
     msg(USER.self, PROFILE.self, 'I can review after lunch', t(NOW, -3, 45)),
-    msg(USER.sol, PROFILE.sol, 'also noticed we should debounce the resize observer, it fires a lot during image loads', t(NOW, -2)),
+    msg(USER.sol, PROFILE.sol, 'Also noticed we should debounce the resize observer, it fires a lot during image loads', t(NOW, -2)),
     msg(USER.kira, PROFILE.kira, "we suppress it during pagination already but yeah, general case could use a requestAnimationFrame guard", t(NOW, -1, 50)),
     msg(USER.wren, PROFILE.wren, "I'll add that to the PR", t(NOW, -1, 45), {
         reactions: { '\u{1F44D}': [USER.kira] },
@@ -230,9 +230,9 @@ const dmKiraEntries: TimelineEntry[] = [
 
     msg(USER.kira, PROFILE.kira, 'hey, quick question about the voice reconnect logic', t(NOW, -1, 30)),
     msg(USER.kira, PROFILE.kira, 'when the bridge drops and comes back, are we re-resolving profiles or using cached ones?', t(NOW, -1, 28)),
-    msg(USER.self, PROFILE.self, 'cached. the engine stores credentials from the first connect and reuses them', t(NOW, -1, 25)),
+    msg(USER.self, PROFILE.self, 'Cached. The engine stores credentials from the first connect and reuses them', t(NOW, -1, 25)),
     msg(USER.kira, PROFILE.kira, "ok good, I was worried we'd hit the homeserver again for every user on reconnect", t(NOW, -1, 22)),
-    msg(USER.self, PROFILE.self, "nah, profiles get resolved once on UserJoined and that's it", t(NOW, -1, 20)),
+    msg(USER.self, PROFILE.self, "Nah, profiles get resolved once on UserJoined and that's it", t(NOW, -1, 20)),
     msg(USER.kira, PROFILE.kira, 'perfect, thanks', t(NOW, -1, 18), {
         reactions: { '\u{1F44D}': [USER.self] },
     }),
