@@ -164,16 +164,16 @@ impl CoreEngine {
                         }
                         InternalEvent::Mumble(evt) => {
                             match evt {
-                                InternalMumbleEvent::UserJoined { session_id, name, channel_id, self_mute, self_deaf, volume_db } => {
+                                InternalMumbleEvent::UserJoined { session_id, name, volume_db } => {
                                     let (display_name, avatar_url) = self.matrix_service.resolve_user_profile(&name).await;
                                     let _ = self.event_tx.send(CoreEvent::Mumble(MumbleEvent::UserState {
                                         session_id,
                                         name: Some(name),
                                         display_name,
                                         avatar_url,
-                                        channel_id: Some(channel_id),
-                                        self_mute: Some(self_mute),
-                                        self_deaf: Some(self_deaf),
+                                        channel_id: None,
+                                        self_mute: None,
+                                        self_deaf: None,
                                         hash: None,
                                     })).await;
                                     let _ = self.event_tx.send(CoreEvent::Mumble(MumbleEvent::UserVolume {

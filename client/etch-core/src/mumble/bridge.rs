@@ -113,12 +113,19 @@ async fn translate(tx: &mpsc::Sender<CoreEvent>, itx: &mpsc::Sender<InternalEven
             }
             for u in users {
                 let volume_db = 20.0 * u.volume_adjustment.log10();
+                let _ = tx.send(mumble(MumbleEvent::UserState {
+                    session_id: u.session,
+                    name: None,
+                    display_name: None,
+                    avatar_url: None,
+                    channel_id: Some(u.channel_id as u32),
+                    self_mute: Some((u.mute_state & 0x02) != 0),
+                    self_deaf: Some((u.deaf_state & 0x02) != 0),
+                    hash: None,
+                })).await;
                 let _ = itx.send(internal_mumble(InternalMumbleEvent::UserJoined {
                     session_id: u.session,
                     name: u.name,
-                    channel_id: u.channel_id as u32,
-                    self_mute: (u.mute_state & 0x02) != 0,
-                    self_deaf: (u.deaf_state & 0x02) != 0,
                     volume_db,
                 })).await;
             }
@@ -130,12 +137,19 @@ async fn translate(tx: &mpsc::Sender<CoreEvent>, itx: &mpsc::Sender<InternalEven
         }
         BridgeEvent::UserConnected { user } => {
             let volume_db = 20.0 * user.volume_adjustment.log10();
+            let _ = tx.send(mumble(MumbleEvent::UserState {
+                session_id: user.session,
+                name: None,
+                display_name: None,
+                avatar_url: None,
+                channel_id: Some(user.channel_id as u32),
+                self_mute: Some((user.mute_state & 0x02) != 0),
+                self_deaf: Some((user.deaf_state & 0x02) != 0),
+                hash: None,
+            })).await;
             let _ = itx.send(internal_mumble(InternalMumbleEvent::UserJoined {
                 session_id: user.session,
                 name: user.name,
-                channel_id: user.channel_id as u32,
-                self_mute: (user.mute_state & 0x02) != 0,
-                self_deaf: (user.deaf_state & 0x02) != 0,
                 volume_db,
             })).await;
         }

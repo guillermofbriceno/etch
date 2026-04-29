@@ -78,9 +78,6 @@ pub enum InternalMumbleEvent {
     UserJoined {
         session_id: u32,
         name: String,
-        channel_id: u32,
-        self_mute: bool,
-        self_deaf: bool,
         volume_db: f32,
     },
 }
