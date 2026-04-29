@@ -162,7 +162,7 @@ impl TimelineManager {
         };
 
         match timeline.paginate_backwards(count).await {
-            Ok(has_more) => has_more,
+            Ok(hit_start) => !hit_start,
             Err(e) => {
                 log::error!("Pagination error for room {}: {:?}", room_id, e);
                 false

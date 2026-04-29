@@ -13,10 +13,6 @@ const NOTIF_COOLDOWN_MS = 20_000;
 let _onUnreadMessage: ((roomId: string) => void) | null = null;
 export function setOnUnreadMessage(fn: (roomId: string) => void) { _onUnreadMessage = fn; }
 
-// Scroll intent signal — ChatWindow reads this in beforeUpdate/afterUpdate.
-// Plain object (not a store) so it doesn't trigger extra reactivity.
-export const scrollSignal: { action: 'prepend' | 'append' | null } = { action: null };
-
 type ChannelWindow = {
     entries: TimelineEntry[];
     hasMore: boolean;
@@ -121,7 +117,6 @@ export function handleMatrixEvent(me: MatrixEvent): void {
                 const win = getWindow(w, roomId);
                 return { ...w, [roomId]: { ...win, entries: [...win.entries, ...entries] } };
             });
-            if (roomId === get(activeChannelId)) scrollSignal.action = 'append';
             break;
         }
         case 'TimelinePushBack': {
@@ -130,7 +125,6 @@ export function handleMatrixEvent(me: MatrixEvent): void {
                 const win = getWindow(w, roomId);
                 return { ...w, [roomId]: { ...win, entries: [...win.entries, entry] } };
             });
-            if (roomId === get(activeChannelId)) scrollSignal.action = 'append';
 
             // Notification sound: ring if message is from someone else AND
             // either the app is unfocused or the room isn't the active channel.
@@ -158,7 +152,6 @@ export function handleMatrixEvent(me: MatrixEvent): void {
                 const win = getWindow(w, roomId);
                 return { ...w, [roomId]: { ...win, entries: [entry, ...win.entries] } };
             });
-            if (roomId === get(activeChannelId)) scrollSignal.action = 'prepend';
             break;
         }
         case 'TimelineInsert': {
@@ -212,7 +205,6 @@ export function handleMatrixEvent(me: MatrixEvent): void {
                 ...w,
                 [roomId]: { entries, hasMore: true, loading: false },
             }));
-            if (roomId === get(activeChannelId)) scrollSignal.action = 'append';
             break;
         }
         case 'PaginationComplete': {

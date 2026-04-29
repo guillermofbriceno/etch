@@ -1,25 +1,104 @@
 <script lang="ts">
     import { beforeUpdate, afterUpdate, onMount } from 'svelte';
-    import { activeWindow, loadOlder, activeChannel, openImage, scrollSignal, showRoomIds } from '$lib/stores';
+    import { activeWindow, loadOlder, activeChannel, openImage, showRoomIds } from '$lib/stores';
     import type { ChatMessage, TimelineEntry, TimelineEntryKind, StateEventKind } from '$lib/types';
     import MessageGroup from './MessageGroup.svelte';
 
     let scrollerElement: HTMLDivElement;
-    let sentinelElement: HTMLDivElement;
+    let contentElement: HTMLDivElement;
 
-    let savedScrollHeight = 0;
+    // --- Scroll state machine ---
+    //
+    // Two states: PINNED (stuckAtBottom=true) and BROWSING (stuckAtBottom=false).
+    //
+    // PINNED: auto-scroll to bottom on new content, content resize, channel switch.
+    // BROWSING: never auto-scroll. Show "scroll to bottom" button.
+    //
+    // Transition PINNED -> BROWSING: user scrolls up past BOTTOM_THRESHOLD.
+    // Transition BROWSING -> PINNED: user scrolls back within BOTTOM_THRESHOLD,
+    //   or clicks "scroll to bottom" button.
+    //
+    // Programmatic scrolls (scrollToBottom, scrollBy for prepend) must not
+    // trigger state transitions. We track this with `programmaticScroll`.
+
+    const BOTTOM_THRESHOLD = 100; // px — generous to cover subpixel rounding and partial messages
+    const TOP_THRESHOLD = 400;   // px — triggers backward pagination when user scrolls near the top
+    let stuckAtBottom = true;
+    let newMessagesPending = false;
+    let programmaticScroll = false;
+
+    // Change detection for afterUpdate
+    let prevEntries: TimelineEntry[] = [];
     let prevChannelId: string | undefined = undefined;
+    let savedScrollHeight = 0;
+
+    // Suppresses ResizeObserver re-scroll during backward pagination
+    let suppressResizeScroll = false;
+
+    // Prevents scroll events from scrollBy() re-triggering pagination after a prepend
+    let lastPrependTime = 0;
+    const PREPEND_COOLDOWN_MS = 150;
+
+    /** Scroll to the absolute bottom. Defers a second attempt via rAF to handle
+     *  cases where layout isn't finalized when afterUpdate runs. */
+    function scrollToBottom() {
+        if (!scrollerElement) return;
+        programmaticScroll = true;
+        scrollerElement.scrollTop = scrollerElement.scrollHeight;
+        requestAnimationFrame(() => {
+            if (!scrollerElement) return;
+            programmaticScroll = true;
+            scrollerElement.scrollTop = scrollerElement.scrollHeight;
+        });
+    }
+
+    /** Scroll event handler — only reacts to user-initiated scrolls. */
+    function onScroll() {
+        if (!scrollerElement) return;
+        if (programmaticScroll) {
+            programmaticScroll = false;
+            return;
+        }
+
+        // Bottom detection (PINNED/BROWSING transitions)
+        const gap = scrollerElement.scrollHeight - scrollerElement.scrollTop - scrollerElement.clientHeight;
+        const wasStuck = stuckAtBottom;
+        stuckAtBottom = gap <= BOTTOM_THRESHOLD;
+        if (!wasStuck && stuckAtBottom) {
+            newMessagesPending = false;
+        }
+
+        // Backward pagination: user scrolled near the top
+        if (scrollerElement.scrollTop <= TOP_THRESHOLD
+            && $activeWindow.hasMore
+            && !$activeWindow.loading
+            && Date.now() - lastPrependTime > PREPEND_COOLDOWN_MS) {
+            loadOlder();
+        }
+    }
+
+    function jumpToLatest() {
+        stuckAtBottom = true;
+        newMessagesPending = false;
+        scrollToBottom();
+    }
+
+    // --- Observers ---
 
     onMount(() => {
-        const observer = new IntersectionObserver((entries) => {
-            if (entries[0].isIntersecting && $activeWindow.hasMore && !$activeWindow.loading) {
-                loadOlder();
-            }
-        }, { threshold: 0.1 });
+        // Async layout shifts (images loading, embeds expanding): re-pin to
+        // bottom if we're in PINNED state. Suppressed during backward pagination
+        // to avoid fighting with the scroll position adjustment in afterUpdate.
+        const resizeObs = new ResizeObserver(() => {
+            if (suppressResizeScroll) return;
+            if (stuckAtBottom) scrollToBottom();
+        });
+        resizeObs.observe(contentElement);
 
-        observer.observe(sentinelElement);
-        return () => observer.disconnect();
+        return () => resizeObs.disconnect();
     });
+
+    // --- Scroll management in Svelte lifecycle ---
 
     beforeUpdate(() => {
         if (scrollerElement) {
@@ -31,21 +110,48 @@
         if (!scrollerElement) return;
 
         const currentId = $activeChannel?.id;
+        const entries = $activeWindow.entries;
+
+        // Channel switch: always reset to PINNED and scroll to bottom.
         if (currentId !== prevChannelId) {
             prevChannelId = currentId;
-            scrollerElement.scrollTop = scrollerElement.scrollHeight;
-            scrollSignal.action = null;
+            prevEntries = entries;
+            stuckAtBottom = true;
+            newMessagesPending = false;
+            scrollToBottom();
             return;
         }
 
-        const action = scrollSignal.action;
-        if (action === 'prepend') {
-            scrollerElement.scrollTop += scrollerElement.scrollHeight - savedScrollHeight;
-        } else if (action === 'append') {
-            scrollerElement.scrollTop = scrollerElement.scrollHeight;
+        // No data change — nothing to do.
+        if (entries === prevEntries) return;
+
+        const heightDelta = scrollerElement.scrollHeight - savedScrollHeight;
+
+        if (stuckAtBottom) {
+            // PINNED: any content change → stay at bottom
+            scrollToBottom();
+        } else if (heightDelta > 0) {
+            // BROWSING: compensate for content added above viewport.
+            // Exception: pure append (new message at bottom) → show badge instead.
+            const isPureAppend = prevEntries.length > 0
+                && entries[0] === prevEntries[0]
+                && entries[entries.length - 1] !== prevEntries[prevEntries.length - 1];
+
+            if (isPureAppend) {
+                newMessagesPending = true;
+            } else {
+                suppressResizeScroll = true;
+                programmaticScroll = true;
+                scrollerElement.scrollBy(0, heightDelta);
+                lastPrependTime = Date.now();
+                requestAnimationFrame(() => { suppressResizeScroll = false; });
+            }
         }
-        scrollSignal.action = null;
+
+        prevEntries = entries;
     });
+
+    // --- Display helpers ---
 
     function handleChatClick(event: MouseEvent) {
         const target = event.target as HTMLElement;
@@ -87,9 +193,8 @@
         return '';
     }
 
-    const GROUP_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
+    const GROUP_THRESHOLD_MS = 5 * 60 * 1000;
 
-    // Check if this message should be grouped with the previous one (same sender, within threshold)
     function isContinuation(entries: TimelineEntry[], index: number): boolean {
         if (index === 0) return false;
         const curr = entries[index];
@@ -101,7 +206,6 @@
             && (currMsg.timestamp - prevMsg.timestamp) < GROUP_THRESHOLD_MS;
     }
 
-    // Unique key for each entry (for Svelte's keyed each block)
     function entryKey(entry: TimelineEntry, index: number): string {
         if (isMessage(entry.kind)) return entry.kind.Message.id;
         return `entry-${index}`;
@@ -134,32 +238,41 @@
         {/if}
     </header>
 
-    <div class="messages-scroller" bind:this={scrollerElement} on:click={handleChatClick}>
-        <div bind:this={sentinelElement} class="scroll-sentinel"></div>
-
+    <div class="messages-scroller" bind:this={scrollerElement} on:click={handleChatClick} on:scroll={onScroll}>
         {#if $activeWindow.loading}
             <div class="loading-indicator">Loading...</div>
         {/if}
 
-        {#each $activeWindow.entries as entry, i (entryKey(entry, i))}
-            {#if isMessage(entry.kind)}
-                <MessageGroup
-                    msg={entry.kind.Message}
-                    sender={entry.sender}
-                    continuation={isContinuation($activeWindow.entries, i)}
-                />
-            {:else if isDayDivider(entry.kind)}
-                <div class="day-divider">
-                    <span>{formatDayDivider(entry.kind.DayDivider)}</span>
-                </div>
-            {:else if isStateEvent(entry.kind)}
-                {@const text = stateEventText(entry.kind.StateEvent)}
-                {#if text}
-                    <div class="state-event">{text}</div>
+        <div bind:this={contentElement}>
+            {#each $activeWindow.entries as entry, i (entryKey(entry, i))}
+                {#if isMessage(entry.kind)}
+                    <MessageGroup
+                        msg={entry.kind.Message}
+                        sender={entry.sender}
+                        continuation={isContinuation($activeWindow.entries, i)}
+                    />
+                {:else if isDayDivider(entry.kind)}
+                    <div class="day-divider">
+                        <span>{formatDayDivider(entry.kind.DayDivider)}</span>
+                    </div>
+                {:else if isStateEvent(entry.kind)}
+                    {@const text = stateEventText(entry.kind.StateEvent)}
+                    {#if text}
+                        <div class="state-event">{text}</div>
+                    {/if}
                 {/if}
-            {/if}
-        {/each}
+            {/each}
+        </div>
     </div>
+
+    {#if !stuckAtBottom}
+        <button class="scroll-to-bottom" on:click={jumpToLatest}>
+            {#if newMessagesPending}<span class="new-messages-dot"></span>{/if}
+            <svg width="18" height="18" viewBox="0 0 24 24">
+                <path fill="currentColor" d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6z"/>
+            </svg>
+        </button>
+    {/if}
 </div>
 
 <style>
@@ -168,6 +281,7 @@
         flex-direction: column;
         height: 100%;
         background-color: transparent;
+        position: relative;
     }
 
     .chat-header {
@@ -200,6 +314,7 @@
         flex-grow: 1;
         overflow-y: scroll;
         overflow-x: hidden;
+        overflow-anchor: none;
         padding: 16px 0;
         -webkit-user-select: text;
         user-select: text;
@@ -214,13 +329,43 @@
     .messages-scroller::-webkit-scrollbar-track { background: #2e3035; border-radius: 4px; margin-right: 4px; }
     .messages-scroller::-webkit-scrollbar-thumb { background-color: #202225; border-radius: 4px; }
 
-    .scroll-sentinel { height: 1px; }
-
     .loading-indicator {
         text-align: center;
         padding: 8px;
         font-size: 12px;
         color: #72767d;
+    }
+
+    .scroll-to-bottom {
+        position: absolute;
+        bottom: 12px;
+        right: 20px;
+        width: 36px;
+        height: 36px;
+        border-radius: 50%;
+        background: #36393f;
+        border: 1px solid #202225;
+        color: #dcddde;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+        z-index: 3;
+        transition: background-color 0.15s;
+    }
+    .scroll-to-bottom:hover {
+        background: #40444b;
+    }
+
+    .new-messages-dot {
+        position: absolute;
+        top: -2px;
+        right: -2px;
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: #5865f2;
     }
 
     /* --- Day divider --- */

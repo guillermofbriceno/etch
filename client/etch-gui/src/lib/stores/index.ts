@@ -1,5 +1,5 @@
 import './eventRouter';
-export { activeWindow, activeChannelId, setActiveChannel, loadOlder, sendMessage, createDirectMessage, toggleReaction, scrollSignal } from './messages';
+export { activeWindow, activeChannelId, setActiveChannel, loadOlder, sendMessage, createDirectMessage, toggleReaction } from './messages';
 export { channels, activeChannel, hideDm } from './channels';
 export { currentUser } from './user';
 export { isMuted, isDeafened, toggleMute, toggleDeafen } from './audio';
