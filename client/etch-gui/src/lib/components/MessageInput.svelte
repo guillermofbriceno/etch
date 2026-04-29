@@ -4,13 +4,93 @@
     import { open } from '@tauri-apps/plugin-dialog';
     import { remove } from '@tauri-apps/plugin-fs';
     import { invoke } from '@tauri-apps/api/core';
-    import { sendMessage, activeChannelId, activeChannel, replyingTo, clearReply } from '$lib/stores';
+    import { sendMessage, activeChannelId, activeChannel, activeWindow, replyingTo, clearReply } from '$lib/stores';
+    import { composeHtml, insertMentionLinks } from '$lib/markdown';
 
     let messageText = '';
     let showEmojiPicker = false;
     let textareaEl: HTMLTextAreaElement;
     let pickerAnchorEl: HTMLDivElement;
     let pendingAttachment: { path: string; temp: boolean } | null = null;
+    let composeLock = false;
+
+    // Tab-completion state
+    let tabPrefix = '';
+    let tabMatches: { displayName: string; matrixId: string }[] = [];
+    let tabIndex = -1;
+    let tabStart = -1;
+    let tabEnd = -1;
+    // Tracks completed mentions in the current message: displayName -> matrixId
+    const mentionMap = new Map<string, string>();
+
+    // Clear mention and tab-completion state when switching channels
+    $: $activeChannelId, (() => {
+        mentionMap.clear();
+        tabMatches = [];
+        tabIndex = -1;
+    })();
+
+    // Derived reactively from timeline so we don't rebuild on every Tab press
+    $: roomUsers = (() => {
+        const seen = new Map<string, string>();
+        for (const entry of $activeWindow.entries) {
+            const kind = entry.kind;
+            if (typeof kind === 'object' && 'Message' in kind) {
+                const matrixId = kind.Message.sender;
+                if (!seen.has(matrixId)) {
+                    const name = entry.sender?.display_name ?? matrixId.slice(1).split(':')[0];
+                    seen.set(matrixId, name);
+                }
+            }
+        }
+        return Array.from(seen, ([matrixId, displayName]) => ({ displayName, matrixId }));
+    })();
+
+    function handleTabCompletion() {
+        const cursor = textareaEl.selectionStart;
+
+        if (tabIndex >= 0 && tabMatches.length > 0) {
+            // Cycle to next match
+            tabIndex = (tabIndex + 1) % tabMatches.length;
+        } else {
+            // Start new completion: find the @word behind the cursor
+            const before = messageText.slice(0, cursor);
+            const match = before.match(/@(\S*)$/);
+            if (!match) return;
+
+            tabPrefix = match[1].toLowerCase();
+            tabStart = cursor - match[0].length;
+            tabEnd = cursor;
+
+            tabMatches = roomUsers.filter((u) =>
+                u.displayName.toLowerCase().startsWith(tabPrefix) ||
+                u.matrixId.slice(1).split(':')[0].toLowerCase().startsWith(tabPrefix),
+            );
+            if (tabMatches.length === 0) return;
+            tabIndex = 0;
+        }
+
+        const user = tabMatches[tabIndex];
+        mentionMap.set(user.displayName, user.matrixId);
+        const replacement = `@${user.displayName} `;
+        messageText = messageText.slice(0, tabStart) + replacement + messageText.slice(tabEnd);
+        tabEnd = tabStart + replacement.length;
+
+        requestAnimationFrame(() => {
+            textareaEl.selectionStart = tabEnd;
+            textareaEl.selectionEnd = tabEnd;
+            autoResize();
+        });
+    }
+
+    function autoResize() {
+        if (!textareaEl) return;
+        const max = window.innerHeight * 0.4;
+        textareaEl.style.height = 'auto';
+        const clamped = Math.min(textareaEl.scrollHeight, max);
+        textareaEl.style.height = clamped + 'px';
+        textareaEl.style.overflowY = textareaEl.scrollHeight > max ? 'auto' : 'hidden';
+    }
 
     async function pickFile() {
         const selected = await open({ multiple: false, directory: false });
@@ -40,7 +120,9 @@
         }
     }
 
-    onMount(() => document.addEventListener('click', handleClickOutside, true));
+    onMount(() => {
+        document.addEventListener('click', handleClickOutside, true);
+    });
     onDestroy(() => document.removeEventListener('click', handleClickOutside, true));
 
     const EMOJI_CATEGORIES: { label: string; emojis: string[] }[] = [
@@ -109,6 +191,7 @@
             const pos = start + emoji.length;
             textareaEl.selectionStart = pos;
             textareaEl.selectionEnd = pos;
+            autoResize();
         });
     }
 
@@ -124,23 +207,57 @@
             : trimmed;
 
         const attachment = pendingAttachment;
+        const mentions = new Map(mentionMap);
+
+        // Save state for recovery on failure
+        const savedText = messageText;
+        const savedAttachment = pendingAttachment;
+        const savedMentions = new Map(mentionMap);
+
+        // Optimistic clear
         messageText = '';
         pendingAttachment = null;
+        mentionMap.clear();
         clearReply();
+        requestAnimationFrame(autoResize);
 
-        if (body) {
-            await sendMessage(roomId, body, null, null);
-        }
-        if (attachment) {
-            await sendMessage(roomId, '', null, attachment.path);
-            if (attachment.temp) {
-                try { await remove(attachment.path); } catch {}
+        try {
+            if (body) {
+                const rawHtml = composeHtml(body);
+                const withMentions = insertMentionLinks(rawHtml, mentions);
+                const needsHtml = mentions.size > 0 || withMentions !== `<p>${body}</p>\n`;
+                await sendMessage(roomId, body, needsHtml ? withMentions : null, null);
             }
+            if (attachment) {
+                await sendMessage(roomId, '', null, attachment.path);
+                if (attachment.temp) {
+                    try { await remove(attachment.path); } catch {}
+                }
+            }
+        } catch {
+            // Restore draft so the user doesn't lose their message
+            messageText = savedText;
+            pendingAttachment = savedAttachment;
+            for (const [k, v] of savedMentions) mentionMap.set(k, v);
+            requestAnimationFrame(autoResize);
         }
     }
 
     function handleKeydown(event: KeyboardEvent) {
+        if (event.key === 'Tab' && !event.shiftKey) {
+            event.preventDefault();
+            handleTabCompletion();
+            return;
+        }
+
+        // Any non-Tab key resets cycling state
+        if (tabIndex >= 0) {
+            tabMatches = [];
+            tabIndex = -1;
+        }
+
         if (event.key === 'Enter' && !event.shiftKey) {
+            if (composeLock) return;
             event.preventDefault();
             submit();
         }
@@ -151,7 +268,7 @@
     }
 </script>
 
-<div class="input-wrapper">
+<div class="input-wrapper" class:compose-locked={composeLock}>
     {#if $replyingTo}
         <div class="reply-preview">
             <div class="reply-info">
@@ -199,10 +316,36 @@
             bind:this={textareaEl}
             on:keydown={handleKeydown}
             on:paste={handlePaste}
+            on:input={autoResize}
             rows="1"
         ></textarea>
 
         <div class="action-buttons">
+            <button
+                class="icon-button lock-button"
+                class:active={composeLock}
+                aria-label={composeLock ? 'Unlock send' : 'Lock send (compose mode)'}
+                on:click={() => composeLock = !composeLock}
+            >
+                {#if composeLock}
+                    <svg width="20" height="20" viewBox="0 0 24 24">
+                        <path fill="currentColor" d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zM9 8V6c0-1.66 1.34-3 3-3s3 1.34 3 3v2H9z"/>
+                    </svg>
+                {:else}
+                    <svg width="20" height="20" viewBox="0 0 24 24">
+                        <path fill="currentColor" d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6h2c0-1.66 1.34-3 3-3s3 1.34 3 3v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm0 12H6V10h12v10zm-6-3c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2z"/>
+                    </svg>
+                {/if}
+            </button>
+
+            {#if composeLock}
+                <button class="icon-button send-button" aria-label="Send message" on:click={submit}>
+                    <svg width="20" height="20" viewBox="0 0 24 24">
+                        <path fill="currentColor" d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
+                    </svg>
+                </button>
+            {/if}
+
             <div class="emoji-picker-anchor" bind:this={pickerAnchorEl}>
                 <button class="icon-button" aria-label="Emoji" on:click={() => showEmojiPicker = !showEmojiPicker}>
                     <svg width="24" height="24" viewBox="0 0 24 24">
@@ -244,6 +387,13 @@
     .input-wrapper {
         width: 100%;
         background-color: transparent;
+        border-radius: 10px;
+        border: 2px solid transparent;
+        transition: border-color 0.15s ease;
+    }
+
+    .input-wrapper.compose-locked {
+        border-color: var(--accent);
     }
 
     .reply-preview {
@@ -263,7 +413,7 @@
         font-size: 13px;
     }
 
-    .reply-icon { flex-shrink: 0; color: #7289da; }
+    .reply-icon { flex-shrink: 0; color: var(--accent); }
 
     .reply-sender { font-weight: 600; color: #dcddde; white-space: nowrap; }
 
@@ -306,7 +456,7 @@
         font-size: 13px;
     }
 
-    .attachment-icon { flex-shrink: 0; color: #7289da; }
+    .attachment-icon { flex-shrink: 0; color: var(--accent); }
 
     .attachment-name {
         font-weight: 500;
@@ -354,12 +504,19 @@
 
     .icon-button:hover { color: #dcddde; }
 
+    .lock-button.active { color: var(--accent); }
+    .lock-button.active:hover { color: var(--accent-hover); }
+
+    .send-button { color: var(--accent); }
+    .send-button:hover { color: var(--accent-hover); }
+
     .attach-button { margin-right: 16px; }
 
     .action-buttons { display: flex; gap: 12px; margin-left: 16px; }
 
     .message-box {
         flex-grow: 1;
+        box-sizing: border-box;
         background: transparent;
         border: none;
         color: #dcddde;
@@ -369,8 +526,7 @@
         padding: 11px 0;
         resize: none;
         outline: none;
-        max-height: 50vh;
-        overflow-y: auto;
+        overflow-y: hidden;
         -webkit-user-select: text;
         user-select: text;
     }
@@ -411,7 +567,7 @@
     }
 
     .emoji-tab:hover { background-color: var(--bg-hover); }
-    .emoji-tab.active { border-bottom-color: #7289da; }
+    .emoji-tab.active { border-bottom-color: var(--accent); }
 
     .emoji-grid {
         display: grid;

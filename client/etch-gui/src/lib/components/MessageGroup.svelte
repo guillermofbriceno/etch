@@ -4,6 +4,10 @@
     import type { ChatMessage, SenderProfile } from '$lib/types';
     import DOMPurify from 'dompurify';
     import { openUrl } from '@tauri-apps/plugin-opener';
+    import { hljs } from '$lib/highlight';
+    import { markdownToHtml } from '$lib/markdown';
+    import { HTML_BODY_SANITIZE } from '$lib/sanitize';
+    import { replaceInTextNodes } from '$lib/dom';
     import MediaRenderer from './MediaRenderer.svelte';
     import EmojiPicker from './EmojiPicker.svelte';
 
@@ -25,44 +29,11 @@
         }).format(new Date(timestamp));
     }
 
-    const URL_RE = /https?:\/\/[^\s<>"')\]]+/g;
-
-    function linkify(text: string): string {
-        return text.replace(URL_RE, (url) => `<a href="${url}">${url}</a>`);
-    }
-
-    // Rewrite mxc:// URLs in sanitized HTML to use the Tauri media proxy
-    DOMPurify.addHook('afterSanitizeAttributes', (node) => {
-        if (node instanceof HTMLElement) {
-            for (const attr of ['src', 'href']) {
-                const val = node.getAttribute(attr);
-                if (val?.startsWith('mxc://')) {
-                    node.setAttribute(attr, val.replace('mxc://', 'etch-media://'));
-                }
-            }
-        }
-    });
-
     function messageBody(body: string, html_body: string | null): string {
         if (html_body) {
-            return DOMPurify.sanitize(html_body, {
-                ALLOWED_TAGS: [
-                    'b', 'strong', 'i', 'em', 'u', 'del', 's', 'strike',
-                    'code', 'pre', 'blockquote', 'br', 'p', 'span',
-                    'ul', 'ol', 'li', 'a', 'img', 'h1', 'h2', 'h3',
-                    'h4', 'h5', 'h6', 'hr', 'table', 'thead', 'tbody',
-                    'tr', 'th', 'td', 'sup', 'sub', 'mx-reply',
-                ],
-                ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'class', 'data-mx-maths'],
-            });
+            return DOMPurify.sanitize(html_body, HTML_BODY_SANITIZE) as string;
         }
-        return linkify(
-            body
-                .replace(/&/g, '&amp;')
-                .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;')
-                .replace(/\n/g, '<br>')
-        );
+        return markdownToHtml(body);
     }
 
     function usernameColor(userId: string): string {
@@ -89,9 +60,55 @@
     function hasReactions(reactions: Record<string, string[]>): boolean {
         return Object.keys(reactions).length > 0;
     }
+
+    function mentionsSelf(body: string, html_body: string | null): boolean {
+        const selfId = $currentUser.matrixId;
+        if (!selfId) return false;
+        const text = html_body ?? body;
+        return text.includes(selfId);
+    }
+
+    function processBody(node: HTMLElement, params: { htmlBody: string | null; selfId: string }) {
+        function run({ htmlBody, selfId }: typeof params) {
+            // Only highlight code in server-rendered HTML; markdownToHtml already highlights
+            if (htmlBody) {
+                node.querySelectorAll('pre code:not(.hljs)').forEach((el) => {
+                    hljs.highlightElement(el as HTMLElement);
+                });
+            }
+            applyMentionStyling(node, selfId);
+        }
+        run(params);
+        return { update: run };
+    }
+
+    function applyMentionStyling(container: HTMLElement, selfId: string): void {
+        // Rewrite matrix.to anchor tags to styled mention spans
+        container.querySelectorAll<HTMLAnchorElement>('a[href*="matrix.to/#/@"]').forEach((a) => {
+            const href = a.getAttribute('href') ?? '';
+            const match = href.match(/matrix\.to\/#\/(@[^"&\s]+)/);
+            if (!match) return;
+            const userId = decodeURIComponent(match[1]);
+            const span = document.createElement('span');
+            span.className = userId === selfId ? 'mention mention-self' : 'mention';
+            span.textContent = `@${a.textContent}`;
+            a.replaceWith(span);
+        });
+
+        // Walk text nodes for plain @user:server mentions
+        const mentionRe = /@([a-zA-Z0-9._=\-/]+:[a-zA-Z0-9.\-]+)/g;
+        replaceInTextNodes(container, mentionRe, (match) => {
+            const fullId = match[0];
+            const localpart = match[1].split(':')[0];
+            const span = document.createElement('span');
+            span.className = fullId === selfId ? 'mention mention-self' : 'mention';
+            span.textContent = `@${localpart}`;
+            return span;
+        });
+    }
 </script>
 
-<div class="message-block" class:continuation>
+<div class="message-block" class:continuation class:mentioned={mentionsSelf(msg.body, msg.html_body)}>
     {#if !continuation}
         <div class="avatar">
             {#if sender?.avatar_url}
@@ -114,7 +131,7 @@
 
         {#if !msg.media}
             <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
-            <div class="body" on:click={handleLinkClick}>
+            <div class="body" use:processBody={{ htmlBody: msg.html_body, selfId: $currentUser.matrixId }} on:click={handleLinkClick}>
                 {@html messageBody(msg.body, msg.html_body)}
             </div>
         {/if}
@@ -156,6 +173,11 @@
 
     .message-block.continuation { margin-top: 0; padding-top: 1px; padding-bottom: 1px; }
     .message-block:hover { background-color: rgba(4, 4, 5, 0.07); }
+    .message-block.mentioned {
+        background-color: color-mix(in srgb, var(--accent) 8%, transparent);
+        border-left: 3px solid var(--accent);
+    }
+    .message-block.mentioned:hover { background-color: color-mix(in srgb, var(--accent) 12%, transparent); }
     .avatar-gutter { width: 40px; margin-right: 16px; flex-shrink: 0; }
 
     /* Reveal EmojiPicker (message-actions) on hover */
@@ -192,12 +214,12 @@
     }
 
     .reaction-badge.own {
-        background-color: rgba(114, 137, 218, 0.3);
-        border-color: rgba(114, 137, 218, 0.5);
+        background-color: color-mix(in srgb, var(--accent) 30%, transparent);
+        border-color: color-mix(in srgb, var(--accent) 50%, transparent);
     }
 
     .reaction-badge.own:hover {
-        background-color: rgba(114, 137, 218, 0.4);
+        background-color: color-mix(in srgb, var(--accent) 40%, transparent);
     }
 
     .reaction-emoji { font-size: 16px; line-height: 1; }
@@ -242,6 +264,8 @@
         overflow-wrap: anywhere;
     }
 
+    .body :global(p) { margin: 0; }
+    .body :global(p + p) { margin-top: 4px; }
     .body :global(strong) { font-weight: 600; color: #fff; }
     .body :global(em) { font-style: italic; }
     .body :global(code) {
@@ -274,4 +298,15 @@
     .body :global(hr) { border: none; border-top: 1px solid #4f545c; margin: 8px 0; }
     .body :global(del), .body :global(s) { text-decoration: line-through; color: #a3a6aa; }
     .body :global(mx-reply) { display: none; }
+    .body :global(.mention) {
+        background-color: color-mix(in srgb, var(--accent) 15%, transparent);
+        color: var(--accent);
+        padding: 0 2px;
+        border-radius: 3px;
+        font-weight: 500;
+    }
+    .body :global(.mention-self) {
+        background-color: color-mix(in srgb, var(--accent) 30%, transparent);
+        color: #dee0fc;
+    }
 </style>
