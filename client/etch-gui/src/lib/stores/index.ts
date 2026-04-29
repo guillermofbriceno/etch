@@ -8,7 +8,7 @@ export { serverBookmarks, selectedBookmarkId, connectingBookmark, passwordReques
 export { replyingTo, setReply, clearReply } from './compose';
 export { voiceChannels, voiceUsers, voiceConnected, mumbleStatus, usersByChannel } from './voiceState';
 export type { VoiceChannel, VoiceUser, MumbleStatus } from './voiceState';
-export { errorLog, toastError } from './errors';
+export { errorLog, toastError, showToast } from './errors';
 export type { ErrorEntry } from './errors';
 export { userVolumes, setUserVolume } from './userVolumes';
 export { sfxVolume, playSfx, setSfxDeafened } from './sfx';

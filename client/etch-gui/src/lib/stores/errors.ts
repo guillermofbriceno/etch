@@ -12,7 +12,7 @@ export const toastError = writable<string | null>(null);
 
 let toastTimer: ReturnType<typeof setTimeout> | null = null;
 
-function showToast(message: string) {
+export function showToast(message: string) {
     if (toastTimer) clearTimeout(toastTimer);
     toastError.set(message);
     toastTimer = setTimeout(() => {

@@ -1,10 +1,32 @@
 <script lang="ts">
-    import { closeOverlay } from '$lib/stores';
+    import { closeOverlay, showToast } from '$lib/stores';
+    import { fetchBlob } from '$lib/media';
+    import { writeFile } from '@tauri-apps/plugin-fs';
+    import { tempDir, join } from '@tauri-apps/api/path';
+    import { openPath } from '@tauri-apps/plugin-opener';
 
     export let url: string;
 
     function handleKeydown(event: KeyboardEvent) {
         if (event.key === 'Escape') closeOverlay();
+    }
+
+    async function openOriginal() {
+        try {
+            const bytes = await fetchBlob(url);
+
+            const urlPath = new URL(url).pathname;
+            const urlExt = urlPath.includes('.') ? urlPath.split('.').pop() : null;
+            const ext = urlExt || 'png';
+
+            const tmp = await tempDir();
+            const tmpPath = await join(tmp, `etch-preview-${Date.now()}.${ext}`);
+
+            await writeFile(tmpPath, bytes);
+            await openPath(tmpPath);
+        } catch (e) {
+            showToast(`Failed to open image: ${e}`);
+        }
     }
 </script>
 
@@ -15,9 +37,7 @@
         <img src={url} alt="Expanded media" class="expanded-image" />
 
         <div class="media-actions">
-            <a href={url} target="_blank" rel="noopener noreferrer" class="open-link">
-                Open original
-            </a>
+            <button class="open-link" on:click={openOriginal}>Open original</button>
         </div>
     </div>
 </div>
@@ -52,11 +72,15 @@
     .media-actions { margin-top: 8px; padding-left: 4px; }
 
     .open-link {
+        background: none;
+        border: none;
+        padding: 0;
         color: #00aff4;
         font-size: 14px;
         font-weight: 500;
         text-decoration: none;
         font-family: 'Inter', sans-serif;
+        cursor: pointer;
         transition: text-decoration 0.1s ease;
     }
 

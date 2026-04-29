@@ -113,6 +113,7 @@ pub fn run() {
                         responder.respond(
                             tauri::http::Response::builder()
                                 .header("content-type", "application/octet-stream")
+                                .header("access-control-allow-origin", "*")
                                 .body(bytes)
                                 .unwrap()
                         );
@@ -122,6 +123,7 @@ pub fn run() {
                         responder.respond(
                             tauri::http::Response::builder()
                                 .status(502)
+                                .header("access-control-allow-origin", "*")
                                 .body(body)
                                 .unwrap()
                         );
@@ -130,6 +132,7 @@ pub fn run() {
                         responder.respond(
                             tauri::http::Response::builder()
                                 .status(502)
+                                .header("access-control-allow-origin", "*")
                                 .body(b"Media fetch channel closed".to_vec())
                                 .unwrap()
                         );

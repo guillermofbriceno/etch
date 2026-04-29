@@ -10,12 +10,12 @@
     let showEmojiPicker = false;
     let textareaEl: HTMLTextAreaElement;
     let pickerAnchorEl: HTMLDivElement;
-    let pendingAttachment: string | null = null;
+    let pendingAttachment: { path: string; temp: boolean } | null = null;
 
     async function pickFile() {
         const selected = await open({ multiple: false, directory: false });
         if (selected) {
-            pendingAttachment = selected as string;
+            pendingAttachment = { path: selected as string, temp: false };
         }
     }
 
@@ -30,7 +30,7 @@
     async function handlePaste(event: ClipboardEvent) {
         const path = await invoke<string | null>('paste_clipboard_image');
         if (path) {
-            pendingAttachment = path;
+            pendingAttachment = { path, temp: true };
         }
     }
 
@@ -132,8 +132,10 @@
             await sendMessage(roomId, body, null, null);
         }
         if (attachment) {
-            await sendMessage(roomId, '', null, attachment);
-            try { await remove(attachment); } catch {}
+            await sendMessage(roomId, '', null, attachment.path);
+            if (attachment.temp) {
+                try { await remove(attachment.path); } catch {}
+            }
         }
     }
 
@@ -173,7 +175,7 @@
                 <svg width="14" height="14" viewBox="0 0 24 24" class="attachment-icon">
                     <path fill="currentColor" d="M14 2H6C4.9 2 4 2.9 4 4V20C4 21.1 4.9 22 6 22H18C19.1 22 20 21.1 20 20V8L14 2ZM18 20H6V4H13V9H18V20Z"/>
                 </svg>
-                <span class="attachment-name">{fileName(pendingAttachment)}</span>
+                <span class="attachment-name">{fileName(pendingAttachment.path)}</span>
             </div>
             <button class="cancel-attachment" aria-label="Remove attachment" on:click={clearAttachment}>
                 <svg width="14" height="14" viewBox="0 0 24 24">
