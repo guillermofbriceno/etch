@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { channels, activeChannelId, setActiveChannel, openConnect, usersByChannel, setUserVolume, matrixConnecting } from '$lib/stores';
+    import { channels, activeChannelId, setActiveChannel, openConnect, usersByChannel, setUserVolume, matrixConnecting, hideDm } from '$lib/stores';
     import { sendCoreCommand } from '$lib/ipc';
     import type { VoiceUser } from '$lib/stores/voiceState';
     import VoiceUserList from './VoiceUserList.svelte';
@@ -144,7 +144,7 @@
                 <ul class="channel-list">
                     {#each dmChannels as channel (channel.id)}
                         <li
-                            class="channel-item {$activeChannelId === channel.id ? 'active' : ''}"
+                            class="channel-item dm-item {$activeChannelId === channel.id ? 'active' : ''}"
                             on:click={() => setActiveChannel(channel.id)}
                         >
                             <span class="unread-slot" class:visible={channel.unread_count > 0}><span class="unread-dot"></span></span>
@@ -152,6 +152,15 @@
                                 <path fill="currentColor" d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zM8.5 9.5a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3zm7 0a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3zM12 18c-2.33 0-4.32-1.45-5.12-3.5h1.67c.69 1.19 1.97 2 3.45 2s2.76-.81 3.45-2h1.67c-.8 2.05-2.79 3.5-5.12 3.5z"/>
                             </svg>
                             <span class="channel-name">{channel.display_name}</span>
+                            <button
+                                class="hide-dm-btn"
+                                on:click|stopPropagation={() => hideDm(channel.id)}
+                                title="Hide conversation"
+                            >
+                                <svg width="14" height="14" viewBox="0 0 24 24">
+                                    <line x1="5" y1="12" x2="19" y2="12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                                </svg>
+                            </button>
                         </li>
                     {/each}
                 </ul>
@@ -300,6 +309,22 @@
 
     .channel-item:hover { background-color: #393c43; color: #dcddde; }
     .channel-item.active { background-color: #42464d; color: #fff; }
+
+    .hide-dm-btn {
+        display: none;
+        margin-left: auto;
+        background: transparent;
+        border: none;
+        color: #8e9297;
+        cursor: pointer;
+        padding: 2px;
+        border-radius: 3px;
+        flex-shrink: 0;
+        align-items: center;
+    }
+
+    .hide-dm-btn:hover { color: #fff; background-color: rgba(255, 255, 255, 0.1); }
+    .dm-item:hover .hide-dm-btn { display: flex; }
 
     .connecting-indicator {
         display: flex;

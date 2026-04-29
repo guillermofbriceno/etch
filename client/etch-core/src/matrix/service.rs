@@ -272,6 +272,27 @@ impl MatrixService {
                     return;
                 };
 
+                // Verify the target user exists on the homeserver before creating a room.
+                // This prevents DM attempts with Mumble-only users who have no Matrix account.
+                if client.account().fetch_user_profile_of(&target).await.is_err() {
+                    log::error!("Cannot message {}: user not found on the server", target.localpart());
+                    return;
+                }
+
+                // If a DM room with this user already exists, reuse it
+                if let Some(existing_room_id) = Self::find_existing_dm(&client, &target).await {
+                    if let Ok(rid) = matrix_sdk::ruma::RoomId::parse(&existing_room_id) {
+                        if let Some(room) = client.get_room(&rid) {
+                            if let Ok(room_info) = matrix::sync::build_room_info(&room).await {
+                                let _ = self.event_tx.send(
+                                    CoreEvent::Matrix(MatrixEvent::DmCreated(room_info))
+                                ).await;
+                            }
+                        }
+                    }
+                    return;
+                }
+
                 let mut request = CreateRoomRequest::new();
                 request.preset = Some(RoomPreset::TrustedPrivateChat);
                 request.is_direct = true;
@@ -328,6 +349,21 @@ impl MatrixService {
                 }
             }
         }
+    }
+
+    async fn find_existing_dm(client: &matrix_sdk::Client, target: &UserId) -> Option<String> {
+        for room in client.joined_rooms() {
+            if !room.is_direct().await.unwrap_or(false) {
+                continue;
+            }
+            let Ok(members) = room.members(matrix_sdk::RoomMemberships::ACTIVE).await else {
+                continue;
+            };
+            if members.iter().any(|m| m.user_id() == target) {
+                return Some(room.room_id().to_string());
+            }
+        }
+        None
     }
 
     /// Force a /keys/query for all members of encrypted rooms so the crypto

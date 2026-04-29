@@ -1,6 +1,6 @@
 import './eventRouter';
 export { activeWindow, activeChannelId, setActiveChannel, loadOlder, sendMessage, createDirectMessage, toggleReaction, scrollSignal } from './messages';
-export { channels, activeChannel } from './channels';
+export { channels, activeChannel, hideDm } from './channels';
 export { currentUser } from './user';
 export { isMuted, isDeafened, toggleMute, toggleDeafen } from './audio';
 export { activeOverlay, overlayImageUrl, settingsTab, showRoomIds, openSettings, openImage, openConnect, closeOverlay } from './overlay';

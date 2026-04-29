@@ -16,6 +16,8 @@ pub struct Settings {
     pub voice_hold: Option<i64>,
     #[serde(default)]
     pub use_mumble_settings: Option<bool>,
+    #[serde(default)]
+    pub hidden_dms: Vec<String>,
 }
 
 pub fn load(data_dir: &Path) -> Settings {
@@ -65,6 +67,20 @@ pub fn set_voice_hold(data_dir: &Path, value: i64) {
 pub fn set_use_mumble_settings(data_dir: &Path, value: bool) {
     let mut settings = load(data_dir);
     settings.use_mumble_settings = Some(value);
+    save(data_dir, &settings);
+}
+
+pub fn hide_dm(data_dir: &Path, room_id: String) {
+    let mut settings = load(data_dir);
+    if !settings.hidden_dms.contains(&room_id) {
+        settings.hidden_dms.push(room_id);
+    }
+    save(data_dir, &settings);
+}
+
+pub fn unhide_dm(data_dir: &Path, room_id: &str) {
+    let mut settings = load(data_dir);
+    settings.hidden_dms.retain(|id| id != room_id);
     save(data_dir, &settings);
 }
 

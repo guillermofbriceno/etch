@@ -35,7 +35,7 @@ export type MumbleEvent =
 
 export type SystemEvent =
     | { type: 'ConnectionLost' }
-    | { type: 'SettingsLoaded'; data: { bookmarks: ServerBookmark[]; transmission_mode: string | null; vad_threshold: number | null; voice_hold: number | null; use_mumble_settings: boolean | null } }
+    | { type: 'SettingsLoaded'; data: { bookmarks: ServerBookmark[]; transmission_mode: string | null; vad_threshold: number | null; voice_hold: number | null; use_mumble_settings: boolean | null; hidden_dms: string[] } }
     | { type: 'LogError'; data: { message: string; target: string } }
     | { type: 'UserProfileChanged'; data: { username: string; display_name: string | null; avatar_url: string | null } };
 
@@ -76,7 +76,9 @@ export type SystemCommand =
     | { type: 'OpenMumbleGui'; data: string }
     | { type: 'RestartMumble'; data: string }
     | { type: 'SetLogLevel'; data: string }
-    | { type: 'TestError' };
+    | { type: 'TestError' }
+    | { type: 'HideDm'; data: { room_id: string } }
+    | { type: 'UnhideDm'; data: { room_id: string } };
 
 export type CoreCommand =
     | { type: 'Matrix'; data: MatrixCommand }

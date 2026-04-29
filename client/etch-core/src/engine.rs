@@ -128,6 +128,12 @@ impl CoreEngine {
                                 SystemCommand::TestError => {
                                     log::error!("Test error triggered from Developer Options");
                                 }
+                                SystemCommand::HideDm { room_id } => {
+                                    settings::hide_dm(&self.data_dir, room_id);
+                                }
+                                SystemCommand::UnhideDm { room_id } => {
+                                    settings::unhide_dm(&self.data_dir, &room_id);
+                                }
                             }
                         }
                     }

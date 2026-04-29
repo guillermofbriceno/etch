@@ -54,6 +54,8 @@ pub enum SystemCommand {
     RestartMumble(String),
     SetLogLevel(String),
     TestError,
+    HideDm { room_id: String },
+    UnhideDm { room_id: String },
 }
 
 #[derive(Clone, Deserialize)]
