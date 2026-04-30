@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { onMount, onDestroy } from 'svelte';
+    import { onMount, onDestroy, tick } from 'svelte';
     import { get } from 'svelte/store';
     import { open } from '@tauri-apps/plugin-dialog';
     import { remove } from '@tauri-apps/plugin-fs';
@@ -47,7 +47,7 @@
         return Array.from(seen, ([matrixId, displayName]) => ({ displayName, matrixId }));
     })();
 
-    function handleTabCompletion() {
+    async function handleTabCompletion() {
         const cursor = textareaEl.selectionStart;
 
         if (tabIndex >= 0 && tabMatches.length > 0) {
@@ -77,11 +77,11 @@
         messageText = messageText.slice(0, tabStart) + replacement + messageText.slice(tabEnd);
         tabEnd = tabStart + replacement.length;
 
-        requestAnimationFrame(() => {
-            textareaEl.selectionStart = tabEnd;
-            textareaEl.selectionEnd = tabEnd;
-            autoResize();
-        });
+        await tick();
+        if (!textareaEl) return;
+        textareaEl.selectionStart = tabEnd;
+        textareaEl.selectionEnd = tabEnd;
+        autoResize();
     }
 
     function autoResize() {
@@ -181,19 +181,19 @@
 
     let activeCategory = EMOJI_CATEGORIES[0].label;
 
-    function insertEmoji(emoji: string) {
+    async function insertEmoji(emoji: string) {
         const start = textareaEl.selectionStart;
         const end = textareaEl.selectionEnd;
         messageText = messageText.slice(0, start) + emoji + messageText.slice(end);
         showEmojiPicker = false;
         // Restore focus and cursor position after the inserted emoji
-        requestAnimationFrame(() => {
-            textareaEl.focus();
-            const pos = start + emoji.length;
-            textareaEl.selectionStart = pos;
-            textareaEl.selectionEnd = pos;
-            autoResize();
-        });
+        await tick();
+        if (!textareaEl) return;
+        textareaEl.focus();
+        const pos = start + emoji.length;
+        textareaEl.selectionStart = pos;
+        textareaEl.selectionEnd = pos;
+        autoResize();
     }
 
     async function submit() {
@@ -244,10 +244,10 @@
         }
     }
 
-    function handleKeydown(event: KeyboardEvent) {
+    async function handleKeydown(event: KeyboardEvent) {
         if (event.key === 'Tab' && !event.shiftKey) {
             event.preventDefault();
-            handleTabCompletion();
+            await handleTabCompletion();
             return;
         }
 
