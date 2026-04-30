@@ -11,13 +11,20 @@
     import ErrorToast from '$lib/components/ErrorToast.svelte';
 
     import { onMount } from 'svelte';
-    import { activeOverlay, overlayImageUrl, closeOverlay, loadSettings, initTheme } from '$lib/stores';
+    import { activeOverlay, overlayImageUrl, closeOverlay, loadSettings, initTheme, initStores } from '$lib/stores';
+
+    function handleKeydown(event: KeyboardEvent) {
+        if (event.key === 'Escape' && $activeOverlay !== 'none') closeOverlay();
+    }
 
     onMount(() => {
+        initStores();
         loadSettings();
         initTheme();
     });
 </script>
+
+<svelte:window on:keydown={handleKeydown} />
 
 <div class="app-shell">
     <TitleBar />

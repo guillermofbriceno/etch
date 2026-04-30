@@ -5,13 +5,10 @@ import { sendCoreCommand } from '$lib/ipc';
 import { currentUser } from './user';
 import { playSfx } from './sfx';
 import { appFocused } from './eventRouter';
+import { activeChannelId, emitUnreadMessage } from './activeChannel';
 
 let lastNotifTime = 0;
 const NOTIF_COOLDOWN_MS = 20_000;
-
-// Hook for channels store to increment unread count (avoids circular import)
-let _onUnreadMessage: ((roomId: string) => void) | null = null;
-export function setOnUnreadMessage(fn: (roomId: string) => void) { _onUnreadMessage = fn; }
 
 type ChannelWindow = {
     entries: TimelineEntry[];
@@ -20,9 +17,6 @@ type ChannelWindow = {
 };
 
 const EMPTY_WINDOW: ChannelWindow = { entries: [], hasMore: true, loading: false };
-
-// Single source of truth for the selected channel
-export const activeChannelId = writable<string | null>(null);
 
 const windows = writable<Record<string, ChannelWindow>>({});
 
@@ -94,8 +88,7 @@ export async function createDirectMessage(targetUserId: string): Promise<void> {
 }
 
 export async function toggleReaction(eventId: string, key: string): Promise<void> {
-    let roomId: string | null = null;
-    activeChannelId.subscribe(id => { roomId = id; })();
+    const roomId = get(activeChannelId);
     if (!roomId) return;
     await sendCoreCommand({
         type: 'Matrix',
@@ -135,10 +128,10 @@ export function handleMatrixEvent(me: MatrixEvent): void {
                 if (sender && sender !== self) {
                     const active = get(activeChannelId);
                     if (roomId !== active) {
-                        _onUnreadMessage?.(roomId);
+                        emitUnreadMessage(roomId);
                     }
                     const now = Date.now();
-                    if ((!appFocused || roomId !== active) && now - lastNotifTime >= NOTIF_COOLDOWN_MS) {
+                    if ((!get(appFocused) || roomId !== active) && now - lastNotifTime >= NOTIF_COOLDOWN_MS) {
                         lastNotifTime = now;
                         playSfx('new_notif');
                     }

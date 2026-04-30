@@ -20,12 +20,12 @@ export type VoiceUser = {
     channel_id: number;
     muted: boolean;
     deafened: boolean;
-    talking: boolean;
     hash: string | null;
 };
 
 export const voiceChannels = writable<Map<number, VoiceChannel>>(new Map());
 export const voiceUsers = writable<Map<number, VoiceUser>>(new Map());
+export const talkingUsers = writable<Set<number>>(new Set());
 export type MumbleStatus = 'disconnected' | 'connecting' | 'connected';
 export const mumbleStatus = writable<MumbleStatus>('disconnected');
 export const voiceConnected = derived(mumbleStatus, ($s) => $s === 'connected');
@@ -44,7 +44,6 @@ export const usersByChannel = derived(voiceUsers, ($users) => {
     return grouped;
 });
 
-let connected = false;
 let settled = false;
 let localSession: number | null = null;
 
@@ -95,7 +94,6 @@ export function handleMumbleEvent(me: MumbleEvent): void {
                     channel_id: u.channel_id ?? existing?.channel_id ?? 0,
                     muted: u.self_mute ?? existing?.muted ?? false,
                     deafened: u.self_deaf ?? existing?.deafened ?? false,
-                    talking: existing?.talking ?? false,
                     hash: u.hash ?? existing?.hash ?? null,
                 });
                 return new Map(m);
@@ -109,12 +107,10 @@ export function handleMumbleEvent(me: MumbleEvent): void {
         }
         case 'UserTalking': {
             const { session_id, talking } = me.data;
-            voiceUsers.update((m) => {
-                const existing = m.get(session_id);
-                if (existing) {
-                    m.set(session_id, { ...existing, talking });
-                }
-                return new Map(m);
+            talkingUsers.update(s => {
+                if (talking) s.add(session_id);
+                else s.delete(session_id);
+                return new Set(s);
             });
             break;
         }
@@ -133,6 +129,7 @@ export function handleMumbleEvent(me: MumbleEvent): void {
                 }
                 return new Map(m);
             });
+            talkingUsers.update(s => { s.delete(me.data); return new Set(s); });
             break;
         }
         case 'TransmissionModeChanged': {
@@ -149,7 +146,6 @@ export function handleMumbleEvent(me: MumbleEvent): void {
         }
         case 'ConnectionState': {
             if (me.data.type === 'Connected') {
-                connected = true;
                 settled = false;
                 mumbleStatus.set('connected');
                 playSfx('server_join');
@@ -157,12 +153,12 @@ export function handleMumbleEvent(me: MumbleEvent): void {
             } else if (me.data.type === 'Connecting') {
                 mumbleStatus.set('connecting');
             } else if (me.data.type === 'Disconnected') {
-                connected = false;
                 settled = false;
                 localSession = null;
                 mumbleStatus.set('disconnected');
                 voiceChannels.set(new Map());
                 voiceUsers.set(new Map());
+                talkingUsers.set(new Set());
                 playSfx('server_disconnect');
             }
             break;

@@ -6,6 +6,7 @@
     import { invoke } from '@tauri-apps/api/core';
     import { sendMessage, activeChannelId, activeChannel, activeWindow, replyingTo, clearReply } from '$lib/stores';
     import { composeHtml, insertMentionLinks } from '$lib/markdown';
+    import Icon from './Icon.svelte';
 
     let messageText = '';
     let showEmojiPicker = false;
@@ -272,16 +273,12 @@
     {#if $replyingTo}
         <div class="reply-preview">
             <div class="reply-info">
-                <svg width="12" height="12" viewBox="0 0 24 24" class="reply-icon">
-                    <path fill="currentColor" d="M10 9V5L3 12L10 19V14.9C15 14.9 18.5 16.5 21 20C20 15 17 10 10 9Z"/>
-                </svg>
+                <Icon name="reply" size={12} class="reply-icon" />
                 <span class="reply-sender">{$replyingTo.sender.split(':')[0]}</span>
                 <span class="reply-body">{truncate($replyingTo.body)}</span>
             </div>
             <button class="cancel-reply" aria-label="Cancel reply" on:click={clearReply}>
-                <svg width="14" height="14" viewBox="0 0 24 24">
-                    <path fill="currentColor" d="M18.4 4L12 10.4L5.6 4L4 5.6L10.4 12L4 18.4L5.6 20L12 13.6L18.4 20L20 18.4L13.6 12L20 5.6L18.4 4Z"/>
-                </svg>
+                <Icon name="close" size={14} />
             </button>
         </div>
     {/if}
@@ -289,24 +286,18 @@
     {#if pendingAttachment}
         <div class="attachment-preview">
             <div class="attachment-info">
-                <svg width="14" height="14" viewBox="0 0 24 24" class="attachment-icon">
-                    <path fill="currentColor" d="M14 2H6C4.9 2 4 2.9 4 4V20C4 21.1 4.9 22 6 22H18C19.1 22 20 21.1 20 20V8L14 2ZM18 20H6V4H13V9H18V20Z"/>
-                </svg>
+                <Icon name="file" size={14} class="attachment-icon" />
                 <span class="attachment-name">{fileName(pendingAttachment.path)}</span>
             </div>
             <button class="cancel-attachment" aria-label="Remove attachment" on:click={clearAttachment}>
-                <svg width="14" height="14" viewBox="0 0 24 24">
-                    <path fill="currentColor" d="M18.4 4L12 10.4L5.6 4L4 5.6L10.4 12L4 18.4L5.6 20L12 13.6L18.4 20L20 18.4L13.6 12L20 5.6L18.4 4Z"/>
-                </svg>
+                <Icon name="close" size={14} />
             </button>
         </div>
     {/if}
 
     <div class="input-container">
         <button class="icon-button attach-button" aria-label="Attach file" on:click={pickFile}>
-            <svg width="24" height="24" viewBox="0 0 24 24">
-                <path fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="M12 2C6.48 2 2 6.48 2 12C2 17.52 6.48 22 12 22C17.52 22 22 17.52 22 12C22 6.48 17.52 2 12 2ZM13 11H16V13H13V16H11V13H8V11H11V8H13V11Z"></path>
-            </svg>
+            <Icon name="plus_circle" />
         </button>
 
         <textarea
@@ -328,29 +319,21 @@
                 on:click={() => composeLock = !composeLock}
             >
                 {#if composeLock}
-                    <svg width="20" height="20" viewBox="0 0 24 24">
-                        <path fill="currentColor" d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zM9 8V6c0-1.66 1.34-3 3-3s3 1.34 3 3v2H9z"/>
-                    </svg>
+                    <Icon name="lock" size={20} />
                 {:else}
-                    <svg width="20" height="20" viewBox="0 0 24 24">
-                        <path fill="currentColor" d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6h2c0-1.66 1.34-3 3-3s3 1.34 3 3v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm0 12H6V10h12v10zm-6-3c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2z"/>
-                    </svg>
+                    <Icon name="lock_open" size={20} />
                 {/if}
             </button>
 
             {#if composeLock}
                 <button class="icon-button send-button" aria-label="Send message" on:click={submit}>
-                    <svg width="20" height="20" viewBox="0 0 24 24">
-                        <path fill="currentColor" d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
-                    </svg>
+                    <Icon name="send" size={20} />
                 </button>
             {/if}
 
             <div class="emoji-picker-anchor" bind:this={pickerAnchorEl}>
                 <button class="icon-button" aria-label="Emoji" on:click={() => showEmojiPicker = !showEmojiPicker}>
-                    <svg width="24" height="24" viewBox="0 0 24 24">
-                        <path fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="M12 2C6.486 2 2 6.486 2 12C2 17.515 6.486 22 12 22C17.514 22 22 17.515 22 12C22 6.486 17.514 2 12 2ZM8.5 8C9.328 8 10 8.671 10 9.5C10 10.329 9.328 11 8.5 11C7.672 11 7 10.329 7 9.5C7 8.671 7.672 8 8.5 8ZM12 17.5C9.666 17.5 7.655 15.967 6.88 13.84L8.766 13.19C9.255 14.536 10.536 15.5 12 15.5C13.464 15.5 14.745 14.536 15.234 13.19L17.12 13.84C16.345 15.967 14.334 17.5 12 17.5ZM15.5 11C14.672 11 14 10.329 14 9.5C14 8.671 14.672 8 15.5 8C16.328 8 17 8.671 17 9.5C17 10.329 16.328 11 15.5 11Z"></path>
-                    </svg>
+                    <Icon name="emoji" />
                 </button>
 
                 {#if showEmojiPicker}
@@ -413,7 +396,7 @@
         font-size: 13px;
     }
 
-    .reply-icon { flex-shrink: 0; color: var(--accent); }
+    .reply-info :global(.reply-icon) { flex-shrink: 0; color: var(--accent); }
 
     .reply-sender { font-weight: 600; color: #dcddde; white-space: nowrap; }
 
@@ -456,7 +439,7 @@
         font-size: 13px;
     }
 
-    .attachment-icon { flex-shrink: 0; color: var(--accent); }
+    .attachment-info :global(.attachment-icon) { flex-shrink: 0; color: var(--accent); }
 
     .attachment-name {
         font-weight: 500;

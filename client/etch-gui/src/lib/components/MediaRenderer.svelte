@@ -1,5 +1,6 @@
 <script lang="ts">
     import { openImage, showToast } from '$lib/stores';
+    import Icon from './Icon.svelte';
     import { fetchBlob } from '$lib/media';
     import { save } from '@tauri-apps/plugin-dialog';
     import { writeFile } from '@tauri-apps/plugin-fs';
@@ -30,13 +31,9 @@
         />
     {:else}
         <button class="file-download" on:click={downloadFile}>
-            <svg width="16" height="16" viewBox="0 0 24 24" class="file-icon">
-                <path fill="currentColor" d="M14 2H6C4.9 2 4 2.9 4 4V20C4 21.1 4.9 22 6 22H18C19.1 22 20 21.1 20 20V8L14 2ZM18 20H6V4H13V9H18V20Z"/>
-            </svg>
+            <Icon name="file" size={16} class="file-icon" />
             <span class="file-name">{body}</span>
-            <svg width="16" height="16" viewBox="0 0 24 24" class="download-icon">
-                <path fill="currentColor" d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
-            </svg>
+            <Icon name="download" size={16} class="download-icon" />
         </button>
     {/if}
 </div>
@@ -63,7 +60,7 @@
         transition: background-color 0.15s ease;
     }
     .file-download:hover { background-color: #36393f; }
-    .file-icon { flex-shrink: 0; color: #7289da; }
+    .file-download :global(.file-icon) { flex-shrink: 0; color: #7289da; }
     .file-name { color: #00aff4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .download-icon { flex-shrink: 0; color: #b9bbbe; }
+    .file-download :global(.download-icon) { flex-shrink: 0; color: #b9bbbe; }
 </style>

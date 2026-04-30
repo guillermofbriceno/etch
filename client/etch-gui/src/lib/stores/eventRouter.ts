@@ -1,3 +1,4 @@
+import { writable, get } from 'svelte/store';
 import { listen } from '@tauri-apps/api/event';
 import type { CoreEvent } from '$lib/ipc';
 
@@ -10,28 +11,32 @@ import { handleSystemEvent as errorsHandleSystem } from './errors';
 import { handleMumbleEvent, handleSystemEvent as voiceHandleSystem } from './voiceState';
 
 // Track app focus state for notification sounds
-export let appFocused = document.hasFocus();
-listen('tauri://focus', () => { appFocused = true; });
-listen('tauri://blur', () => { appFocused = false; });
+export const appFocused = writable(true);
 
-listen<CoreEvent>('core_event', (event) => {
-    const ce = event.payload;
+export function initEventRouter(): void {
+    appFocused.set(document.hasFocus());
+    listen('tauri://focus', () => { appFocused.set(true); });
+    listen('tauri://blur', () => { appFocused.set(false); });
 
-    switch (ce.type) {
-        case 'Matrix':
-            messagesHandleMatrix(ce.data);
-            channelsHandleMatrix(ce.data);
-            serversHandleMatrix(ce.data);
-            userHandleMatrix(ce.data);
-            break;
-        case 'Mumble':
-            handleMumbleEvent(ce.data);
-            break;
-        case 'System':
-            serversHandleSystem(ce.data);
-            errorsHandleSystem(ce.data);
-            voiceHandleSystem(ce.data);
-            userHandleSystem(ce.data);
-            break;
-    }
-});
+    listen<CoreEvent>('core_event', (event) => {
+        const ce = event.payload;
+
+        switch (ce.type) {
+            case 'Matrix':
+                messagesHandleMatrix(ce.data);
+                channelsHandleMatrix(ce.data);
+                serversHandleMatrix(ce.data);
+                userHandleMatrix(ce.data);
+                break;
+            case 'Mumble':
+                handleMumbleEvent(ce.data);
+                break;
+            case 'System':
+                serversHandleSystem(ce.data);
+                errorsHandleSystem(ce.data);
+                voiceHandleSystem(ce.data);
+                userHandleSystem(ce.data);
+                break;
+        }
+    });
+}

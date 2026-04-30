@@ -21,12 +21,14 @@
         return mxc.replace('mxc://', 'etch-media://');
     }
 
+    const timeFormatter = new Intl.DateTimeFormat(undefined, {
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+    });
+
     function formatTimestamp(timestamp: number): string {
-        return new Intl.DateTimeFormat(undefined, {
-            hour: 'numeric',
-            minute: '2-digit',
-            hour12: true,
-        }).format(new Date(timestamp));
+        return timeFormatter.format(new Date(timestamp));
     }
 
     function messageBody(body: string, html_body: string | null): string {

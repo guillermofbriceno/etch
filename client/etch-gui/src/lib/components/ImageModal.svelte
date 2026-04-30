@@ -1,15 +1,11 @@
 <script lang="ts">
-    import { closeOverlay, showToast } from '$lib/stores';
+    import { showToast } from '$lib/stores';
     import { fetchBlob } from '$lib/media';
     import { writeFile } from '@tauri-apps/plugin-fs';
     import { tempDir, join } from '@tauri-apps/api/path';
     import { openPath } from '@tauri-apps/plugin-opener';
 
     export let url: string;
-
-    function handleKeydown(event: KeyboardEvent) {
-        if (event.key === 'Escape') closeOverlay();
-    }
 
     async function openOriginal() {
         try {
@@ -29,8 +25,6 @@
         }
     }
 </script>
-
-<svelte:window on:keydown={handleKeydown} />
 
 <div class="image-modal">
     <div class="media-container" on:click|stopPropagation>

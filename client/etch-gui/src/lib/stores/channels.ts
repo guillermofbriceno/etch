@@ -2,12 +2,11 @@ import { writable, derived, get } from 'svelte/store';
 import type { RoomInfo } from '$lib/types';
 import type { MatrixEvent } from '$lib/ipc';
 import { sendCoreCommand } from '$lib/ipc';
-import { activeChannelId, setActiveChannel, setOnUnreadMessage } from '$lib/stores/messages';
+import { activeChannelId, onUnreadMessage } from './activeChannel';
+import { setActiveChannel } from './messages';
 import { currentUser } from './user';
 
 export const channels = writable<RoomInfo[]>([]);
-
-export { activeChannelId, setActiveChannel };
 
 // --- Hidden DM state (Etch-level, not Matrix) ---
 
@@ -55,20 +54,22 @@ export function unhideDm(roomId: string): void {
 
 // --- Unread / active channel bookkeeping ---
 
-// Clear unread count when switching to a channel
-activeChannelId.subscribe(id => {
-    if (!id) return;
-    channels.update(list =>
-        list.map(c => c.id === id ? { ...c, unread_count: 0 } : c)
-    );
-});
+export function initChannels(): void {
+    // Clear unread count when switching to a channel
+    activeChannelId.subscribe(id => {
+        if (!id) return;
+        channels.update(list =>
+            list.map(c => c.id === id ? { ...c, unread_count: 0 } : c)
+        );
+    });
 
-// Increment unread count when a message arrives in a non-active channel
-setOnUnreadMessage((roomId: string) => {
-    channels.update(list =>
-        list.map(c => c.id === roomId ? { ...c, unread_count: c.unread_count + 1 } : c)
-    );
-});
+    // Increment unread count when a message arrives in a non-active channel
+    onUnreadMessage((roomId: string) => {
+        channels.update(list =>
+            list.map(c => c.id === roomId ? { ...c, unread_count: c.unread_count + 1 } : c)
+        );
+    });
+}
 
 export const activeChannel = derived(
     [channels, activeChannelId],

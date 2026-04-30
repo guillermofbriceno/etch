@@ -6,9 +6,10 @@
 // The mxcToUrl() helper in MessageGroup passes through non-mxc:// URLs.
 
 import { channels } from '$lib/stores/channels';
-import { activeChannelId, handleMatrixEvent as handleMessagesEvent } from '$lib/stores/messages';
+import { activeChannelId } from '$lib/stores/activeChannel';
+import { handleMatrixEvent as handleMessagesEvent } from '$lib/stores/messages';
 import { currentUser } from '$lib/stores/user';
-import { voiceChannels, voiceUsers, mumbleStatus } from '$lib/stores/voiceState';
+import { voiceChannels, voiceUsers, talkingUsers, mumbleStatus } from '$lib/stores/voiceState';
 import type { RoomInfo, TimelineEntry, ChatMessage, SenderProfile } from '$lib/types';
 import type { VoiceChannel, VoiceUser } from '$lib/stores/voiceState';
 
@@ -249,12 +250,14 @@ const demoVoiceChannels = new Map<number, VoiceChannel>([
 ]);
 
 const demoVoiceUsers = new Map<number, VoiceUser>([
-    [1, { session_id: 1, name: 'nyx',  display_name: 'Nyx',  avatar_url: AVATAR.self, channel_id: 1, muted: false, deafened: false, talking: false, hash: null }],
-    [2, { session_id: 2, name: 'kira', display_name: 'Kira', avatar_url: AVATAR.kira, channel_id: 1, muted: false, deafened: false, talking: true,  hash: null }],
-    [3, { session_id: 3, name: 'wren', display_name: 'Wren', avatar_url: AVATAR.wren, channel_id: 1, muted: true,  deafened: false, talking: false, hash: null }],
-    [4, { session_id: 4, name: 'sol',  display_name: 'Sol',  avatar_url: AVATAR.sol,  channel_id: 2, muted: false, deafened: false, talking: false, hash: null }],
-    [5, { session_id: 5, name: 'juno', display_name: 'Juno', avatar_url: AVATAR.juno, channel_id: 2, muted: false, deafened: true,  talking: false, hash: null }],
+    [1, { session_id: 1, name: 'nyx',  display_name: 'Nyx',  avatar_url: AVATAR.self, channel_id: 1, muted: false, deafened: false, hash: null }],
+    [2, { session_id: 2, name: 'kira', display_name: 'Kira', avatar_url: AVATAR.kira, channel_id: 1, muted: false, deafened: false, hash: null }],
+    [3, { session_id: 3, name: 'wren', display_name: 'Wren', avatar_url: AVATAR.wren, channel_id: 1, muted: true,  deafened: false, hash: null }],
+    [4, { session_id: 4, name: 'sol',  display_name: 'Sol',  avatar_url: AVATAR.sol,  channel_id: 2, muted: false, deafened: false, hash: null }],
+    [5, { session_id: 5, name: 'juno', display_name: 'Juno', avatar_url: AVATAR.juno, channel_id: 2, muted: false, deafened: true,  hash: null }],
 ]);
+
+const demoTalkingUsers = new Set<number>([2]); // Kira is talking
 
 // ---------------------------------------------------------------------------
 // Injection
@@ -290,6 +293,7 @@ export function injectDemoData(): void {
     mumbleStatus.set('connected');
     voiceChannels.set(demoVoiceChannels);
     voiceUsers.set(demoVoiceUsers);
+    talkingUsers.set(demoTalkingUsers);
 
     // Select #general as the starting view
     activeChannelId.set(ROOM.general);

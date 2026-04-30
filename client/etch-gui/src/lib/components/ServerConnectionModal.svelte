@@ -1,6 +1,7 @@
 <script lang="ts">
-    import { closeOverlay, serverBookmarks, selectedBookmarkId, addBookmark, updateBookmark, removeBookmark, connectToServer } from '$lib/stores';
+    import { serverBookmarks, selectedBookmarkId, addBookmark, updateBookmark, removeBookmark, connectToServer } from '$lib/stores';
     import type { ServerBookmark } from '$lib/types';
+    import ModalLayout from './ModalLayout.svelte';
 
     let editLabel = '';
     let editAddress = '';
@@ -85,144 +86,107 @@
         if (!selected) return;
         removeBookmark(selected.id);
     }
-
-    function handleKeydown(event: KeyboardEvent) {
-        if (event.key === 'Escape') closeOverlay();
-    }
 </script>
 
-<svelte:window on:keydown={handleKeydown} />
+<ModalLayout>
+    <svelte:fragment slot="sidebar">
+        <h3 class="group-header">Server Bookmarks</h3>
+        <ul class="bookmark-list">
+            {#each $serverBookmarks as bookmark (bookmark.id)}
+                <li>
+                    <button
+                        class="bookmark-item {$selectedBookmarkId === bookmark.id ? 'active' : ''}"
+                        on:click={() => selectedBookmarkId.set(bookmark.id)}
+                    >
+                        {bookmark.label || 'Untitled'}
+                    </button>
+                </li>
+            {/each}
+        </ul>
+        <button class="add-btn" on:click={addBookmark}>+ Add New</button>
+    </svelte:fragment>
 
-<div class="connect-layout">
-    <div class="connect-sidebar">
-        <div class="sidebar-content">
-            <h3 class="group-header">Server Bookmarks</h3>
-            <ul class="bookmark-list">
-                {#each $serverBookmarks as bookmark (bookmark.id)}
-                    <li>
-                        <button
-                            class="bookmark-item {$selectedBookmarkId === bookmark.id ? 'active' : ''}"
-                            on:click={() => selectedBookmarkId.set(bookmark.id)}
-                        >
-                            {bookmark.label || 'Untitled'}
-                        </button>
-                    </li>
-                {/each}
-            </ul>
-            <button class="add-btn" on:click={addBookmark}>+ Add New</button>
-        </div>
-    </div>
+    {#if selected}
+        <div class="editor-pane">
+            <h2>Edit Server</h2>
 
-    <div class="connect-content">
-        <div class="content-container">
-            {#if selected}
-                <div class="editor-pane">
-                    <h2>Edit Server</h2>
+            <div class="field-group">
+                <label for="srv-label">Label</label>
+                <input id="srv-label" type="text" bind:value={editLabel} placeholder="My Server" />
+            </div>
 
-                    <div class="field-group">
-                        <label for="srv-label">Label</label>
-                        <input id="srv-label" type="text" bind:value={editLabel} placeholder="My Server" />
-                    </div>
+            <div class="field-row">
+                <div class="field-group field-grow">
+                    <label for="srv-address">Address</label>
+                    <input id="srv-address" type="text" bind:value={editAddress} placeholder="matrix.example.com" />
+                </div>
+                <div class="field-group field-port">
+                    <label for="srv-port">Port</label>
+                    <input id="srv-port" type="number" bind:value={editPort} min="1" max="65535" />
+                </div>
+            </div>
 
+            <div class="field-group">
+                <label for="srv-username">Username</label>
+                <input id="srv-username" type="text" bind:value={editUsername} placeholder="@user" />
+            </div>
+
+            <div class="field-group checkbox-group">
+                <label>
+                    <input type="checkbox" bind:checked={editAutoConnect} />
+                    Auto-connect on startup
+                </label>
+            </div>
+
+            <button class="advanced-toggle" on:click={() => showAdvanced = !showAdvanced}>
+                <span class="advanced-arrow" class:open={showAdvanced}>&#9654;</span>
+                Advanced
+            </button>
+
+            {#if showAdvanced}
+                <div class="advanced-section">
                     <div class="field-row">
                         <div class="field-group field-grow">
-                            <label for="srv-address">Address</label>
-                            <input id="srv-address" type="text" bind:value={editAddress} placeholder="matrix.example.com" />
+                            <label for="srv-mumble-host">Mumble Host</label>
+                            <input id="srv-mumble-host" type="text" bind:value={editMumbleHost} placeholder="Same as address" />
                         </div>
                         <div class="field-group field-port">
-                            <label for="srv-port">Port</label>
-                            <input id="srv-port" type="number" bind:value={editPort} min="1" max="65535" />
+                            <label for="srv-mumble-port">Port</label>
+                            <input id="srv-mumble-port" type="text" bind:value={editMumblePort} placeholder="64738" />
                         </div>
                     </div>
 
                     <div class="field-group">
-                        <label for="srv-username">Username</label>
-                        <input id="srv-username" type="text" bind:value={editUsername} placeholder="@user" />
+                        <label for="srv-mumble-username">Mumble Username</label>
+                        <input id="srv-mumble-username" type="text" bind:value={editMumbleUsername} placeholder="Same as username" />
                     </div>
 
-                    <div class="field-group checkbox-group">
-                        <label>
-                            <input type="checkbox" bind:checked={editAutoConnect} />
-                            Auto-connect on startup
-                        </label>
+                    <div class="field-group">
+                        <label for="srv-mumble-password">Mumble Password</label>
+                        <input id="srv-mumble-password" type="password" bind:value={editMumblePassword} placeholder="None" />
                     </div>
-
-                    <button class="advanced-toggle" on:click={() => showAdvanced = !showAdvanced}>
-                        <span class="advanced-arrow" class:open={showAdvanced}>&#9654;</span>
-                        Advanced
-                    </button>
-
-                    {#if showAdvanced}
-                        <div class="advanced-section">
-                            <div class="field-row">
-                                <div class="field-group field-grow">
-                                    <label for="srv-mumble-host">Mumble Host</label>
-                                    <input id="srv-mumble-host" type="text" bind:value={editMumbleHost} placeholder="Same as address" />
-                                </div>
-                                <div class="field-group field-port">
-                                    <label for="srv-mumble-port">Port</label>
-                                    <input id="srv-mumble-port" type="text" bind:value={editMumblePort} placeholder="64738" />
-                                </div>
-                            </div>
-
-                            <div class="field-group">
-                                <label for="srv-mumble-username">Mumble Username</label>
-                                <input id="srv-mumble-username" type="text" bind:value={editMumbleUsername} placeholder="Same as username" />
-                            </div>
-
-                            <div class="field-group">
-                                <label for="srv-mumble-password">Mumble Password</label>
-                                <input id="srv-mumble-password" type="password" bind:value={editMumblePassword} placeholder="None" />
-                            </div>
-                        </div>
-                    {/if}
-
-                    <div class="action-bar">
-                        <button class="action-btn save-btn" on:click={handleSave} disabled={!dirty}>Save</button>
-                        <button class="action-btn connect-btn" on:click={handleConnect}>Connect</button>
-                        <button class="action-btn remove-btn" on:click={handleRemove}>Remove</button>
-                    </div>
-
-                    {#if statusMessage}
-                        <p class="status-message">{statusMessage}</p>
-                    {/if}
-                </div>
-            {:else}
-                <div class="empty-state">
-                    <p>Select a server bookmark or add a new one.</p>
                 </div>
             {/if}
-        </div>
 
-        <div class="close-action">
-            <button class="close-btn" on:click={closeOverlay} aria-label="Close">
-                <svg width="18" height="18" viewBox="0 0 24 24">
-                    <path fill="currentColor" d="M18.4 4L12 10.4L5.6 4L4 5.6L10.4 12L4 18.4L5.6 20L12 13.6L18.4 20L20 18.4L13.6 12L20 5.6L18.4 4Z" />
-                </svg>
-            </button>
-            <span class="esc-hint">ESC</span>
+            <div class="action-bar">
+                <button class="action-btn save-btn" on:click={handleSave} disabled={!dirty}>Save</button>
+                <button class="action-btn connect-btn" on:click={handleConnect}>Connect</button>
+                <button class="action-btn remove-btn" on:click={handleRemove}>Remove</button>
+            </div>
+
+            {#if statusMessage}
+                <p class="status-message">{statusMessage}</p>
+            {/if}
         </div>
-    </div>
-</div>
+    {:else}
+        <div class="empty-state">
+            <p>Select a server bookmark or add a new one.</p>
+        </div>
+    {/if}
+</ModalLayout>
 
 <style>
-    .connect-layout {
-        display: flex;
-        width: 100%;
-        height: 100%;
-        background-color: var(--bg-primary);
-    }
-
-    .connect-sidebar {
-        flex: 1 1 auto;
-        display: flex;
-        justify-content: flex-end;
-        background-color: var(--bg-secondary);
-        padding-top: 60px;
-        padding-right: 20px;
-    }
-
-    .sidebar-content { width: 218px; display: flex; flex-direction: column; }
+    /* ── Sidebar elements ── */
 
     .group-header {
         font-size: 12px;
@@ -278,21 +242,7 @@
 
     .add-btn:hover { background-color: var(--bg-hover); color: #dcddde; border-color: rgba(255, 255, 255, 0.25); }
 
-    .connect-content {
-        flex: 1 1 800px;
-        display: flex;
-        position: relative;
-        background-color: var(--bg-primary);
-        padding-top: 60px;
-        padding-left: 40px;
-        overflow-y: auto;
-    }
-
-    .connect-content::-webkit-scrollbar { width: 6px; }
-    .connect-content::-webkit-scrollbar-track { background: transparent; }
-    .connect-content::-webkit-scrollbar-thumb { background-color: #202225; border-radius: 3px; }
-
-    .content-container { width: 100%; max-width: 740px; padding-bottom: 60px; }
+    /* ── Content ── */
 
     .editor-pane h2 { color: #fff; font-size: 20px; font-weight: 600; margin-top: 0; margin-bottom: 20px; }
 
@@ -417,38 +367,9 @@
 
     .empty-state { color: #72767d; padding-top: 40px; font-size: 16px; }
 
-    .close-action {
-        flex-shrink: 0;
-        margin-left: 20px;
-        margin-right: 20px;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 8px;
-    }
-
-    .close-btn {
-        width: 36px;
-        height: 36px;
-        border-radius: 50%;
-        background-color: transparent;
-        border: 2px solid #72767d;
-        color: #72767d;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        cursor: pointer;
-        transition: background-color 0.15s, color 0.15s, border-color 0.15s;
-    }
-
-    .close-btn:hover { background-color: rgba(255, 255, 255, 0.1); color: #dcddde; border-color: #dcddde; }
-
-    .esc-hint { color: #72767d; font-size: 13px; font-weight: 600; }
-
     .status-message {
         color: #b9bbbe;
         font-size: 14px;
         margin-top: 16px;
     }
-
 </style>

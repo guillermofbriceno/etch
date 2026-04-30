@@ -1,17 +1,14 @@
 <script lang="ts">
     import { toastError } from '$lib/stores';
+    import Icon from './Icon.svelte';
 </script>
 
 {#if $toastError}
     <div class="toast">
-        <svg class="toast-icon" width="16" height="16" viewBox="0 0 24 24">
-            <path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/>
-        </svg>
+        <Icon name="info" size={16} class="toast-icon" />
         <span class="toast-message">{$toastError}</span>
         <button class="toast-dismiss" on:click={() => toastError.set(null)} aria-label="Dismiss">
-            <svg width="14" height="14" viewBox="0 0 24 24">
-                <path fill="currentColor" d="M18.4 4L12 10.4L5.6 4L4 5.6L10.4 12L4 18.4L5.6 20L12 13.6L18.4 20L20 18.4L13.6 12L20 5.6L18.4 4Z"/>
-            </svg>
+            <Icon name="close" size={14} />
         </button>
     </div>
 {/if}
@@ -35,7 +32,7 @@
         animation: slide-in 0.2s ease-out;
     }
 
-    .toast-icon {
+    .toast :global(.toast-icon) {
         color: #ed4245;
         flex-shrink: 0;
     }

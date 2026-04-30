@@ -1,5 +1,6 @@
 <script lang="ts">
     import { toggleReaction, setReply } from '$lib/stores';
+    import Icon from './Icon.svelte';
     import type { ChatMessage } from '$lib/types';
 
     export let message: ChatMessage;
@@ -16,9 +17,7 @@
         >{emoji}</button>
     {/each}
     <button class="action-btn" aria-label="Reply" on:click={() => setReply(message)}>
-        <svg width="16" height="16" viewBox="0 0 24 24">
-            <path fill="currentColor" d="M10 9V5L3 12L10 19V14.9C15 14.9 18.5 16.5 21 20C20 15 17 10 10 9Z"/>
-        </svg>
+        <Icon name="reply" size={16} />
     </button>
 </div>
 
