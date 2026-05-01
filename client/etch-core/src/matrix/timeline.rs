@@ -464,3 +464,49 @@ fn map_diff(
     };
     matrix_event.map(CoreEvent::Matrix)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use matrix_sdk::ruma::OwnedMxcUri;
+
+    fn plain_source(uri: &str) -> MediaSource {
+        MediaSource::Plain(OwnedMxcUri::from(uri.to_owned()))
+    }
+
+    #[test]
+    fn insert_and_get() {
+        let mut cache = BoundedMediaSources::new(4);
+        cache.insert("mxc://a".into(), plain_source("mxc://a"));
+        assert!(cache.get("mxc://a").is_some());
+    }
+
+    #[test]
+    fn duplicate_key_is_noop() {
+        let mut cache = BoundedMediaSources::new(4);
+        cache.insert("key".into(), plain_source("mxc://original"));
+        cache.insert("key".into(), plain_source("mxc://replacement"));
+        assert_eq!(cache.order.len(), 1);
+        assert_eq!(cache.map.len(), 1);
+    }
+
+    #[test]
+    fn evicts_oldest_at_capacity() {
+        let mut cache = BoundedMediaSources::new(2);
+        cache.insert("a".into(), plain_source("mxc://a"));
+        cache.insert("b".into(), plain_source("mxc://b"));
+        cache.insert("c".into(), plain_source("mxc://c"));
+
+        assert!(cache.get("a").is_none(), "oldest entry should be evicted");
+        assert!(cache.get("b").is_some());
+        assert!(cache.get("c").is_some());
+        assert_eq!(cache.map.len(), 2);
+        assert_eq!(cache.order.len(), 2);
+    }
+
+    #[test]
+    fn get_returns_none_for_missing() {
+        let cache = BoundedMediaSources::new(4);
+        assert!(cache.get("nonexistent").is_none());
+    }
+}

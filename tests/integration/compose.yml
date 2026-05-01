@@ -1,0 +1,33 @@
+services:
+  homeserver:
+    image: ghcr.io/continuwuity/continuwuity:latest
+    container_name: etch-test-matrix
+    restart: "no"
+    tmpfs:
+      - /var/lib/conduwuit
+    ports:
+      - "6167:6167"
+    environment:
+      CONTINUWUITY_SERVER_NAME: localhost
+      CONTINUWUITY_DATABASE_PATH: /var/lib/conduwuit
+      CONTINUWUITY_PORT: 6167
+      CONTINUWUITY_ALLOW_REGISTRATION: "true"
+      CONTINUWUITY_REGISTRATION_TOKEN: devtoken
+      CONTINUWUITY_ALLOW_ENCRYPTION: "true"
+      CONTINUWUITY_ALLOW_FEDERATION: "false"
+      CONTINUWUITY_ADDRESS: 0.0.0.0
+
+  mumble-server:
+    image: mumblevoip/mumble-server:latest
+    container_name: etch-test-mumble
+    restart: "no"
+    ports:
+      - "64738:64738/tcp"
+      - "64738:64738/udp"
+    environment:
+      MUMBLE_SUPERUSER_PASSWORD: test_superuser
+      MUMBLE_CONFIG_SERVERPASSWORD: testpass
+      MUMBLE_CONFIG_USERS: 20
+      MUMBLE_CONFIG_USERSPERCHANNEL: 0
+      MUMBLE_CONFIG_WELCOMETEXT: "Etch integration test server"
+      MUMBLE_CONFIG_REGISTERNAME: "etch-test"

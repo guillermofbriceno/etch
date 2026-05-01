@@ -1,4 +1,4 @@
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use std::time::Duration;
 use matrix_sdk::config::SyncSettings;
@@ -12,6 +12,7 @@ use crate::events::{CoreEvent, MatrixEvent, InternalEvent, InternalMatrixEvent};
 use crate::matrix::client::{start_matrix_client, ConnectionResult};
 use crate::matrix::timeline::TimelineManager;
 use crate::models::{RoomInfo, RoomType, VoiceServerConfig};
+use crate::traits::MatrixBackend;
 use crate::matrix;
 
 use std::path::PathBuf;
@@ -36,7 +37,64 @@ impl MatrixService {
         }
     }
 
-    pub async fn connect(
+    async fn find_existing_dm(client: &matrix_sdk::Client, target: &UserId) -> Option<String> {
+        for room in client.joined_rooms() {
+            if !room.is_direct().await.unwrap_or(false) {
+                continue;
+            }
+            let Ok(members) = room.members(matrix_sdk::RoomMemberships::ACTIVE).await else {
+                continue;
+            };
+            if members.iter().any(|m| m.user_id() == target) {
+                return Some(room.room_id().to_string());
+            }
+        }
+        None
+    }
+
+    /// Force a /keys/query for all members of encrypted rooms so the crypto
+    /// store has their device keys. Prevents UTDs when the sender was offline
+    /// while the recipient registered their device.
+    async fn query_member_device_keys(client: &matrix_sdk::Client, rooms: &[RoomInfo]) {
+        let enc = client.encryption();
+        let own_user = client.user_id().map(|u| u.to_owned());
+        for room_info in rooms {
+            if !room_info.is_encrypted { continue; }
+            let Ok(room_id) = matrix_sdk::ruma::RoomId::parse(&room_info.id) else { continue };
+            let Some(room) = client.get_room(&room_id) else { continue };
+            let Ok(members) = room.members(matrix_sdk::RoomMemberships::ACTIVE).await else { continue };
+            for member in &members {
+                if Some(member.user_id()) == own_user.as_deref() { continue; }
+                let _ = enc.request_user_identity(member.user_id()).await;
+            }
+        }
+    }
+
+    pub async fn fetch_media_static(
+        client: Option<&matrix_sdk::Client>,
+        sources: &crate::matrix::timeline::MediaSourceMap,
+        mxc_url: &str,
+    ) -> Result<Vec<u8>, String> {
+        let client = client.ok_or("Not connected")?;
+
+        let source = match sources.read().expect("media source lock").get(mxc_url).cloned() {
+            Some(s) => s,
+            None => {
+                let uri = matrix_sdk::ruma::OwnedMxcUri::from(mxc_url.to_owned());
+                MediaSource::Plain(uri)
+            }
+        };
+
+        let params = MediaRequestParameters { source, format: MediaFormat::File };
+        client.media().get_media_content(&params, true)
+            .await
+            .map(|bytes| bytes.to_vec())
+            .map_err(|e| format!("Failed to fetch media: {e}"))
+    }
+}
+
+impl MatrixBackend for MatrixService {
+    async fn connect(
         &mut self,
         form: ServerConnectionForm,
         internal_tx: mpsc::Sender<InternalEvent>,
@@ -180,7 +238,7 @@ impl MatrixService {
         }
     }
 
-    pub async fn handle_command(&mut self, cmd: MatrixCommand) {
+    async fn handle_command(&mut self, cmd: MatrixCommand) {
         match cmd {
             MatrixCommand::SendMessage(msg) => {
                 log::debug!("[MATRIX] TX -> {}: {}", msg.room_id, msg.text);
@@ -274,20 +332,38 @@ impl MatrixService {
 
                 // Verify the target user exists on the homeserver before creating a room.
                 // This prevents DM attempts with Mumble-only users who have no Matrix account.
-                if client.account().fetch_user_profile_of(&target).await.is_err() {
-                    log::error!("Cannot message {}: user not found on the server", target.localpart());
-                    return;
-                }
+                // Also capture their display name for the DM room info.
+                let display_name = match client.account().fetch_user_profile_of(&target).await {
+                    Ok(profile) => profile
+                        .get("displayname")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| target.localpart().to_string()),
+                    Err(_) => {
+                        log::error!("Cannot message {}: user not found on the server", target.localpart());
+                        return;
+                    }
+                };
 
                 // If a DM room with this user already exists, reuse it
                 if let Some(existing_room_id) = Self::find_existing_dm(&client, &target).await {
                     if let Ok(rid) = matrix_sdk::ruma::RoomId::parse(&existing_room_id) {
                         if let Some(room) = client.get_room(&rid) {
-                            if let Ok(room_info) = matrix::sync::build_room_info(&room).await {
-                                let _ = self.event_tx.send(
-                                    CoreEvent::Matrix(MatrixEvent::DmCreated(room_info))
-                                ).await;
-                            }
+                            let is_encrypted = room.latest_encryption_state().await
+                                .map(|s| s.is_encrypted()).unwrap_or(false);
+                            let unread = room.unread_notification_counts();
+                            let room_info = RoomInfo {
+                                id: existing_room_id,
+                                display_name: display_name.clone(),
+                                etch_room_type: RoomType::Dm,
+                                channel_id: None,
+                                is_default: false,
+                                unread_count: unread.notification_count,
+                                is_encrypted,
+                            };
+                            let _ = self.event_tx.send(
+                                CoreEvent::Matrix(MatrixEvent::DmCreated(room_info))
+                            ).await;
                         }
                     }
                     return;
@@ -306,7 +382,6 @@ impl MatrixService {
                 match client.create_room(request).await {
                     Ok(response) => {
                         let room_id = response.room_id().to_string();
-                        let display_name = target.localpart().to_string();
                         let is_encrypted = match client.get_room(response.room_id()) {
                             Some(room) => room.latest_encryption_state().await
                                 .map(|s| s.is_encrypted()).unwrap_or(false),
@@ -351,64 +426,7 @@ impl MatrixService {
         }
     }
 
-    async fn find_existing_dm(client: &matrix_sdk::Client, target: &UserId) -> Option<String> {
-        for room in client.joined_rooms() {
-            if !room.is_direct().await.unwrap_or(false) {
-                continue;
-            }
-            let Ok(members) = room.members(matrix_sdk::RoomMemberships::ACTIVE).await else {
-                continue;
-            };
-            if members.iter().any(|m| m.user_id() == target) {
-                return Some(room.room_id().to_string());
-            }
-        }
-        None
-    }
-
-    /// Force a /keys/query for all members of encrypted rooms so the crypto
-    /// store has their device keys. Prevents UTDs when the sender was offline
-    /// while the recipient registered their device.
-    async fn query_member_device_keys(client: &matrix_sdk::Client, rooms: &[RoomInfo]) {
-        let enc = client.encryption();
-        let own_user = client.user_id().map(|u| u.to_owned());
-        for room_info in rooms {
-            if !room_info.is_encrypted { continue; }
-            let Ok(room_id) = matrix_sdk::ruma::RoomId::parse(&room_info.id) else { continue };
-            let Some(room) = client.get_room(&room_id) else { continue };
-            let Ok(members) = room.members(matrix_sdk::RoomMemberships::ACTIVE).await else { continue };
-            for member in &members {
-                if Some(member.user_id()) == own_user.as_deref() { continue; }
-                let _ = enc.request_user_identity(member.user_id()).await;
-            }
-        }
-    }
-
-    pub async fn fetch_media_static(
-        client: Option<&matrix_sdk::Client>,
-        sources: &crate::matrix::timeline::MediaSourceMap,
-        mxc_url: &str,
-    ) -> Result<Vec<u8>, String> {
-        let client = client.ok_or("Not connected")?;
-
-        let source = match sources.read().expect("media source lock").get(mxc_url).cloned() {
-            Some(s) => s,
-            None => {
-                let uri = matrix_sdk::ruma::OwnedMxcUri::from(mxc_url.to_owned());
-                MediaSource::Plain(uri)
-            }
-        };
-
-        let params = MediaRequestParameters { source, format: MediaFormat::File };
-        client.media().get_media_content(&params, true)
-            .await
-            .map(|bytes| bytes.to_vec())
-            .map_err(|e| format!("Failed to fetch media: {e}"))
-    }
-
-    /// Look up a user's Matrix profile by their localpart username.
-    /// Returns (display_name, avatar_url).
-    pub async fn resolve_user_profile(&self, username: &str) -> (Option<String>, Option<String>) {
+    async fn resolve_user_profile(&self, username: &str) -> (Option<String>, Option<String>) {
         let Some(client) = &self.client else { return (None, None) };
         let homeserver = client.homeserver();
         let domain = homeserver.host_str().unwrap_or_default();
@@ -425,5 +443,27 @@ impl MatrixService {
                 (None, None)
             }
         }
+    }
+
+    fn spawn_media_fetch(
+        &self,
+        mxc_url: String,
+        respond: oneshot::Sender<Result<Vec<u8>, String>>,
+    ) {
+        let client = self.client.clone();
+        let sources = self.timeline_manager.media_sources.clone();
+        tokio::spawn(async move {
+            let result = MatrixService::fetch_media_static(
+                client.as_ref(), &sources, &mxc_url,
+            ).await;
+            let _ = respond.send(result);
+        });
+    }
+
+    async fn subscribe_to_room(&mut self, room_id: &str) {
+        let Some(client) = &self.client else { return };
+        let Ok(rid) = matrix_sdk::ruma::RoomId::parse(room_id) else { return };
+        let Some(room) = client.get_room(&rid) else { return };
+        self.timeline_manager.subscribe_to_room(&room).await;
     }
 }

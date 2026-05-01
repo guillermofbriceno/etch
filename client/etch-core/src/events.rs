@@ -3,7 +3,7 @@ use crate::models::{ConnectionState, RoomInfo};
 use crate::matrix::timeline::TimelineEntry;
 
 // core -> gui
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(tag = "type", content = "data")]
 pub enum CoreEvent {
     Matrix(MatrixEvent),
@@ -11,7 +11,7 @@ pub enum CoreEvent {
     System(SystemEvent),
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(tag = "type", content = "data")]
 pub enum MatrixEvent {
     TimelineAppend(String, Vec<TimelineEntry>),
@@ -31,7 +31,7 @@ pub enum MatrixEvent {
     ConnectionState(ConnectionState),
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(tag = "type", content = "data")]
 pub enum MumbleEvent {
     LocalSession(u32),
@@ -47,7 +47,7 @@ pub enum MumbleEvent {
     ConnectionState(ConnectionState),
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(tag = "type", content = "data")]
 pub enum SystemEvent {
     ConnectionLost,

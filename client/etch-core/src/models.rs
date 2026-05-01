@@ -29,6 +29,70 @@ impl ConnectionState {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn connection_state_defaults() {
+        let state = ConnectionState::Disconnected;
+        assert_eq!(state.retries(), 0);
+        assert!(!state.is_failed());
+    }
+
+    #[test]
+    fn next_failure_exponential_backoff() {
+        let state = ConnectionState::Disconnected;
+
+        let s1 = state.next_failure("err".into());
+        assert!(matches!(s1, ConnectionState::Failed { retries: 1, retry_in_secs: 2, .. }));
+
+        let s2 = s1.next_failure("err".into());
+        assert!(matches!(s2, ConnectionState::Failed { retries: 2, retry_in_secs: 4, .. }));
+
+        let s3 = s2.next_failure("err".into());
+        assert!(matches!(s3, ConnectionState::Failed { retries: 3, retry_in_secs: 8, .. }));
+
+        let s4 = s3.next_failure("err".into());
+        assert!(matches!(s4, ConnectionState::Failed { retries: 4, retry_in_secs: 16, .. }));
+
+        let s5 = s4.next_failure("err".into());
+        assert!(matches!(s5, ConnectionState::Failed { retries: 5, retry_in_secs: 32, .. }));
+    }
+
+    #[test]
+    fn next_failure_caps_at_60_seconds() {
+        let state = ConnectionState::Disconnected;
+        // 2^6 = 64, should be capped to 60
+        let mut s = state;
+        for _ in 0..6 {
+            s = s.next_failure("err".into());
+        }
+        assert!(matches!(s, ConnectionState::Failed { retries: 6, retry_in_secs: 60, .. }));
+
+        // Further retries stay at 60
+        let s7 = s.next_failure("err".into());
+        assert!(matches!(s7, ConnectionState::Failed { retries: 7, retry_in_secs: 60, .. }));
+    }
+
+    #[test]
+    fn connected_state_resets_retries() {
+        let failed = ConnectionState::Failed {
+            reason: "err".into(),
+            retries: 5,
+            retry_in_secs: 32,
+        };
+        assert_eq!(failed.retries(), 5);
+
+        let connected = ConnectionState::Connected;
+        assert_eq!(connected.retries(), 0);
+
+        // Starting fresh failures from non-failed state begins at retry 1
+        let new_fail = connected.next_failure("new err".into());
+        assert!(matches!(new_fail, ConnectionState::Failed { retries: 1, retry_in_secs: 2, .. }));
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct SenderProfile {
       pub display_name: Option<String>,

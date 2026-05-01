@@ -2,7 +2,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use crate::models::ServerBookmark;
 
-#[derive(Clone, Serialize, Deserialize, Default)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct Settings {
     #[serde(default)]
     pub bookmarks: Vec<ServerBookmark>,
@@ -82,5 +82,121 @@ pub fn unhide_dm(data_dir: &Path, room_id: &str) {
     let mut settings = load(data_dir);
     settings.hidden_dms.retain(|id| id != room_id);
     save(data_dir, &settings);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::ServerBookmark;
+
+    #[test]
+    fn load_returns_default_when_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s = load(tmp.path());
+        assert!(s.bookmarks.is_empty());
+        assert!(!s.mumble_initialized);
+        assert!(s.hidden_dms.is_empty());
+    }
+
+    #[test]
+    fn save_and_load_round_trip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut s = Settings::default();
+        s.transmission_mode = Some("continuous".into());
+        s.vad_threshold = Some(0.5);
+        s.voice_hold = Some(300);
+        s.use_mumble_settings = Some(true);
+
+        save(tmp.path(), &s);
+        let loaded = load(tmp.path());
+
+        assert_eq!(loaded.transmission_mode.as_deref(), Some("continuous"));
+        assert_eq!(loaded.vad_threshold, Some(0.5));
+        assert_eq!(loaded.voice_hold, Some(300));
+        assert_eq!(loaded.use_mumble_settings, Some(true));
+    }
+
+    #[test]
+    fn update_bookmarks_replaces_existing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bm1 = ServerBookmark {
+            id: "1".into(), label: "First".into(), address: "a.com".into(),
+            port: 8448, username: "alice".into(), auto_connect: false,
+            mumble_host: None, mumble_port: None, mumble_username: None, mumble_password: None,
+        };
+        update_bookmarks(tmp.path(), vec![bm1]);
+        assert_eq!(load(tmp.path()).bookmarks.len(), 1);
+
+        let bm2 = ServerBookmark {
+            id: "2".into(), label: "Second".into(), address: "b.com".into(),
+            port: 8448, username: "bob".into(), auto_connect: true,
+            mumble_host: None, mumble_port: None, mumble_username: None, mumble_password: None,
+        };
+        let bm3 = ServerBookmark {
+            id: "3".into(), label: "Third".into(), address: "c.com".into(),
+            port: 8448, username: "carol".into(), auto_connect: false,
+            mumble_host: None, mumble_port: None, mumble_username: None, mumble_password: None,
+        };
+        update_bookmarks(tmp.path(), vec![bm2, bm3]);
+        let loaded = load(tmp.path());
+        assert_eq!(loaded.bookmarks.len(), 2);
+        assert_eq!(loaded.bookmarks[0].label, "Second");
+        assert_eq!(loaded.bookmarks[1].label, "Third");
+    }
+
+    #[test]
+    fn hide_dm_is_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        hide_dm(tmp.path(), "!room:example.com".into());
+        hide_dm(tmp.path(), "!room:example.com".into());
+        let loaded = load(tmp.path());
+        assert_eq!(loaded.hidden_dms.len(), 1);
+    }
+
+    #[test]
+    fn unhide_dm_removes_only_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        hide_dm(tmp.path(), "!room1:example.com".into());
+        hide_dm(tmp.path(), "!room2:example.com".into());
+        unhide_dm(tmp.path(), "!room1:example.com");
+        let loaded = load(tmp.path());
+        assert_eq!(loaded.hidden_dms, vec!["!room2:example.com"]);
+    }
+
+    #[test]
+    fn set_transmission_mode_persists() {
+        let tmp = tempfile::tempdir().unwrap();
+        set_transmission_mode(tmp.path(), "push_to_talk".into());
+        assert_eq!(load(tmp.path()).transmission_mode.as_deref(), Some("push_to_talk"));
+    }
+
+    #[test]
+    fn set_vad_threshold_persists() {
+        let tmp = tempfile::tempdir().unwrap();
+        set_vad_threshold(tmp.path(), 0.75);
+        assert_eq!(load(tmp.path()).vad_threshold, Some(0.75));
+    }
+
+    #[test]
+    fn set_voice_hold_persists() {
+        let tmp = tempfile::tempdir().unwrap();
+        set_voice_hold(tmp.path(), 500);
+        assert_eq!(load(tmp.path()).voice_hold, Some(500));
+    }
+
+    #[test]
+    fn settings_mutations_preserve_other_fields() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Set several fields
+        set_transmission_mode(tmp.path(), "continuous".into());
+        hide_dm(tmp.path(), "!room:example.com".into());
+        set_vad_threshold(tmp.path(), 0.3);
+
+        // Verify all three survive
+        let loaded = load(tmp.path());
+        assert_eq!(loaded.transmission_mode.as_deref(), Some("continuous"));
+        assert_eq!(loaded.hidden_dms.len(), 1);
+        assert_eq!(loaded.vad_threshold, Some(0.3));
+    }
 }
 

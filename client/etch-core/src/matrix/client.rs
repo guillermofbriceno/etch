@@ -87,6 +87,19 @@ pub enum ConnectionResult {
 //     Ok(())
 // }
 
+async fn build_matrix_client(
+    form: &ServerConnectionForm,
+    store_path: impl AsRef<Path>,
+) -> anyhow::Result<Client> {
+    let builder = Client::builder().sqlite_store(store_path, None);
+    match &form.homeserver_url {
+        Some(url) => Ok(builder.homeserver_url(url).build().await?),
+        None => Ok(builder
+            .server_name_or_homeserver_url(format!("{}:{}", form.hostname, form.port))
+            .build().await?),
+    }
+}
+
 pub async fn start_matrix_client(tx: mpsc::Sender<InternalEvent>, event_tx: mpsc::Sender<CoreEvent>, conn_form: ServerConnectionForm, data_dir: &Path) -> anyhow::Result<ConnectionResult> {
     let user_id = UserId::parse(format!("@{}:{}", conn_form.username, conn_form.hostname))?;
 
@@ -94,10 +107,7 @@ pub async fn start_matrix_client(tx: mpsc::Sender<InternalEvent>, event_tx: mpsc
     std::fs::create_dir_all(&server_dir)?;
 
     // TODO: use get_or_create_passphrase() once keyring backend is configured
-    let client = Client::builder()
-        .server_name_or_homeserver_url(format!("{}:{}", conn_form.hostname, conn_form.port))
-        .sqlite_store(server_dir.join("matrix_store"), None)
-        .build().await?;
+    let client = build_matrix_client(&conn_form, server_dir.join("matrix_store")).await?;
 
     let session_path = server_dir.join("session.json");
     let mut need_fresh_login = true;
@@ -116,10 +126,7 @@ pub async fn start_matrix_client(tx: mpsc::Sender<InternalEvent>, event_tx: mpsc
                 let _ = std::fs::remove_dir_all(server_dir.join("matrix_store"));
 
                 // Rebuild client with a clean store
-                let client_fresh = Client::builder()
-                    .server_name_or_homeserver_url(format!("{}:{}", conn_form.hostname, conn_form.port))
-                    .sqlite_store(server_dir.join("matrix_store"), None)
-                    .build().await?;
+                let client_fresh = build_matrix_client(&conn_form, server_dir.join("matrix_store")).await?;
                 return start_fresh_login(client_fresh, user_id, conn_form, &session_path, tx, event_tx).await;
             }
         }

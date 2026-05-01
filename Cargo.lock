@@ -1681,6 +1681,7 @@ dependencies = [
  "simple_logger",
  "snafu",
  "tauri",
+ "tempfile",
  "tokio",
  "win32job",
  "windows-sys 0.61.2",

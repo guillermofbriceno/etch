@@ -15,7 +15,7 @@ pub enum CoreCommand {
     },
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, PartialEq, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum MatrixCommand {
     SendMessage(ChatMessageSend),
@@ -29,7 +29,7 @@ pub enum MatrixCommand {
     EnableEncryption { room_id: String },
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, PartialEq, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum MumbleCommand {
     SwitchChannel(u32),
@@ -68,6 +68,11 @@ pub struct ServerConnectionForm {
     pub mumble_port: Option<u16>,
     pub mumble_username: Option<String>,
     pub mumble_password: Option<String>,
+    /// Explicit homeserver URL (e.g. "http://localhost:6167"). When set,
+    /// bypasses server name discovery and connects directly. The `hostname`
+    /// field is still used for user ID construction (@user:hostname).
+    #[serde(default)]
+    pub homeserver_url: Option<String>,
 }
 
 impl From<&crate::models::ServerBookmark> for ServerConnectionForm {
@@ -81,11 +86,12 @@ impl From<&crate::models::ServerBookmark> for ServerConnectionForm {
             mumble_port: bm.mumble_port,
             mumble_username: bm.mumble_username.clone(),
             mumble_password: bm.mumble_password.clone(),
+            homeserver_url: None,
         }
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, PartialEq, Deserialize)]
 pub struct ChatMessageSend {
     pub room_id: String,
     pub text: String,

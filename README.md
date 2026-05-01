@@ -50,6 +50,26 @@ cd client/etch-gui && cargo tauri dev
 cd client/etch-gui && cargo tauri build
 ```
 
+## Testing
+
+```bash
+# Rust unit tests (no external services needed)
+cargo test -p etch-core
+
+# Rust integration tests (full run: starts containers, provisions, tests, tears down)
+bash tests/integration/run.sh
+
+# Rust integration tests (against already-running containers, for faster iteration)
+cargo test -p etch-core --features integration-tests -- --test-threads=1
+
+# Frontend tests + typecheck
+cd client/etch-gui && pnpm test && pnpm check
+```
+
+The integration test orchestrator (`run.sh`) starts ephemeral Continuwuity and Mumble containers, provisions test users and rooms, runs the test suite, and tears everything down. When iterating on tests, you can leave the containers running and use the `cargo test` command directly to skip the setup/teardown cycle.
+
+Note: the integration tests share a set of test users against the same server instance. Tests that mutate server state (setting display names, creating DMs) leave behind artifacts that can cause spurious failures on subsequent runs against the same containers. If you hit unexpected assertion failures while iterating, restart the containers with a fresh provision.
+
 ## Custom Mumble Client
 
 Etch requires a patched build of the Mumble client. The stock plugin API doesn't expose enough for our use case. There's no way for a plugin to receive events for user mute/deafen state changes, channel updates, or other session-level details that Etch needs to keep its UI in sync. Our fork adds additional callbacks to the plugin API so that `etch-bridge` can relay all of this back to etch-core.

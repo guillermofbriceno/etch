@@ -3,7 +3,7 @@ use tokio::time::{Duration, Instant, Sleep};
 use crate::events::{CoreEvent, InternalEvent, MatrixEvent};
 use crate::commands::ServerConnectionForm;
 use crate::models::{ConnectionState, VoiceServerConfig};
-use crate::matrix;
+use crate::traits::MatrixBackend;
 
 use std::pin::Pin;
 
@@ -26,10 +26,10 @@ pub(crate) async fn schedule_retry(
     let _ = event_tx.send(wrap(new)).await;
 }
 
-pub(crate) async fn attempt_matrix_connect(
+pub(crate) async fn attempt_matrix_connect<M: MatrixBackend>(
     state: &mut ConnectionState,
     timer: &mut Pin<Box<Sleep>>,
-    service: &mut matrix::MatrixService,
+    service: &mut M,
     form: ServerConnectionForm,
     internal_tx: mpsc::Sender<InternalEvent>,
     event_tx: &mpsc::Sender<CoreEvent>,
