@@ -2,11 +2,23 @@
     import { getCurrentWindow } from '@tauri-apps/api/window';
 
     const appWindow = getCurrentWindow();
+
+    function dragWindow(node: HTMLElement) {
+        function onMouseDown() { appWindow.startDragging(); }
+        node.addEventListener('mousedown', onMouseDown);
+        return { destroy() { node.removeEventListener('mousedown', onMouseDown); } };
+    }
+
+    function stopDrag(node: HTMLElement) {
+        function onMouseDown(e: MouseEvent) { e.stopPropagation(); }
+        node.addEventListener('mousedown', onMouseDown);
+        return { destroy() { node.removeEventListener('mousedown', onMouseDown); } };
+    }
 </script>
 
-<div class="title-bar" on:mousedown={() => appWindow.startDragging()}>
+<div class="title-bar" use:dragWindow>
     <span class="title">Etch</span>
-    <div class="controls" on:mousedown|stopPropagation>
+    <div class="controls" use:stopDrag>
         <button class="control-btn" on:click={() => appWindow.minimize()} aria-label="Minimize">
             <svg width="12" height="12" viewBox="0 0 12 12">
                 <rect fill="currentColor" x="1" y="5.5" width="10" height="1" />

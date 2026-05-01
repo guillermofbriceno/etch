@@ -35,7 +35,7 @@
     <button class="context-item" on:click={handleMessage}>Message</button>
     <div class="context-divider"></div>
     <div class="context-volume">
-        <label class="context-volume-label">
+        <label class="context-volume-label" for="context-user-volume">
             Volume
             <span class="context-volume-value">
                 {#if ($userVolumes[user.session_id] ?? 0) === 0}
@@ -48,6 +48,7 @@
             </span>
         </label>
         <input
+            id="context-user-volume"
             type="range"
             min="-30"
             max="30"

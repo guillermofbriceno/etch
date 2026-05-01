@@ -75,9 +75,11 @@
 <svelte:window on:click={handleClickOutside} />
 
 <div class="channel-browser">
-    <header class="browser-header" on:click|stopPropagation={toggleDropdown}>
-        <h1>Etch Server</h1>
-        <span class="dropdown-indicator" class:open={dropdownOpen}>▾</span>
+    <header class="browser-header">
+        <button class="header-toggle" on:click|stopPropagation={toggleDropdown} aria-expanded={dropdownOpen}>
+            <h1>Etch Server</h1>
+            <span class="dropdown-indicator" class:open={dropdownOpen}>▾</span>
+        </button>
 
         {#if dropdownOpen}
             <div class="dropdown-menu">
@@ -100,14 +102,15 @@
             <h2 class="category-name">Voice Channels</h2>
             <ul class="channel-list">
                 {#each voiceChannels as channel (channel.id)}
-                    <li
-                        class="channel-item {$activeChannelId === channel.id ? 'active' : ''}"
-                        on:click={() => handleVoiceClick(channel)}
-                        on:dblclick={() => handleVoiceDblClick(channel)}
-                    >
-                        <span class="unread-slot" class:visible={channel.unread_count > 0}><span class="unread-dot"></span></span>
-                        <Icon name="volume" size={16} class="channel-icon" />
-                        <span class="channel-name">{channel.display_name}</span>
+                    <li class="channel-item {$activeChannelId === channel.id ? 'active' : ''}">
+                        <button class="channel-btn"
+                            on:click={() => handleVoiceClick(channel)}
+                            on:dblclick={() => handleVoiceDblClick(channel)}
+                        >
+                            <span class="unread-slot" class:visible={channel.unread_count > 0}><span class="unread-dot"></span></span>
+                            <Icon name="volume" size={16} class="channel-icon" />
+                            <span class="channel-name">{channel.display_name}</span>
+                        </button>
                     </li>
                     {#if channel.channel_id != null && $usersByChannel.has(channel.channel_id)}
                         <VoiceUserList
@@ -123,13 +126,12 @@
             <h2 class="category-name">Text Channels</h2>
             <ul class="channel-list">
                 {#each textChannels as channel (channel.id)}
-                    <li
-                        class="channel-item {$activeChannelId === channel.id ? 'active' : ''}"
-                        on:click={() => setActiveChannel(channel.id)}
-                    >
-                        <span class="unread-slot" class:visible={channel.unread_count > 0}><span class="unread-dot"></span></span>
-                        <Icon name="hash" size={16} class="channel-icon" />
-                        <span class="channel-name">{channel.display_name}</span>
+                    <li class="channel-item {$activeChannelId === channel.id ? 'active' : ''}">
+                        <button class="channel-btn" on:click={() => setActiveChannel(channel.id)}>
+                            <span class="unread-slot" class:visible={channel.unread_count > 0}><span class="unread-dot"></span></span>
+                            <Icon name="hash" size={16} class="channel-icon" />
+                            <span class="channel-name">{channel.display_name}</span>
+                        </button>
                     </li>
                 {/each}
             </ul>
@@ -140,13 +142,12 @@
                 <h2 class="category-name">Direct Messages</h2>
                 <ul class="channel-list">
                     {#each dmChannels as channel (channel.id)}
-                        <li
-                            class="channel-item dm-item {$activeChannelId === channel.id ? 'active' : ''}"
-                            on:click={() => setActiveChannel(channel.id)}
-                        >
-                            <span class="unread-slot" class:visible={channel.unread_count > 0}><span class="unread-dot"></span></span>
-                            <Icon name="smiley" size={16} class="channel-icon" />
-                            <span class="channel-name">{channel.display_name}</span>
+                        <li class="channel-item dm-item {$activeChannelId === channel.id ? 'active' : ''}">
+                            <button class="channel-btn" on:click={() => setActiveChannel(channel.id)}>
+                                <span class="unread-slot" class:visible={channel.unread_count > 0}><span class="unread-dot"></span></span>
+                                <Icon name="smiley" size={16} class="channel-icon" />
+                                <span class="channel-name">{channel.display_name}</span>
+                            </button>
                             <button
                                 class="hide-dm-btn"
                                 on:click|stopPropagation={() => hideDm(channel.id)}
@@ -177,20 +178,31 @@
 
     .browser-header {
         height: 48px;
-        padding: 0 16px;
         display: flex;
         align-items: center;
         box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
         flex-shrink: 0;
         z-index: 2;
-        cursor: pointer;
         position: relative;
+    }
+
+    .header-toggle {
+        display: flex;
+        align-items: center;
+        width: 100%;
+        height: 100%;
+        padding: 0 16px;
+        background: none;
+        border: none;
+        color: inherit;
+        font: inherit;
+        cursor: pointer;
         transition: background-color 0.15s;
     }
 
-    .browser-header:hover { background-color: rgba(255, 255, 255, 0.04); }
+    .header-toggle:hover { background-color: rgba(255, 255, 255, 0.04); }
 
-    .browser-header h1 {
+    .header-toggle h1 {
         font-size: 16px;
         font-weight: 700;
         color: #fff;
@@ -263,14 +275,27 @@
     .channel-item {
         display: flex;
         align-items: center;
-        padding: 6px 8px 6px 0;
         margin-bottom: 2px;
         border-radius: 4px;
         cursor: pointer;
         transition: background-color 0.1s ease, color 0.1s ease;
     }
 
-    .channel-item :global(.channel-icon) { margin-right: 6px; flex-shrink: 0; }
+    .channel-btn {
+        display: flex;
+        align-items: center;
+        flex: 1;
+        min-width: 0;
+        padding: 6px 8px 6px 0;
+        background: none;
+        border: none;
+        color: inherit;
+        font: inherit;
+        cursor: inherit;
+        text-align: left;
+    }
+
+    .channel-btn :global(.channel-icon) { margin-right: 6px; flex-shrink: 0; }
 
     .unread-slot {
         width: 12px;

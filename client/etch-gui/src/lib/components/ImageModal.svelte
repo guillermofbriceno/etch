@@ -27,7 +27,7 @@
 </script>
 
 <div class="image-modal">
-    <div class="media-container" on:click|stopPropagation>
+    <div class="media-container">
         <img src={url} alt="Expanded media" class="expanded-image" />
 
         <div class="media-actions">
@@ -44,9 +44,13 @@
         justify-content: center;
         width: 100%;
         height: 100%;
+        pointer-events: none;
+        position: relative;
+        z-index: 1;
     }
 
     .media-container {
+        pointer-events: auto;
         display: flex;
         flex-direction: column;
         align-items: flex-start;

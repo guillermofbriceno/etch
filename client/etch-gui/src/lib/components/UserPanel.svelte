@@ -4,7 +4,7 @@
 </script>
 
 <div class="user-panel">
-    <div class="user-identity" on:click={() => openSettings('account')}>
+    <button class="user-identity" on:click={() => openSettings('account')}>
         <div class="avatar-wrapper">
             {#if $currentUser.avatarUrl}
                 <img src={$currentUser.avatarUrl.startsWith('mxc://') ? $currentUser.avatarUrl.replace('mxc://', 'etch-media://') : $currentUser.avatarUrl} alt="avatar" class="avatar" />
@@ -18,7 +18,7 @@
             <div class="username">{$currentUser.displayName ?? $currentUser.username}</div>
             <div class="discriminator">{$currentUser.matrixId}</div>
         </div>
-    </div>
+    </button>
 
     <div class="controls">
         <button
@@ -70,6 +70,11 @@
         cursor: pointer;
         min-width: 0;
         transition: background-color 0.15s ease;
+        background: none;
+        border: none;
+        color: inherit;
+        font: inherit;
+        text-align: left;
     }
 
     .user-identity:hover { background-color: rgba(79, 84, 92, 0.32); }

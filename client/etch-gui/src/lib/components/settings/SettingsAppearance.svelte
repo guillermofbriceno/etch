@@ -7,8 +7,8 @@
     <h2>Appearance</h2>
 
     <div class="setting-group">
-        <label>Theme</label>
-        <select class="hardware-select" value={$theme} on:change={(e) => theme.set(e.currentTarget.value as Theme)}>
+        <label for="theme-select">Theme</label>
+        <select id="theme-select" class="hardware-select" value={$theme} on:change={(e) => theme.set(e.currentTarget.value as Theme)}>
             <option value="default">Default</option>
             <option value="oled">OLED Optimized</option>
         </select>

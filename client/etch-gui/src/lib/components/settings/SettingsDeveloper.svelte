@@ -10,15 +10,15 @@
     <h2>Developer Options</h2>
 
     <div class="setting-group">
-        <label>Error Reporting</label>
+        <span class="setting-label">Error Reporting</span>
         <p class="setting-desc">Send a mock error through the logging pipeline to verify it appears in the Error Log.</p>
         <button class="action-btn" on:click={() => sendCoreCommand({ type: 'System', data: { type: 'TestError' } })}>Send Test Error</button>
     </div>
 
     <div class="setting-group">
-        <label>Log Level</label>
+        <label for="log-level-select">Log Level</label>
         <p class="setting-desc">Change the runtime log verbosity. Set ETCH_LOG env var to change the startup default.</p>
-        <select class="hardware-select" on:change={(e) => sendCoreCommand({ type: 'System', data: { type: 'SetLogLevel', data: e.currentTarget.value } })}>
+        <select id="log-level-select" class="hardware-select" on:change={(e) => sendCoreCommand({ type: 'System', data: { type: 'SetLogLevel', data: e.currentTarget.value } })}>
             <option value="error">Error</option>
             <option value="warn">Warn</option>
             <option value="info">Info</option>
@@ -28,10 +28,10 @@
     </div>
 
     <div class="setting-group">
-        <label>Create DM</label>
+        <label for="dm-target-input">Create DM</label>
         <p class="setting-desc">Start a direct message with a user by their full Matrix ID.</p>
         <div class="dm-row">
-            <input type="text" bind:value={dmTargetUserId} placeholder="@alice:etchtest.emptytincan.com" class="dm-input" />
+            <input id="dm-target-input" type="text" bind:value={dmTargetUserId} placeholder="@alice:etchtest.emptytincan.com" class="dm-input" />
             <button class="action-btn" on:click={() => {
                 if (dmTargetUserId.trim()) {
                     sendCoreCommand({ type: 'Matrix', data: { type: 'CreateDirectMessage', data: { target_user_id: dmTargetUserId.trim() } } });
@@ -41,7 +41,7 @@
     </div>
 
     <div class="setting-group">
-        <label>Display</label>
+        <span class="setting-label">Display</span>
         <label class="checkbox-row">
             <input type="checkbox" bind:checked={$showRoomIds} />
             <span class="checkbox-label">Show Room IDs in chat header</span>
@@ -49,13 +49,13 @@
     </div>
 
     <div class="setting-group">
-        <label>Demo Mode</label>
+        <span class="setting-label">Demo Mode</span>
         <p class="setting-desc">Populate the UI with fake channels, messages, and voice users for screenshots and mockups.</p>
         <button class="action-btn" on:click={() => { injectDemoData(); closeOverlay(); }}>Activate Demo Mode</button>
     </div>
 
     <div class="setting-group">
-        <label>Encryption</label>
+        <span class="setting-label">Encryption</span>
         <p class="setting-desc">Enable encryption on the currently active room.</p>
         {#if !$activeChannel?.is_encrypted}
             <p class="setting-desc" style="color: #ed4245;">This is irreversible, do you have permission to do this?</p>

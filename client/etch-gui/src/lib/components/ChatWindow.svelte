@@ -154,11 +154,15 @@
 
     // --- Display helpers ---
 
-    function handleChatClick(event: MouseEvent) {
-        const target = event.target as HTMLElement;
-        if (target.tagName.toLowerCase() === 'img') {
-            openImage((target as HTMLImageElement).src);
+    function clickDelegate(node: HTMLElement) {
+        function handleClick(event: MouseEvent) {
+            const target = event.target as HTMLElement;
+            if (target.tagName.toLowerCase() === 'img') {
+                openImage((target as HTMLImageElement).src);
+            }
         }
+        node.addEventListener('click', handleClick);
+        return { destroy() { node.removeEventListener('click', handleClick); } };
     }
 
     function isMessage(kind: TimelineEntryKind): kind is { Message: ChatMessage } {
@@ -235,7 +239,7 @@
         {/if}
     </header>
 
-    <div class="messages-scroller" bind:this={scrollerElement} on:click={handleChatClick} on:scroll={onScroll}>
+    <div class="messages-scroller" bind:this={scrollerElement} use:clickDelegate on:scroll={onScroll}>
         {#if $activeWindow.loading}
             <div class="loading-indicator">Loading...</div>
         {/if}

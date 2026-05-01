@@ -139,7 +139,8 @@
 
     .settings-form :global(.setting-group) { margin-bottom: 24px; display: flex; flex-direction: column; }
 
-    .settings-form :global(.setting-group label) {
+    .settings-form :global(.setting-group label),
+    .settings-form :global(.setting-group .setting-label) {
         color: #8e9297;
         font-size: 12px;
         font-weight: 600;

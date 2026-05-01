@@ -23,7 +23,7 @@
     </div>
 
     <div class="setting-group">
-        <label>Mumble Client</label>
+        <span class="setting-label">Mumble Client</span>
         <p class="setting-desc">Restart the voice backend or open the Mumble GUI for direct access to audio settings, certificates, and diagnostics. Both will restart the voice connection.</p>
         <div class="action-row">
             <button class="action-btn" on:click={restartMumble}>Restart Mumble</button>

@@ -42,8 +42,9 @@
 <svelte:window on:keydown={handleKeydown} />
 
 {#if $passwordRequested && $connectingBookmark}
-    <div class="password-backdrop" on:click={handleCancel}>
-        <div class="password-dialog" on:click|stopPropagation>
+    <div class="password-backdrop">
+        <button class="backdrop-close" on:click={handleCancel} aria-label="Close dialog"></button>
+        <div class="password-dialog" role="dialog" aria-modal="true">
             <h3>Password Required</h3>
             <p class="password-prompt">
                 Enter the password for <strong>{$connectingBookmark.username}</strong> on <strong>{$connectingBookmark.address}</strong>
@@ -51,6 +52,7 @@
             {#if error}
                 <p class="error-message">{error}</p>
             {/if}
+            <!-- svelte-ignore a11y_autofocus -->
             <input
                 type="password"
                 bind:value={passwordInput}
@@ -80,7 +82,17 @@
         justify-content: center;
     }
 
+    .backdrop-close {
+        position: absolute;
+        inset: 0;
+        background: none;
+        border: none;
+        cursor: default;
+    }
+
     .password-dialog {
+        position: relative;
+        z-index: 1;
         background-color: var(--bg-tertiary);
         border-radius: 8px;
         padding: 32px;

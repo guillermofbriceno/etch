@@ -52,15 +52,16 @@
     <PasswordDialog />
 
     {#if $activeOverlay !== 'none'}
-        <div class="overlay-backdrop" on:click={closeOverlay}>
+        <div class="overlay-backdrop">
+            <button class="backdrop-close" on:click={closeOverlay} aria-label="Close overlay"></button>
             {#if $activeOverlay === 'settings'}
-                <div class="overlay-content" on:click|stopPropagation>
+                <div class="overlay-content">
                     <SettingsModal />
                 </div>
             {:else if $activeOverlay === 'image' && $overlayImageUrl}
                 <ImageModal url={$overlayImageUrl} />
             {:else if $activeOverlay === 'connect'}
-                <div class="overlay-content" on:click|stopPropagation>
+                <div class="overlay-content">
                     <ServerConnectionModal />
                 </div>
             {/if}
@@ -157,12 +158,26 @@
         box-sizing: border-box;
     }
 
+    .backdrop-close {
+        position: absolute;
+        inset: 0;
+        background: none;
+        border: none;
+        cursor: default;
+    }
+
     .overlay-content {
+        position: relative;
+        z-index: 1;
         width: 100%;
         height: 100%;
         display: flex;
         align-items: center;
         justify-content: center;
+        pointer-events: none;
+    }
+
+    .overlay-content > :global(*) {
         pointer-events: auto;
     }
 </style>

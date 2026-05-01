@@ -24,11 +24,9 @@
 
 <div class="media-attachment">
     {#if mimetype.startsWith('image/')}
-        <img
-            {src}
-            alt={body}
-            on:click={() => openImage(src)}
-        />
+        <button class="image-btn" on:click={() => openImage(src)}>
+            <img {src} alt={body} />
+        </button>
     {:else}
         <button class="file-download" on:click={downloadFile}>
             <Icon name="file" size={16} class="file-icon" />
@@ -40,11 +38,18 @@
 
 <style>
     .media-attachment { margin-top: 4px; }
+    .image-btn {
+        display: inline-block;
+        background: none;
+        border: none;
+        padding: 0;
+        cursor: pointer;
+        line-height: 0;
+    }
     .media-attachment img {
         max-width: 400px;
         max-height: 300px;
         border-radius: 4px;
-        cursor: pointer;
     }
     .file-download {
         display: inline-flex;

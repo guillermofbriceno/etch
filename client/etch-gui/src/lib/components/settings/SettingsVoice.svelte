@@ -21,7 +21,7 @@
     </div>
 
     <div class="setting-group" class:disabled={$useMumbleSettings}>
-        <label>Input Profile</label>
+        <span class="setting-label">Input Profile</span>
         <div class="radio-group">
             <label class="radio-option">
                 <input type="radio" name="input-profile" value="voice_activation" checked={$transmissionMode === 'voice_activation'} on:change={() => onInputProfileChange('voice_activation')} />
