@@ -12,7 +12,7 @@ permissions:
 env:
   MUMBLE_RELEASE_URL: https://github.com/guillermofbriceno/mumble/releases/download/etch-mumble-patch/mumble-windows-x86_64-portable.zip
   MUMBLE_ARTIFACT: mumble-windows-x86_64-portable.zip
-  MUMBLE_SHA256: cbcb269e2bde3e953d211828d912030ec8e8824090a265aa27a986ef30230ead
+  MUMBLE_SHA256: cd1ac0350e6dbeabc5dee84a0ef95ea89fbd24204d5e5dd11e1ed3d404e23e28
 
 jobs:
   build-windows:
