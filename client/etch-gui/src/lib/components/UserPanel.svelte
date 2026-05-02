@@ -33,9 +33,11 @@
             {/if}
         </button>
 
-        <button class="control-btn" on:click={() => openSettings()} title="Settings" aria-label="User Settings">
-            <Icon name="settings" size={18} />
-        </button>
+        {#if !$sidebarContentCollapsed}
+            <button class="control-btn" on:click={() => openSettings()} title="Settings" aria-label="User Settings">
+                <Icon name="settings" size={18} />
+            </button>
+        {/if}
     </div>
 
     <button class="user-identity" class:content-hidden={$sidebarContentCollapsed} on:click={() => openSettings('account')}>
@@ -138,16 +140,15 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        flex-shrink: 0;
-        width: 70px;
+        margin-left: 2px;
     }
 
     .control-btn {
         display: flex;
         align-items: center;
         justify-content: center;
-        width: 22px;
-        height: 36px;
+        width: 24px;
+        height: 38px;
         background: transparent;
         border: none;
         border-radius: 4px;

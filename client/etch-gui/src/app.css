@@ -15,6 +15,7 @@
     --bg-active: rgba(255, 255, 255, 0.08);
     --bg-panel: rgba(255, 255, 255, 0.04);
     --border-panel: transparent;
+    --bg-inset: #2f3136;
     --accent: #7289da;
     --accent-hover: #8ea1e1;
 }
@@ -28,6 +29,7 @@
     --border-input: rgba(255, 255, 255, 0.06);
     --bg-hover: rgba(255, 255, 255, 0.04);
     --bg-active: rgba(255, 255, 255, 0.06);
+    --bg-inset: #1a1a1e;
     --bg-panel: #000000;
     --border-panel: 2px solid rgba(255, 255, 255, 0.08);
 }

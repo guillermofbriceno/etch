@@ -175,7 +175,7 @@
                                         class="dm-avatar"
                                     />
                                 {:else}
-                                    <AvatarFallback initial={getInitial(channel.display_name)} size={18} />
+                                    <AvatarFallback initial={getInitial(channel.display_name)} size={20} />
                                 {/if}
                                 {#if !$sidebarContentCollapsed}
                                     <span class="channel-name">{channel.display_name}</span>
@@ -251,7 +251,7 @@
         justify-content: center;
         width: 28px;
         height: 48px;
-        margin-left: 8px;
+        margin-left: 12px;
         flex-shrink: 0;
         background: none;
         border: none;
@@ -405,7 +405,7 @@
     .collapsed .scroller::-webkit-scrollbar { display: none; }
     .collapsed .category + .category { border-top: 1px solid rgba(255, 255, 255, 0.06); }
     .collapsed .channel-btn { justify-content: center; padding: 6px 0; }
-    .collapsed .unread-slot { position: absolute; left: 8px; top: 50%; transform: translateY(-50%); margin-left: 0; width: auto; }
+    .collapsed .unread-slot { position: absolute; left: 2px; top: 50%; transform: translateY(-50%); margin-left: 0; width: auto; }
     .collapsed .channel-btn :global(.channel-icon) { margin-right: 4px; }
     .collapsed .dm-avatar { margin-right: 0; }
 
@@ -426,8 +426,8 @@
     .dm-item:hover .hide-dm-btn { display: flex; }
 
     .dm-avatar {
-        width: 18px;
-        height: 18px;
+        width: 20px;
+        height: 20px;
         border-radius: 50%;
         margin-right: 6px;
         flex-shrink: 0;

@@ -11,7 +11,7 @@
     import ErrorToast from '$lib/components/ErrorToast.svelte';
 
     import { onMount } from 'svelte';
-    import { activeOverlay, overlayImageUrl, closeOverlay, loadSettings, initTheme, initStores, sidebarCollapsed, sidebarPeeking, setPeeking, startPeekClose, cancelPeekClose } from '$lib/stores';
+    import { activeOverlay, overlayImageUrl, closeOverlay, loadSettings, initTheme, initLayout, initStores, sidebarCollapsed, sidebarPeeking, setPeeking, startPeekClose, cancelPeekClose } from '$lib/stores';
 
     function handleKeydown(event: KeyboardEvent) {
         if (event.key === 'Escape' && $activeOverlay !== 'none') closeOverlay();
@@ -30,6 +30,7 @@
         initStores();
         loadSettings();
         initTheme();
+        initLayout();
     });
 </script>
 
@@ -103,7 +104,7 @@
     }
 
     .app-container.collapsed {
-        grid-template-columns: 80px 1fr;
+        grid-template-columns: 76px 1fr;
     }
 
     .sidebar {
@@ -127,6 +128,7 @@
         border-radius: 10px;
         margin-bottom: 10px;
         margin-left: 10px;
+        margin-right: 10px;
         margin-top: 10px;
         background-color: var(--bg-panel);
         border: var(--border-panel);
@@ -139,6 +141,7 @@
         border-radius: 10px;
         margin-bottom: 10px;
         margin-left: 10px;
+        margin-right: 10px;
         background-color: var(--bg-panel);
         border: var(--border-panel);
     }

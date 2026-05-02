@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { theme } from '$lib/stores';
+    import { theme, compactChat } from '$lib/stores';
     import type { Theme } from '$lib/stores';
 </script>
 
@@ -12,5 +12,13 @@
             <option value="default">Default</option>
             <option value="oled">OLED Optimized</option>
         </select>
+    </div>
+
+    <div class="setting-group">
+        <span class="section-header">Chat Display</span>
+        <label class="checkbox-option">
+            <input type="checkbox" bind:checked={$compactChat} />
+            Compact Chat
+        </label>
     </div>
 </div>

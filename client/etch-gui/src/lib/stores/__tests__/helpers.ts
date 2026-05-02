@@ -11,6 +11,7 @@ import { transmissionMode, vadThreshold, voiceHold, useMumbleSettings } from '..
 import { activeOverlay, overlayImageUrl, settingsTab, showRoomIds } from '../overlay';
 import { replyingTo } from '../compose';
 import { serverBookmarks, selectedBookmarkId, connectingBookmark, passwordRequested, matrixConnecting, mediaBaseUrl } from '../servers';
+import { compactChat } from '../layout';
 
 /**
  * Reset all stores to their initial values.
@@ -62,4 +63,7 @@ export function resetStores(): void {
     passwordRequested.set(false);
     matrixConnecting.set(false);
     mediaBaseUrl.set(null);
+
+    // Layout
+    compactChat.set(false);
 }

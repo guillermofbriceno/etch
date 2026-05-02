@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { currentUser } from '$lib/stores';
+    import { currentUser, compactChat } from '$lib/stores';
     import { toggleReaction } from '$lib/stores';
     import type { ChatMessage, SenderProfile } from '$lib/types';
     import DOMPurify from 'dompurify';
@@ -136,17 +136,17 @@
     }
 </script>
 
-<div class="message-block" class:continuation class:mentioned={mentionsSelf(msg.body, msg.html_body)}>
+<div class="message-block" class:continuation class:compact={$compactChat} class:mentioned={mentionsSelf(msg.body, msg.html_body)}>
     {#if !continuation}
-        <div class="avatar">
+        <div class={$compactChat ? 'compact-avatar' : 'avatar'}>
             {#if sender?.avatar_url}
                 <img src={resolveMediaUrl(sender.avatar_url)} alt="avatar" />
             {:else}
-                <AvatarFallback initial={getInitial(msg.sender)} size={40} fontSize={16} />
+                <AvatarFallback initial={getInitial(msg.sender)} size={$compactChat ? 20 : 40} fontSize={$compactChat ? 10 : 16} />
             {/if}
         </div>
     {:else}
-        <div class="avatar-gutter"></div>
+        <div class={$compactChat ? 'compact-gutter' : 'avatar-gutter'}></div>
     {/if}
 
     <div class="message-content">
@@ -220,6 +220,7 @@
     .message-block.mentioned {
         background-color: color-mix(in srgb, var(--accent) 8%, transparent);
         border-left: 3px solid var(--accent);
+        padding-left: 13px;
     }
     .message-block.mentioned:hover { background-color: color-mix(in srgb, var(--accent) 12%, transparent); }
     .avatar-gutter { width: 40px; margin-right: 16px; flex-shrink: 0; }
@@ -277,7 +278,7 @@
         overflow: hidden;
         margin-right: 16px;
         flex-shrink: 0;
-        background-color: #2f3136;
+        background-color: var(--bg-inset);
     }
 
     .avatar img { width: 100%; height: 100%; object-fit: cover; }
@@ -302,13 +303,13 @@
     .body :global(em) { font-style: italic; }
     .body :global(code) {
         font-family: 'Consolas', monospace;
-        background-color: #2f3136;
+        background-color: var(--bg-inset);
         padding: 2px 4px;
         border-radius: 3px;
         font-size: 14px;
     }
     .body :global(pre) {
-        background-color: #2f3136;
+        background-color: var(--bg-inset);
         padding: 8px;
         border-radius: 4px;
         border: 1px solid #202225;
@@ -371,4 +372,36 @@
         color: var(--accent-hover);
         text-decoration: underline;
     }
+
+    /* --- Compact mode --- */
+    .compact { padding: 0px 16px; margin-top: 1px; }
+    .compact.continuation { margin-top: 0; padding-top: 0px; padding-bottom: 0px; }
+
+    .compact-avatar {
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        overflow: hidden;
+        margin-right: 6px;
+        margin-top: 1px;
+        flex-shrink: 0;
+        background-color: var(--bg-inset);
+    }
+
+    .compact-avatar img { width: 100%; height: 100%; object-fit: cover; }
+    .compact-gutter { width: 20px; margin-right: 6px; flex-shrink: 0; }
+
+    .compact .message-meta { display: inline; margin-bottom: 0; }
+    .compact .sender { font-size: 13px; margin-right: 4px; display: inline; }
+    .compact .timestamp { font-size: 11px; margin-right: 6px; display: inline; }
+
+    .compact .body-wrapper { display: inline; }
+    .compact .body { font-size: 13px; line-height: 1.4; display: inline; }
+    .compact .body :global(p:first-child) { display: inline; }
+    .compact .body :global(code) { font-size: 12px; }
+
+    .compact .reaction-badges { margin-top: 2px; }
+    .compact .reaction-badge { font-size: 12px; }
+    .compact .reaction-emoji { font-size: 14px; }
+    .compact .reaction-count { font-size: 11px; }
 </style>
