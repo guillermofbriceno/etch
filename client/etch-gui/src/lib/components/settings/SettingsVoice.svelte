@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { sfxVolume, transmissionMode, setTransmissionMode, vadThreshold, setVadThreshold, voiceHold, setVoiceHold, useMumbleSettings, setUseMumbleSettings } from '$lib/stores';
+    import { sfxVolume, transmissionMode, setTransmissionMode, vadThreshold, setVadThreshold, voiceHold, setVoiceHold, useMumbleSettings, setUseMumbleSettings, deafenSuppressesNotifs, setDeafenSuppressesNotifs } from '$lib/stores';
     import type { TransmissionMode } from '$lib/stores';
 
     function onInputProfileChange(mode: TransmissionMode) {
@@ -71,5 +71,13 @@
             <input type="range" id="sfx-volume" min="0" max="100" bind:value={$sfxVolume} class="range-input" />
             <span class="volume-readout">{$sfxVolume}%</span>
         </div>
+    </div>
+
+    <div class="setting-group">
+        <label class="checkbox-option">
+            <input type="checkbox" checked={$deafenSuppressesNotifs} on:change={(e) => setDeafenSuppressesNotifs(e.currentTarget.checked)} />
+            <span class="checkbox-label">Deafen suppresses new message notifications</span>
+        </label>
+        <p class="setting-desc">When unchecked, new message sounds play even while deafened.</p>
     </div>
 </div>

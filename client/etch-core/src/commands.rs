@@ -54,6 +54,7 @@ pub enum SystemCommand {
     RestartMumble(String),
     SetLogLevel(String),
     TestError,
+    SetDeafenSuppressesNotifs(bool),
     HideDm { room_id: String },
     UnhideDm { room_id: String },
 }

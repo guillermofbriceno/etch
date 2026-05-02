@@ -144,6 +144,9 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
             SystemCommand::TestError => {
                 log::error!("Test error triggered from Developer Options");
             }
+            SystemCommand::SetDeafenSuppressesNotifs(value) => {
+                settings::set_deafen_suppresses_notifs(&self.data_dir, value);
+            }
             SystemCommand::HideDm { room_id } => {
                 settings::hide_dm(&self.data_dir, room_id);
             }

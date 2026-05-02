@@ -18,6 +18,8 @@ pub struct Settings {
     pub use_mumble_settings: Option<bool>,
     #[serde(default)]
     pub hidden_dms: Vec<String>,
+    #[serde(default)]
+    pub deafen_suppresses_notifs: Option<bool>,
 }
 
 pub fn load(data_dir: &Path) -> Settings {
@@ -67,6 +69,12 @@ pub fn set_voice_hold(data_dir: &Path, value: i64) {
 pub fn set_use_mumble_settings(data_dir: &Path, value: bool) {
     let mut settings = load(data_dir);
     settings.use_mumble_settings = Some(value);
+    save(data_dir, &settings);
+}
+
+pub fn set_deafen_suppresses_notifs(data_dir: &Path, value: bool) {
+    let mut settings = load(data_dir);
+    settings.deafen_suppresses_notifs = Some(value);
     save(data_dir, &settings);
 }
 
@@ -182,6 +190,20 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         set_voice_hold(tmp.path(), 500);
         assert_eq!(load(tmp.path()).voice_hold, Some(500));
+    }
+
+    #[test]
+    fn set_deafen_suppresses_notifs_persists() {
+        let tmp = tempfile::tempdir().unwrap();
+        set_deafen_suppresses_notifs(tmp.path(), false);
+        assert_eq!(load(tmp.path()).deafen_suppresses_notifs, Some(false));
+    }
+
+    #[test]
+    fn deafen_suppresses_notifs_defaults_to_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s = load(tmp.path());
+        assert_eq!(s.deafen_suppresses_notifs, None);
     }
 
     #[test]

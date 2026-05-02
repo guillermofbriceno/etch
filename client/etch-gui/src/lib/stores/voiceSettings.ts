@@ -7,6 +7,7 @@ export const transmissionMode = writable<TransmissionMode>('voice_activation');
 export const vadThreshold = writable<number>(60);
 export const voiceHold = writable<number>(250);
 export const useMumbleSettings = writable<boolean>(false);
+export const deafenSuppressesNotifs = writable<boolean>(true);
 
 export function setTransmissionMode(mode: TransmissionMode): void {
     transmissionMode.set(mode);
@@ -37,5 +38,13 @@ export function setUseMumbleSettings(value: boolean): void {
     sendCoreCommand({
         type: 'Mumble',
         data: { type: 'SetUseMumbleSettings', data: value }
+    });
+}
+
+export function setDeafenSuppressesNotifs(value: boolean): void {
+    deafenSuppressesNotifs.set(value);
+    sendCoreCommand({
+        type: 'System',
+        data: { type: 'SetDeafenSuppressesNotifs', data: value }
     });
 }

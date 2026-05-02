@@ -1,5 +1,6 @@
 import { writable, get } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
+import { deafenSuppressesNotifs } from './voiceSettings';
 
 export type SfxName =
     | 'mute'
@@ -22,6 +23,6 @@ export function setSfxDeafened(d: boolean): void {
 }
 
 export function playSfx(name: SfxName): void {
-    if (deafened) return;
+    if (deafened && (name !== 'new_notif' || get(deafenSuppressesNotifs))) return;
     invoke('play_sfx', { name, volume: get(sfxVolume) / 100 });
 }

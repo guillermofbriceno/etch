@@ -18,7 +18,7 @@ export type { ErrorEntry } from './errors';
 export { userVolumes, setUserVolume } from './userVolumes';
 export { sfxVolume, playSfx, setSfxDeafened } from './sfx';
 export type { SfxName } from './sfx';
-export { transmissionMode, setTransmissionMode, vadThreshold, setVadThreshold, voiceHold, setVoiceHold, useMumbleSettings, setUseMumbleSettings } from './voiceSettings';
+export { transmissionMode, setTransmissionMode, vadThreshold, setVadThreshold, voiceHold, setVoiceHold, useMumbleSettings, setUseMumbleSettings, deafenSuppressesNotifs, setDeafenSuppressesNotifs } from './voiceSettings';
 export type { TransmissionMode } from './voiceSettings';
 export { theme, initTheme } from './theme';
 export { compactChat, initLayout } from './layout';

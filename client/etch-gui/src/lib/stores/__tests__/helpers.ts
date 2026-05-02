@@ -7,7 +7,7 @@ import { isMuted, isDeafened } from '../audio';
 import { currentUser } from '../user';
 import { errorLog, toastError } from '../errors';
 import { userVolumes } from '../userVolumes';
-import { transmissionMode, vadThreshold, voiceHold, useMumbleSettings } from '../voiceSettings';
+import { transmissionMode, vadThreshold, voiceHold, useMumbleSettings, deafenSuppressesNotifs } from '../voiceSettings';
 import { activeOverlay, overlayImageUrl, settingsTab, showRoomIds } from '../overlay';
 import { replyingTo } from '../compose';
 import { serverBookmarks, selectedBookmarkId, connectingBookmark, passwordRequested, matrixConnecting, mediaBaseUrl } from '../servers';
@@ -46,6 +46,7 @@ export function resetStores(): void {
     vadThreshold.set(60);
     voiceHold.set(250);
     useMumbleSettings.set(false);
+    deafenSuppressesNotifs.set(true);
 
     // Overlay
     activeOverlay.set('none');

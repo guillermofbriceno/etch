@@ -6,7 +6,7 @@ import {
     serverBookmarks, selectedBookmarkId, connectingBookmark,
     handleSystemEvent, handleMatrixEvent, passwordRequested, matrixConnecting, mediaBaseUrl,
 } from '../servers';
-import { transmissionMode, vadThreshold, voiceHold, useMumbleSettings } from '../voiceSettings';
+import { transmissionMode, vadThreshold, voiceHold, useMumbleSettings, deafenSuppressesNotifs } from '../voiceSettings';
 import { activeOverlay } from '../overlay';
 import { resetStores } from './helpers';
 
@@ -336,6 +336,36 @@ describe('handleSystemEvent (SettingsLoaded)', () => {
         expect(get(vadThreshold)).toBe(60);
         expect(get(voiceHold)).toBe(250);
         expect(get(useMumbleSettings)).toBe(false);
+    });
+
+    it('hydrates deafenSuppressesNotifs when provided', () => {
+        handleSystemEvent({
+            type: 'SettingsLoaded',
+            data: {
+                bookmarks: [],
+                transmission_mode: null, vad_threshold: null,
+                voice_hold: null, use_mumble_settings: null,
+                deafen_suppresses_notifs: false,
+                hidden_dms: [],
+            },
+        } as any);
+
+        expect(get(deafenSuppressesNotifs)).toBe(false);
+    });
+
+    it('defaults deafenSuppressesNotifs to true when null', () => {
+        handleSystemEvent({
+            type: 'SettingsLoaded',
+            data: {
+                bookmarks: [],
+                transmission_mode: null, vad_threshold: null,
+                voice_hold: null, use_mumble_settings: null,
+                deafen_suppresses_notifs: null,
+                hidden_dms: [],
+            },
+        } as any);
+
+        expect(get(deafenSuppressesNotifs)).toBe(true);
     });
 
     it('sets connectingBookmark for an auto-connect bookmark', () => {

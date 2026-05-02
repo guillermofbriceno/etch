@@ -255,6 +255,7 @@ describe('System event routing', () => {
                         vad_threshold: null,
                         voice_hold: null,
                         use_mumble_settings: null,
+                        deafen_suppresses_notifs: null,
                         hidden_dms: [],
                     },
                 },

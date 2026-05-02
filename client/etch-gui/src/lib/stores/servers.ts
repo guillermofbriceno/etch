@@ -4,7 +4,7 @@ import type { MatrixEvent, SystemEvent } from '$lib/ipc';
 import { sendCoreCommand } from '$lib/ipc';
 import { closeOverlay } from './overlay';
 import { initHiddenDms } from './channels';
-import { transmissionMode, vadThreshold, voiceHold, useMumbleSettings } from './voiceSettings';
+import { transmissionMode, vadThreshold, voiceHold, useMumbleSettings, deafenSuppressesNotifs } from './voiceSettings';
 import type { TransmissionMode } from './voiceSettings';
 
 export const serverBookmarks = writable<ServerBookmark[]>([]);
@@ -111,6 +111,7 @@ export function handleSystemEvent(se: SystemEvent): void {
         if (se.data.vad_threshold != null) vadThreshold.set(Math.round(se.data.vad_threshold * 100));
         if (se.data.voice_hold != null) voiceHold.set(se.data.voice_hold);
         useMumbleSettings.set(se.data.use_mumble_settings ?? false);
+        deafenSuppressesNotifs.set(se.data.deafen_suppresses_notifs ?? true);
         initHiddenDms(se.data.hidden_dms ?? []);
         // Mirror the backend's auto-connect: set the active bookmark so mediaBaseUrl resolves
         const autoConnect = se.data.bookmarks.find(b => b.auto_connect);
