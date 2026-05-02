@@ -1,4 +1,5 @@
 import DOMPurify from 'dompurify';
+import { resolveMediaUrl } from './media';
 
 const BASE_TAGS = [
     'b', 'strong', 'i', 'em', 'u', 'del', 's', 'strike',
@@ -35,7 +36,7 @@ export function initSanitizer(): void {
             for (const attr of ['src', 'href']) {
                 const val = node.getAttribute(attr);
                 if (val?.startsWith('mxc://')) {
-                    node.setAttribute(attr, val.replace('mxc://', 'etch-media://'));
+                    node.setAttribute(attr, resolveMediaUrl(val)!);
                 }
             }
         }

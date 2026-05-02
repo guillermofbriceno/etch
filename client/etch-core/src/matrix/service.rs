@@ -333,12 +333,12 @@ impl MatrixBackend for MatrixService {
                 // Verify the target user exists on the homeserver before creating a room.
                 // This prevents DM attempts with Mumble-only users who have no Matrix account.
                 // Also capture their display name for the DM room info.
-                let display_name = match client.account().fetch_user_profile_of(&target).await {
-                    Ok(profile) => profile
-                        .get("displayname")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| target.localpart().to_string()),
+                let (display_name, avatar_url) = match client.account().fetch_user_profile_of(&target).await {
+                    Ok(profile) => (
+                        profile.get("displayname").and_then(|v| v.as_str()).map(|s| s.to_string())
+                            .unwrap_or_else(|| target.localpart().to_string()),
+                        profile.get("avatar_url").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                    ),
                     Err(_) => {
                         log::error!("Cannot message {}: user not found on the server", target.localpart());
                         return;
@@ -360,6 +360,7 @@ impl MatrixBackend for MatrixService {
                                 is_default: false,
                                 unread_count: unread.notification_count,
                                 is_encrypted,
+                                avatar_url: avatar_url.clone(),
                             };
                             let _ = self.event_tx.send(
                                 CoreEvent::Matrix(MatrixEvent::DmCreated(room_info))
@@ -395,6 +396,7 @@ impl MatrixBackend for MatrixService {
                             is_default: false,
                             unread_count: 0,
                             is_encrypted,
+                            avatar_url,
                         };
                         let _ = self.event_tx.send(
                             CoreEvent::Matrix(MatrixEvent::DmCreated(room_info))

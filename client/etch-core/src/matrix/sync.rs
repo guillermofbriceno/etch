@@ -11,6 +11,23 @@ use crate::models::{RoomInfo, RoomType, VoiceServerConfig};
 pub async fn build_room_info(room: &Room) -> anyhow::Result<RoomInfo> {
     let config = get_room_config(room).await?;
     let unread = room.unread_notification_counts();
+
+    let avatar_url = match room.avatar_url() {
+        Some(url) => Some(url.to_string()),
+        None if matches!(config.room_type, RoomType::Dm) => {
+            // DM rooms don't have a room-level avatar; use the other member's profile avatar.
+            room.members(matrix_sdk::RoomMemberships::ACTIVE).await
+                .ok()
+                .and_then(|members| {
+                    let own_id = room.own_user_id();
+                    members.into_iter()
+                        .find(|m| m.user_id() != own_id)
+                        .and_then(|m| m.avatar_url().map(|u| u.to_string()))
+                })
+        }
+        None => None,
+    };
+
     Ok(RoomInfo {
         id: room.room_id().to_string(),
         display_name: room.display_name().await?.to_string(),
@@ -19,6 +36,7 @@ pub async fn build_room_info(room: &Room) -> anyhow::Result<RoomInfo> {
         is_default: config.is_default,
         unread_count: unread.notification_count,
         is_encrypted: room.latest_encryption_state().await.map(|s| s.is_encrypted()).unwrap_or(false),
+        avatar_url,
     })
 }
 

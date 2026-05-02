@@ -30,6 +30,7 @@ function makeRoom(id: string, name: string, type: 'Voice' | 'Text' | 'Dm' = 'Tex
         is_default: false,
         unread_count: 0,
         is_encrypted: false,
+        avatar_url: null,
     };
 }
 

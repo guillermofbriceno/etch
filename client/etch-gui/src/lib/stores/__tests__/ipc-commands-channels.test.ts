@@ -18,7 +18,7 @@ beforeEach(() => {
 });
 
 function makeRoom(id: string, name: string, type: 'Voice' | 'Text' | 'Dm' = 'Text'): RoomInfo {
-    return { id, display_name: name, etch_room_type: type, channel_id: null, is_default: false, unread_count: 0, is_encrypted: false };
+    return { id, display_name: name, etch_room_type: type, channel_id: null, is_default: false, unread_count: 0, is_encrypted: false, avatar_url: null };
 }
 
 describe('channels IPC commands', () => {

@@ -138,6 +138,7 @@ pub struct RoomInfo {
     pub is_default: bool,
     pub unread_count: u64,
     pub is_encrypted: bool,
+    pub avatar_url: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]

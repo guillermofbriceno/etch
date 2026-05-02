@@ -2,6 +2,8 @@
     import { currentUser } from '$lib/stores';
     import { sendCoreCommand } from '$lib/ipc';
     import Icon from '../Icon.svelte';
+    import AvatarFallback from '../AvatarFallback.svelte';
+    import { resolveMediaUrl, getInitial } from '$lib/media';
     import { open } from '@tauri-apps/plugin-dialog';
 
     let displayNameInput = $currentUser.displayName ?? $currentUser.username;
@@ -55,9 +57,9 @@
     <div class="profile-row">
         <button class="avatar-edit-wrapper" on:click={pickAvatar}>
             {#if $currentUser.avatarUrl}
-                <img src={$currentUser.avatarUrl.startsWith('mxc://') ? $currentUser.avatarUrl.replace('mxc://', 'etch-media://') : $currentUser.avatarUrl} alt="avatar" class="profile-avatar" />
+                <img src={resolveMediaUrl($currentUser.avatarUrl)} alt="avatar" class="profile-avatar" />
             {:else}
-                <div class="profile-avatar profile-avatar-fallback">{($currentUser.displayName ?? $currentUser.username ?? '?').charAt(0).toUpperCase()}</div>
+                <AvatarFallback initial={getInitial($currentUser.displayName ?? $currentUser.username)} size={72} fontSize={28} />
             {/if}
             <div class="avatar-edit-overlay">
                 <Icon name="edit" size={16} />
@@ -113,15 +115,6 @@
         object-fit: cover;
     }
 
-    .profile-avatar-fallback {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        background-color: #5865f2;
-        color: #fff;
-        font-weight: 600;
-        font-size: 28px;
-    }
 
     .avatar-edit-overlay {
         position: absolute;

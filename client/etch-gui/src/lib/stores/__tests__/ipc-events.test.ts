@@ -71,7 +71,7 @@ describe('Matrix event routing', () => {
     it('routes ChannelList to channels store', async () => {
         const { channels } = await import('../channels');
         const rooms = [
-            { id: 't1', display_name: 'General', etch_room_type: 'Text' as const, channel_id: null, is_default: false, unread_count: 0, is_encrypted: false },
+            { id: 't1', display_name: 'General', etch_room_type: 'Text' as const, channel_id: null, is_default: false, unread_count: 0, is_encrypted: false, avatar_url: null },
         ];
 
         routeCoreEvent({

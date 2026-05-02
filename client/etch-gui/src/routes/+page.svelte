@@ -11,10 +11,19 @@
     import ErrorToast from '$lib/components/ErrorToast.svelte';
 
     import { onMount } from 'svelte';
-    import { activeOverlay, overlayImageUrl, closeOverlay, loadSettings, initTheme, initStores } from '$lib/stores';
+    import { activeOverlay, overlayImageUrl, closeOverlay, loadSettings, initTheme, initStores, sidebarCollapsed, sidebarPeeking, setPeeking, startPeekClose, cancelPeekClose } from '$lib/stores';
 
     function handleKeydown(event: KeyboardEvent) {
         if (event.key === 'Escape' && $activeOverlay !== 'none') closeOverlay();
+    }
+
+    function handleSidebarEnter() {
+        cancelPeekClose();
+        if ($sidebarCollapsed && !$sidebarPeeking) setPeeking(true);
+    }
+
+    function handleSidebarLeave() {
+        startPeekClose();
     }
 
     onMount(() => {
@@ -28,8 +37,13 @@
 
 <div class="app-shell">
     <TitleBar />
-    <div class="app-container">
-    <aside class="sidebar">
+    <div class="app-container" class:collapsed={$sidebarCollapsed}>
+    <aside
+        class="sidebar"
+        class:peeking={$sidebarPeeking}
+        on:mouseenter={handleSidebarEnter}
+        on:mouseleave={handleSidebarLeave}
+    >
         <div class="channel-browser-wrapper">
             <ChannelBrowser />
         </div>
@@ -83,8 +97,13 @@
     .app-container {
         display: grid;
         grid-template-columns: 240px 1fr;
+        transition: grid-template-columns 100ms ease;
         flex: 1;
         min-height: 0;
+    }
+
+    .app-container.collapsed {
+        grid-template-columns: 80px 1fr;
     }
 
     .sidebar {
@@ -93,6 +112,13 @@
         background-color: rgba(255, 255, 255, 0.0);
         min-height: 0;
         overflow: hidden;
+    }
+
+    .sidebar.peeking {
+        width: 240px;
+        z-index: 10;
+        background: var(--bg-base);
+        box-shadow: 4px 0 12px rgba(0, 0, 0, 0.4);
     }
 
     .channel-browser-wrapper {
@@ -109,7 +135,7 @@
 
     .user-panel-wrapper {
         flex-shrink: 0;
-        height: 52px;
+        height: 56px;
         border-radius: 10px;
         margin-bottom: 10px;
         margin-left: 10px;

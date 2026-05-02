@@ -8,7 +8,9 @@
     import { markdownToHtml } from '$lib/markdown';
     import { HTML_BODY_SANITIZE } from '$lib/sanitize';
     import { replaceInTextNodes } from '$lib/dom';
+    import { resolveMediaUrl, getInitial } from '$lib/media';
     import MediaRenderer from './MediaRenderer.svelte';
+    import AvatarFallback from './AvatarFallback.svelte';
     import EmojiPicker from './EmojiPicker.svelte';
 
     export let msg: ChatMessage;
@@ -19,12 +21,6 @@
     let bodyEl: HTMLElement;
     let needsCollapse = false;
     let collapsed = true;
-
-    function mxcToUrl(mxc: string): string {
-        if (!mxc) return '';
-        if (!mxc.startsWith('mxc://')) return mxc;
-        return mxc.replace('mxc://', 'etch-media://');
-    }
 
     const timeFormatter = new Intl.DateTimeFormat(undefined, {
         hour: 'numeric',
@@ -144,9 +140,9 @@
     {#if !continuation}
         <div class="avatar">
             {#if sender?.avatar_url}
-                <img src={mxcToUrl(sender.avatar_url)} alt="avatar" />
+                <img src={resolveMediaUrl(sender.avatar_url)} alt="avatar" />
             {:else}
-                <div class="avatar-fallback">{msg.sender.charAt(1).toUpperCase()}</div>
+                <AvatarFallback initial={getInitial(msg.sender)} size={40} fontSize={16} />
             {/if}
         </div>
     {:else}
@@ -182,11 +178,14 @@
         {/if}
 
         {#if msg.media}
-            <MediaRenderer
-                src={mxcToUrl(msg.media.mxc_url)}
-                mimetype={msg.media.mimetype}
-                body={msg.body}
-            />
+            {@const mediaSrc = resolveMediaUrl(msg.media.mxc_url)}
+            {#if mediaSrc}
+                <MediaRenderer
+                    src={mediaSrc}
+                    mimetype={msg.media.mimetype}
+                    body={msg.body}
+                />
+            {/if}
         {/if}
 
         {#if hasReactions(msg.reactions)}
@@ -282,18 +281,6 @@
     }
 
     .avatar img { width: 100%; height: 100%; object-fit: cover; }
-    .avatar-fallback {
-        width: 100%;
-        height: 100%;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        background-color: #5865f2;
-        color: #fff;
-        font-weight: 600;
-        font-size: 16px;
-    }
-
     .message-content { flex-grow: 1; min-width: 0; }
 
     .message-meta { margin-bottom: 4px; line-height: 1.2; }

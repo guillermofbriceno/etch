@@ -217,6 +217,7 @@ fn register_event_handlers(client: &Client, tx: mpsc::Sender<InternalEvent>, eve
                 is_default: false,
                 unread_count: 0,
                 is_encrypted: room.latest_encryption_state().await.map(|s| s.is_encrypted()).unwrap_or(false),
+                avatar_url: room.avatar_url().map(|u| u.to_string()),
             };
             let _ = event_tx.send(
                 CoreEvent::Matrix(MatrixEvent::DmCreated(room_info))

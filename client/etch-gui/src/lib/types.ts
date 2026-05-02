@@ -84,4 +84,5 @@ export type RoomInfo = {
     is_default: boolean;
     unread_count: number;
     is_encrypted: boolean;
+    avatar_url: string | null;
 };
