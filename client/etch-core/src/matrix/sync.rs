@@ -48,9 +48,9 @@ pub async fn fetch_rooms(client: &Client) -> anyhow::Result<Vec<RoomInfo>> {
     Ok(rooms_model)
 }
 
-pub async fn sync_loop(client: Client) -> anyhow::Result<()> {
-    log::debug!("Entering matrix sync loop");
-    client.sync(SyncSettings::default()).await?;
+pub async fn sync_loop(client: Client, poll_timeout: std::time::Duration) -> anyhow::Result<()> {
+    log::debug!("Entering matrix sync loop (poll_timeout={:?})", poll_timeout);
+    client.sync(SyncSettings::default().timeout(poll_timeout)).await?;
     log::debug!("Exited matrix sync loop");
     Ok(())
 }

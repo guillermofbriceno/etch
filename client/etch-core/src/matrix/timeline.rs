@@ -148,10 +148,14 @@ impl TimelineManager {
             while let Some(diffs) = stream.next().await {
                 for diff in diffs {
                     if let Some(entry) = map_diff(diff, &rid, &sources) {
-                        let _ = event_tx.send(entry).await;
+                        if event_tx.send(entry).await.is_err() {
+                            log::warn!("[timeline] Event channel closed for room {}, stopping diff task", rid);
+                            return;
+                        }
                     }
                 }
             }
+            log::warn!("[timeline] Diff stream ended for room {}", rid);
         });
     }
 
@@ -177,6 +181,22 @@ impl TimelineManager {
                 false
             }
         }
+    }
+
+    /// Send a message through the timeline's send queue, producing an
+    /// immediate local echo in the diff stream. Returns true if the
+    /// timeline was found and the send was queued.
+    pub async fn send_message(
+        &self,
+        room_id: &str,
+        content: matrix_sdk::ruma::events::AnyMessageLikeEventContent,
+    ) -> bool {
+        let Ok(room_id) = OwnedRoomId::try_from(room_id) else { return false };
+        let Some(timeline) = self.timelines.get(&room_id) else { return false };
+        if let Err(e) = timeline.send(content).await {
+            log::error!("Failed to send message via timeline: {:?}", e);
+        }
+        true
     }
 
     pub async fn toggle_reaction(&self, room_id: &str, event_id: &str, key: &str) {
@@ -239,10 +259,14 @@ impl TimelineManager {
             while let Some(diffs) = stream.next().await {
                 for diff in diffs {
                     if let Some(entry) = map_diff(diff, &rid, &sources) {
-                        let _ = tx.send(entry).await;
+                        if tx.send(entry).await.is_err() {
+                            log::warn!("[timeline] Event channel closed for room {}, stopping diff task", rid);
+                            return;
+                        }
                     }
                 }
             }
+            log::warn!("[timeline] Diff stream ended for room {}", rid);
         });
     }
 

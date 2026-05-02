@@ -68,6 +68,8 @@ jobs:
 
       - name: Run unit tests
         run: cargo test -p etch-core
+        env:
+          RUST_BACKTRACE: 1
 
   changes:
     name: Detect changes
@@ -122,3 +124,5 @@ jobs:
 
       - name: Run integration tests
         run: bash tests/integration/run.sh
+        env:
+          RUST_BACKTRACE: 1
