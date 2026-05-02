@@ -191,7 +191,7 @@ impl MatrixBackend for MatrixService {
                         let sync_client = client.clone();
                         let itx = internal_tx.clone();
                         self.sync_handle = Some(tokio::spawn(async move {
-                            let reason = match matrix::sync_loop(sync_client).await {
+                            let reason = match matrix::sync_loop(sync_client, Duration::from_secs(30)).await {
                                 Ok(()) => "Sync ended".to_string(),
                                 Err(e) => format!("Sync error: {}", e),
                             };
@@ -242,8 +242,24 @@ impl MatrixBackend for MatrixService {
         match cmd {
             MatrixCommand::SendMessage(msg) => {
                 log::debug!("[MATRIX] TX -> {}: {}", msg.room_id, msg.text);
-                if let Some(client) = self.client.clone() {
-                    matrix::send_message(msg.text, msg.html_body, msg.room_id, msg.attachment_path, &client).await;
+                if msg.attachment_path.is_some() {
+                    // Attachments still go through Room::send_attachment
+                    if let Some(client) = self.client.clone() {
+                        matrix::send_message(msg.text, msg.html_body, msg.room_id, msg.attachment_path, &client).await;
+                    }
+                } else {
+                    // Text messages go through Timeline::send for immediate local echo
+                    use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
+                    let content: matrix_sdk::ruma::events::AnyMessageLikeEventContent = match &msg.html_body {
+                        Some(html) => RoomMessageEventContent::text_html(&msg.text, html).into(),
+                        None => RoomMessageEventContent::text_plain(&msg.text).into(),
+                    };
+                    if !self.timeline_manager.send_message(&msg.room_id, content).await {
+                        log::warn!("No timeline for room {}, falling back to Room::send", msg.room_id);
+                        if let Some(client) = self.client.clone() {
+                            matrix::send_message(msg.text, msg.html_body, msg.room_id, None, &client).await;
+                        }
+                    }
                 }
             }
             MatrixCommand::ToggleReaction { room_id, event_id, key } => {
@@ -297,15 +313,19 @@ impl MatrixBackend for MatrixService {
                 let Some(client) = self.client.clone() else { return };
                 let Ok(rid) = matrix_sdk::ruma::RoomId::parse(&room_id) else { return };
                 let Ok(eid) = matrix_sdk::ruma::EventId::parse(&event_id) else { return };
-                if let Some(room) = client.get_room(&rid) {
-                    if let Err(e) = room.send_single_receipt(
-                        matrix_sdk::ruma::api::client::receipt::create_receipt::v3::ReceiptType::Read,
-                        matrix_sdk::ruma::events::receipt::ReceiptThread::Unthreaded,
-                        eid,
-                    ).await {
-                        log::error!("Failed to send read receipt: {:?}", e);
+                // Spawn as a background task so slow receipt RPCs don't block
+                // the command loop and delay subsequent commands.
+                tokio::spawn(async move {
+                    if let Some(room) = client.get_room(&rid) {
+                        if let Err(e) = room.send_single_receipt(
+                            matrix_sdk::ruma::api::client::receipt::create_receipt::v3::ReceiptType::Read,
+                            matrix_sdk::ruma::events::receipt::ReceiptThread::Unthreaded,
+                            eid,
+                        ).await {
+                            log::error!("Failed to send read receipt: {:?}", e);
+                        }
                     }
-                }
+                });
             }
             MatrixCommand::EnableEncryption { room_id } => {
                 let Some(client) = self.client.clone() else { return };
