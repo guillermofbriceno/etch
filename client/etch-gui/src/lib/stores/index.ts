@@ -22,7 +22,7 @@ export { transmissionMode, setTransmissionMode, vadThreshold, setVadThreshold, v
 export type { TransmissionMode } from './voiceSettings';
 export { theme, initTheme } from './theme';
 export { compactChat, initLayout } from './layout';
-export { sidebarCollapsed, sidebarPeeking, sidebarVisuallyCollapsed, sidebarContentCollapsed, sidebarTransitioning, toggleSidebar, setPeeking, startPeekClose, cancelPeekClose, destroySidebar } from './sidebar';
+export { sidebarCollapsed, sidebarTransitioning, toggleSidebar, destroySidebar } from './sidebar';
 export type { Theme } from './theme';
 export { updateStatus, updateVersion, updateError, checkForUpdate, restartApp } from './updater';
 export type { UpdateStatus } from './updater';

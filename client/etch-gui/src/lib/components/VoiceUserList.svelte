@@ -7,7 +7,6 @@
     import { resolveMediaUrl, getInitial } from '$lib/media';
 
     export let users: VoiceUser[];
-    export let collapsed = false;
 
     const dispatch = createEventDispatcher<{ usercontextmenu: { user: VoiceUser; event: MouseEvent } }>();
 
@@ -28,44 +27,41 @@
     }
 </script>
 
-{#if collapsed}
-    <li class="voice-avatars">
-        {#each users as user (user.session_id)}
-            {@const src = resolveMediaUrl(user.avatar_url)}
-            <!-- svelte-ignore a11y-no-static-element-interactions -->
-            <span
-                class="avatar-ring"
-                style="border-color: {ringColor(user, $talkingUsers.has(user.session_id))}"
-                title={user.display_name ?? user.name}
-                on:contextmenu={(e) => handleContextMenu(e, user)}
-            >
-                {#if src}
-                    <img src={src} alt="" class="mini-avatar" />
-                {:else}
-                    <AvatarFallback initial={initial(user)} size={18} />
-                {/if}
-            </span>
-        {/each}
-    </li>
-{:else}
+<li class="voice-avatars">
     {#each users as user (user.session_id)}
-        <li class="voice-user" on:contextmenu={(e) => handleContextMenu(e, user)}>
-            <span class="voice-user-name">{user.display_name ?? user.name}</span>
-            <div class="voice-status-icons">
-                {#if user.deafened}
-                    <Icon name="voice_mic_muted" size={14} class="voice-status-icon" />
-                    <Icon name="voice_headphones_muted" size={14} class="voice-status-icon" />
-                {:else if user.muted}
-                    <Icon name="voice_mic_muted" size={14} class="voice-status-icon" />
-                {:else if $talkingUsers.has(user.session_id)}
-                    <Icon name="voice_talking" size={12} class="voice-status-icon" />
-                {:else}
-                    <Icon name="voice_silent" size={12} class="voice-status-icon" />
-                {/if}
-            </div>
-        </li>
+        {@const src = resolveMediaUrl(user.avatar_url)}
+        <!-- svelte-ignore a11y-no-static-element-interactions -->
+        <span
+            class="avatar-ring"
+            style="border-color: {ringColor(user, $talkingUsers.has(user.session_id))}"
+            title={user.display_name ?? user.name}
+            on:contextmenu={(e) => handleContextMenu(e, user)}
+        >
+            {#if src}
+                <img src={src} alt="" class="mini-avatar" />
+            {:else}
+                <AvatarFallback initial={initial(user)} size={18} />
+            {/if}
+        </span>
     {/each}
-{/if}
+</li>
+{#each users as user (user.session_id)}
+    <li class="voice-user" on:contextmenu={(e) => handleContextMenu(e, user)}>
+        <span class="voice-user-name">{user.display_name ?? user.name}</span>
+        <div class="voice-status-icons">
+            {#if user.deafened}
+                <Icon name="voice_mic_muted" size={14} class="voice-status-icon" />
+                <Icon name="voice_headphones_muted" size={14} class="voice-status-icon" />
+            {:else if user.muted}
+                <Icon name="voice_mic_muted" size={14} class="voice-status-icon" />
+            {:else if $talkingUsers.has(user.session_id)}
+                <Icon name="voice_talking" size={12} class="voice-status-icon" />
+            {:else}
+                <Icon name="voice_silent" size={12} class="voice-status-icon" />
+            {/if}
+        </div>
+    </li>
+{/each}
 
 <style>
     .voice-user {
@@ -94,9 +90,9 @@
 
     .voice-status-icons :global(.voice-status-icon) { color: #72767d; }
 
-    /* Collapsed avatar row */
+    /* Hidden by default; shown by container query when narrow */
     .voice-avatars {
-        display: flex;
+        display: none;
         flex-wrap: wrap;
         justify-content: center;
         gap: 3px;
@@ -123,4 +119,8 @@
         object-fit: cover;
     }
 
+    @container sidebar (max-width: 149px) {
+        .voice-avatars { display: flex; }
+        .voice-user { display: none; }
+    }
 </style>

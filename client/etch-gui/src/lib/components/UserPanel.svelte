@@ -1,11 +1,11 @@
 <script lang="ts">
-    import { currentUser, isMuted, isDeafened, toggleMute, toggleDeafen, openSettings, mumbleStatus, sidebarContentCollapsed } from '$lib/stores';
+    import { currentUser, isMuted, isDeafened, toggleMute, toggleDeafen, openSettings, mumbleStatus } from '$lib/stores';
     import Icon from './Icon.svelte';
     import AvatarFallback from './AvatarFallback.svelte';
     import { resolveMediaUrl, getInitial } from '$lib/media';
 </script>
 
-<div class="user-panel" class:collapsed={$sidebarContentCollapsed}>
+<div class="user-panel">
     <div class="controls">
         <button
             class="control-btn {$isMuted ? 'danger-state' : ''}"
@@ -33,14 +33,12 @@
             {/if}
         </button>
 
-        {#if !$sidebarContentCollapsed}
-            <button class="control-btn" on:click={() => openSettings()} title="Settings" aria-label="User Settings">
-                <Icon name="settings" size={18} />
-            </button>
-        {/if}
+        <button class="control-btn settings-btn" on:click={() => openSettings()} title="Settings" aria-label="User Settings">
+            <Icon name="settings" size={18} />
+        </button>
     </div>
 
-    <button class="user-identity" class:content-hidden={$sidebarContentCollapsed} on:click={() => openSettings('account')}>
+    <button class="user-identity" on:click={() => openSettings('account')}>
         <div class="user-text">
             <div class="username">{$currentUser.displayName ?? $currentUser.username}</div>
             <div class="discriminator">{$currentUser.matrixId.split(':')[0]}</div>
@@ -81,13 +79,6 @@
         font: inherit;
         text-align: right;
         overflow: hidden;
-    }
-
-    .user-identity.content-hidden {
-        opacity: 0;
-        width: 0;
-        padding: 0;
-        pointer-events: none;
     }
 
     .user-identity:hover { background-color: rgba(79, 84, 92, 0.32); }
@@ -147,8 +138,8 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        width: 24px;
-        height: 38px;
+        width: 28px;
+        height: 42px;
         background: transparent;
         border: none;
         border-radius: 4px;
@@ -163,4 +154,13 @@
     .control-btn.danger-state { color: #ed4245; }
     .control-btn.danger-state:hover { color: #ff6b6b; background-color: rgba(237, 66, 69, 0.15); }
 
+    @container sidebar (max-width: 149px) {
+        .settings-btn { display: none; }
+        .user-identity {
+            opacity: 0;
+            width: 0;
+            padding: 0;
+            pointer-events: none;
+        }
+    }
 </style>

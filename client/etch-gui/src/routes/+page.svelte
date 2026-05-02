@@ -11,19 +11,10 @@
     import ErrorToast from '$lib/components/ErrorToast.svelte';
 
     import { onMount } from 'svelte';
-    import { activeOverlay, overlayImageUrl, closeOverlay, loadSettings, initTheme, initLayout, initStores, sidebarCollapsed, sidebarPeeking, setPeeking, startPeekClose, cancelPeekClose } from '$lib/stores';
+    import { activeOverlay, overlayImageUrl, closeOverlay, loadSettings, initTheme, initLayout, initStores, sidebarCollapsed } from '$lib/stores';
 
     function handleKeydown(event: KeyboardEvent) {
         if (event.key === 'Escape' && $activeOverlay !== 'none') closeOverlay();
-    }
-
-    function handleSidebarEnter() {
-        cancelPeekClose();
-        if ($sidebarCollapsed && !$sidebarPeeking) setPeeking(true);
-    }
-
-    function handleSidebarLeave() {
-        startPeekClose();
     }
 
     onMount(() => {
@@ -39,18 +30,15 @@
 <div class="app-shell">
     <TitleBar />
     <div class="app-container" class:collapsed={$sidebarCollapsed}>
-    <aside
-        class="sidebar"
-        class:peeking={$sidebarPeeking}
-        on:mouseenter={handleSidebarEnter}
-        on:mouseleave={handleSidebarLeave}
-    >
-        <div class="channel-browser-wrapper">
-            <ChannelBrowser />
-        </div>
+    <aside class="sidebar">
+        <div class="sidebar-inner">
+            <div class="channel-browser-wrapper">
+                <ChannelBrowser />
+            </div>
 
-        <div class="user-panel-wrapper">
-            <UserPanel />
+            <div class="user-panel-wrapper">
+                <UserPanel />
+            </div>
         </div>
     </aside>
 
@@ -115,10 +103,39 @@
         overflow: hidden;
     }
 
-    .sidebar.peeking {
-        width: 240px;
-        z-index: 10;
+    .app-container.collapsed .sidebar {
+        overflow: visible;
+        position: relative;
+    }
+
+    .sidebar-inner {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        margin: 10px 0 10px 10px;
+        min-height: 0;
+        flex: 1;
+        container-type: inline-size;
+        container-name: sidebar;
+    }
+
+    .app-container.collapsed .sidebar-inner {
+        position: absolute;
+        top: 0;
+        left: 0;
+        bottom: 0;
+        width: calc(100% - 10px);
+        margin: 10px 0 10px 10px;
+        box-sizing: border-box;
         background: var(--bg-base);
+        z-index: 10;
+        transition: width 150ms ease, box-shadow 150ms ease;
+    }
+
+    .app-container.collapsed .sidebar-inner:hover,
+    .app-container.collapsed .sidebar-inner:has(:focus-visible) {
+        width: 230px;
+        z-index: 10;
         box-shadow: 4px 0 12px rgba(0, 0, 0, 0.4);
     }
 
@@ -126,10 +143,6 @@
         flex-grow: 1;
         overflow-y: hidden;
         border-radius: 10px;
-        margin-bottom: 10px;
-        margin-left: 10px;
-        margin-right: 10px;
-        margin-top: 10px;
         background-color: var(--bg-panel);
         border: var(--border-panel);
         min-height: 0;
@@ -139,9 +152,6 @@
         flex-shrink: 0;
         height: 56px;
         border-radius: 10px;
-        margin-bottom: 10px;
-        margin-left: 10px;
-        margin-right: 10px;
         background-color: var(--bg-panel);
         border: var(--border-panel);
     }

@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { channels, activeChannelId, setActiveChannel, openConnect, usersByChannel, setUserVolume, matrixConnecting, hideDm, sidebarCollapsed, sidebarVisuallyCollapsed, sidebarContentCollapsed, sidebarTransitioning, toggleSidebar } from '$lib/stores';
+    import { channels, activeChannelId, setActiveChannel, openConnect, usersByChannel, setUserVolume, matrixConnecting, hideDm, sidebarCollapsed, sidebarTransitioning, toggleSidebar } from '$lib/stores';
     import { sendCoreCommand } from '$lib/ipc';
     import { resolveMediaUrl, getInitial } from '$lib/media';
     import type { VoiceUser } from '$lib/stores/voiceState';
@@ -7,8 +7,20 @@
     import AvatarFallback from './AvatarFallback.svelte';
     import UserContextMenu from './UserContextMenu.svelte';
     import Icon from './Icon.svelte';
+    import { onMount, onDestroy } from 'svelte';
 
     let dropdownOpen = false;
+
+    // Close dropdown when the sidebar is toggled to collapsed.
+    let unsubCollapsed: (() => void) | undefined;
+    onMount(() => {
+        let initialized = false;
+        unsubCollapsed = sidebarCollapsed.subscribe(v => {
+            if (!initialized) { initialized = true; return; }
+            if (v) dropdownOpen = false;
+        });
+    });
+    onDestroy(() => unsubCollapsed?.());
 
     // User context menu state
     let contextUser: VoiceUser | null = null;
@@ -76,7 +88,7 @@
 
 <svelte:window on:click={handleClickOutside} />
 
-<div class="channel-browser" class:collapsed={$sidebarVisuallyCollapsed} class:transitioning={$sidebarTransitioning}>
+<div class="channel-browser" class:transitioning={$sidebarTransitioning}>
     <header class="browser-header">
         <button
             class="collapse-btn"
@@ -88,7 +100,6 @@
 
         <button
             class="header-toggle"
-            class:content-hidden={$sidebarContentCollapsed}
             on:click|stopPropagation={toggleDropdown}
             aria-expanded={dropdownOpen}
         >
@@ -96,7 +107,7 @@
             <span class="dropdown-indicator" class:open={dropdownOpen}>▾</span>
         </button>
 
-        {#if dropdownOpen && !$sidebarContentCollapsed}
+        {#if dropdownOpen}
             <div class="dropdown-menu">
                 <button class="dropdown-item" on:click|stopPropagation={handleConnect}>Connect</button>
                 <button class="dropdown-item disabled" disabled>Disconnect</button>
@@ -114,24 +125,24 @@
         {/if}
 
         <div class="category">
-            <h2 class="category-name" class:content-hidden={$sidebarContentCollapsed}>Voice Channels</h2>
+            <h2 class="category-name">Voice Channels</h2>
             <ul class="channel-list">
                 {#each voiceChannels as channel (channel.id)}
                     <li class="channel-item {$activeChannelId === channel.id ? 'active' : ''}">
                         <button class="channel-btn"
                             on:click={() => handleVoiceClick(channel)}
                             on:dblclick={() => handleVoiceDblClick(channel)}
-                            title={$sidebarContentCollapsed ? channel.display_name : ''}
+                            title={channel.display_name}
                         >
                             <span class="unread-slot" class:visible={channel.unread_count > 0}><span class="unread-dot"></span></span>
                             <Icon name="volume" size={16} class="channel-icon" />
-                            <span class="channel-name">{$sidebarContentCollapsed ? getInitial(channel.display_name) : channel.display_name}</span>
+                            <span class="channel-name full">{channel.display_name}</span>
+                            <span class="channel-name abbr">{getInitial(channel.display_name)}</span>
                         </button>
                     </li>
                     {#if channel.channel_id != null && $usersByChannel.has(channel.channel_id)}
                         <VoiceUserList
                             users={$usersByChannel.get(channel.channel_id) ?? []}
-                            collapsed={$sidebarContentCollapsed}
                             on:usercontextmenu={handleUserContextMenu}
                         />
                     {/if}
@@ -140,17 +151,18 @@
         </div>
 
         <div class="category">
-            <h2 class="category-name" class:content-hidden={$sidebarContentCollapsed}>Text Channels</h2>
+            <h2 class="category-name">Text Channels</h2>
             <ul class="channel-list">
                 {#each textChannels as channel (channel.id)}
                     <li class="channel-item {$activeChannelId === channel.id ? 'active' : ''}">
                         <button class="channel-btn"
                             on:click={() => setActiveChannel(channel.id)}
-                            title={$sidebarContentCollapsed ? channel.display_name : ''}
+                            title={channel.display_name}
                         >
                             <span class="unread-slot" class:visible={channel.unread_count > 0}><span class="unread-dot"></span></span>
                             <Icon name="hash" size={16} class="channel-icon" />
-                            <span class="channel-name">{$sidebarContentCollapsed ? getInitial(channel.display_name) : channel.display_name}</span>
+                            <span class="channel-name full">{channel.display_name}</span>
+                            <span class="channel-name abbr">{getInitial(channel.display_name)}</span>
                         </button>
                     </li>
                 {/each}
@@ -159,13 +171,13 @@
 
         {#if dmChannels.length > 0}
             <div class="category">
-                <h2 class="category-name" class:content-hidden={$sidebarContentCollapsed}>Direct Messages</h2>
+                <h2 class="category-name">Direct Messages</h2>
                 <ul class="channel-list">
                     {#each dmChannels as channel (channel.id)}
                         <li class="channel-item dm-item {$activeChannelId === channel.id ? 'active' : ''}">
                             <button class="channel-btn"
                                 on:click={() => setActiveChannel(channel.id)}
-                                title={$sidebarContentCollapsed ? channel.display_name : ''}
+                                title={channel.display_name}
                             >
                                 <span class="unread-slot" class:visible={channel.unread_count > 0}><span class="unread-dot"></span></span>
                                 {#if channel.avatar_url}
@@ -177,19 +189,15 @@
                                 {:else}
                                     <AvatarFallback initial={getInitial(channel.display_name)} size={20} />
                                 {/if}
-                                {#if !$sidebarContentCollapsed}
-                                    <span class="channel-name">{channel.display_name}</span>
-                                {/if}
+                                <span class="channel-name full">{channel.display_name}</span>
                             </button>
-                            {#if !$sidebarContentCollapsed}
-                                <button
-                                    class="hide-dm-btn"
-                                    on:click|stopPropagation={() => hideDm(channel.id)}
-                                    title="Hide conversation"
-                                >
-                                    <Icon name="hide_dm" size={14} />
-                                </button>
-                            {/if}
+                            <button
+                                class="hide-dm-btn"
+                                on:click|stopPropagation={() => hideDm(channel.id)}
+                                title="Hide conversation"
+                            >
+                                <Icon name="hide_dm" size={14} />
+                            </button>
                         </li>
                     {/each}
                 </ul>
@@ -234,13 +242,6 @@
         cursor: pointer;
         transition: background-color 0.15s, opacity 150ms ease;
         overflow: hidden;
-    }
-
-    .header-toggle.content-hidden {
-        opacity: 0;
-        width: 0;
-        padding: 0;
-        pointer-events: none;
     }
 
     .header-toggle:hover { background-color: rgba(255, 255, 255, 0.04); }
@@ -333,11 +334,6 @@
         white-space: nowrap;
     }
 
-    .category-name.content-hidden {
-        opacity: 0;
-        pointer-events: none;
-    }
-
     .channel-list { list-style: none; padding: 0; margin: 0; }
 
     .channel-item {
@@ -394,20 +390,15 @@
         transition: opacity 150ms ease;
     }
 
+    /* Toggle animation: fade text while container-query swap happens */
     .transitioning .channel-name { opacity: 0; }
     .transitioning .category-name { opacity: 0; }
 
     .channel-item:hover { background-color: #393c43; color: #dcddde; }
     .channel-item.active { background-color: #42464d; color: #fff; }
 
-    /* Collapsed sidebar layout — centered icons/avatars */
-    .collapsed .scroller { padding: 16px 0; overflow-y: auto; scrollbar-width: none; }
-    .collapsed .scroller::-webkit-scrollbar { display: none; }
-    .collapsed .category + .category { border-top: 1px solid rgba(255, 255, 255, 0.06); }
-    .collapsed .channel-btn { justify-content: center; padding: 6px 0; }
-    .collapsed .unread-slot { position: absolute; left: 2px; top: 50%; transform: translateY(-50%); margin-left: 0; width: auto; }
-    .collapsed .channel-btn :global(.channel-icon) { margin-right: 4px; }
-    .collapsed .dm-avatar { margin-right: 0; }
+    /* Default: show full names, hide abbreviations */
+    .channel-name.abbr { display: none; }
 
     .hide-dm-btn {
         display: none;
@@ -434,7 +425,6 @@
         object-fit: cover;
     }
 
-
     .connecting-indicator {
         display: flex;
         align-items: center;
@@ -455,5 +445,30 @@
 
     @keyframes spin {
         to { transform: rotate(360deg); }
+    }
+
+    /* Narrow container: collapsed sidebar layout */
+    @container sidebar (max-width: 149px) {
+        .header-toggle {
+            opacity: 0;
+            width: 0;
+            padding: 0;
+            pointer-events: none;
+        }
+        .category-name {
+            opacity: 0;
+            pointer-events: none;
+        }
+        .scroller { padding: 16px 0; overflow-y: auto; scrollbar-width: none; }
+        .scroller::-webkit-scrollbar { display: none; }
+        .category + .category { border-top: 1px solid rgba(255, 255, 255, 0.06); }
+        .channel-btn { justify-content: center; padding: 6px 0; }
+        .channel-btn :global(.channel-icon) { margin-right: 4px; }
+        .unread-slot { position: absolute; left: 2px; top: 50%; transform: translateY(-50%); margin-left: 0; width: auto; }
+        .dm-avatar { margin-right: 0; }
+        .channel-name.full { display: none; }
+        .channel-name.abbr { display: inline; }
+        .hide-dm-btn { display: none !important; }
+        .dropdown-menu { display: none; }
     }
 </style>
