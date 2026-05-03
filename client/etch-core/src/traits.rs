@@ -4,14 +4,14 @@ use tokio::sync::{mpsc, oneshot};
 use crate::commands::{MatrixCommand, MumbleCommand, ServerConnectionForm};
 use crate::error::CoreError;
 use crate::events::InternalEvent;
-use crate::models::VoiceServerConfig;
+use crate::models::{ConnectOutcome, VoiceServerConfig};
 
 pub trait MatrixBackend: Send {
     fn connect(
         &mut self,
         form: ServerConnectionForm,
         internal_tx: mpsc::Sender<InternalEvent>,
-    ) -> impl Future<Output = (bool, Option<VoiceServerConfig>)> + Send;
+    ) -> impl Future<Output = ConnectOutcome> + Send;
 
     fn handle_command(&mut self, cmd: MatrixCommand) -> impl Future<Output = ()> + Send;
 

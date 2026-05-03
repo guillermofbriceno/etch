@@ -11,7 +11,7 @@ use crate::commands::{MatrixCommand, ServerConnectionForm};
 use crate::events::{CoreEvent, MatrixEvent, InternalEvent, InternalMatrixEvent};
 use crate::matrix::client::{start_matrix_client, ConnectionResult};
 use crate::matrix::timeline::TimelineManager;
-use crate::models::{RoomInfo, RoomType, VoiceServerConfig};
+use crate::models::{ConnectOutcome, RoomInfo, RoomType};
 use crate::traits::MatrixBackend;
 use crate::matrix;
 
@@ -98,7 +98,7 @@ impl MatrixBackend for MatrixService {
         &mut self,
         form: ServerConnectionForm,
         internal_tx: mpsc::Sender<InternalEvent>,
-    ) -> (bool, Option<VoiceServerConfig>) {
+    ) -> ConnectOutcome {
         match start_matrix_client(internal_tx.clone(), self.event_tx.clone(), form, &self.data_dir).await {
             Ok(ConnectionResult::Ok(client)) => {
                 self.client = Some(client.clone());
@@ -143,13 +143,13 @@ impl MatrixBackend for MatrixService {
                 // Phase 1: initial sync — discovers rooms and triggers invite auto-accepts
                 if let Err(e) = client.sync_once(initial_settings.clone()).await {
                     log::error!("Initial sync failed: {:?}", e);
-                    return (false, None);
+                    return ConnectOutcome::Failed;
                 }
 
                 // Phase 2: settle — fetches full state for rooms joined from invites
                 if let Err(e) = client.sync_once(initial_settings).await {
                     log::error!("Settlement sync failed: {:?}", e);
-                    return (false, None);
+                    return ConnectOutcome::Failed;
                 }
 
                 let mut voice_server = None;
@@ -216,24 +216,24 @@ impl MatrixBackend for MatrixService {
                     }
                 };
 
-                (true, voice_server)
+                ConnectOutcome::Connected(voice_server)
             }
 
             Ok(ConnectionResult::NeedsPassword) => {
                 let _ = self.event_tx.send(
                     CoreEvent::Matrix(MatrixEvent::PasswordRequest)
                 ).await;
-                (false, None)
+                ConnectOutcome::NeedsPassword
             }
 
             Err(e) => {
                 log::error!("Error attempting to start Matrix client: {:?}", e);
-                (false, None)
+                ConnectOutcome::Failed
             }
 
             _unhandled => {
                 log::error!("Error attempting to start Matrix client");
-                (false, None)
+                ConnectOutcome::Failed
             }
         }
     }
