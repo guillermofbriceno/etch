@@ -7,7 +7,7 @@ export function resolveMediaUrl(url: string | null | undefined): string | null {
     if (url.startsWith('mxc://')) {
         const path = url.slice('mxc://'.length);
         if (PLATFORM_WINDOWS) {
-            return `https://etch-media.localhost/${path}`;
+            return `http://etch-media.localhost/${path}`;
         }
         return `etch-media://${path}`;
     }
