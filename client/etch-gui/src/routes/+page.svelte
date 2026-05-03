@@ -10,18 +10,35 @@
     import PasswordDialog from '$lib/components/PasswordDialog.svelte';
     import ErrorToast from '$lib/components/ErrorToast.svelte';
 
-    import { onMount } from 'svelte';
+    import { onMount, onDestroy } from 'svelte';
+    import { listen, type UnlistenFn } from '@tauri-apps/api/event';
     import { activeOverlay, overlayImageUrl, closeOverlay, loadSettings, initTheme, initLayout, initStores, sidebarCollapsed } from '$lib/stores';
+
+    let peekSuppressed = false;
+    let unlistenLeave: UnlistenFn | undefined;
+    let unlistenEnter: UnlistenFn | undefined;
 
     function handleKeydown(event: KeyboardEvent) {
         if (event.key === 'Escape' && $activeOverlay !== 'none') closeOverlay();
     }
 
-    onMount(() => {
+    onMount(async () => {
         initStores();
         loadSettings();
         initTheme();
         initLayout();
+
+        unlistenLeave = await listen('cursor-left-window', () => {
+            peekSuppressed = true;
+        });
+        unlistenEnter = await listen('cursor-entered-window', () => {
+            peekSuppressed = false;
+        });
+    });
+
+    onDestroy(() => {
+        unlistenLeave?.();
+        unlistenEnter?.();
     });
 </script>
 
@@ -31,7 +48,7 @@
     <TitleBar />
     <div class="app-container" class:collapsed={$sidebarCollapsed}>
     <aside class="sidebar">
-        <div class="sidebar-inner">
+        <div class="sidebar-inner" class:peek-suppressed={peekSuppressed}>
             <div class="channel-browser-wrapper">
                 <ChannelBrowser />
             </div>
@@ -137,6 +154,10 @@
         width: 230px;
         z-index: 10;
         box-shadow: 4px 0 12px rgba(0, 0, 0, 0.4);
+    }
+
+    .app-container.collapsed .sidebar-inner.peek-suppressed {
+        pointer-events: none;
     }
 
     .channel-browser-wrapper {
