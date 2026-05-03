@@ -103,9 +103,17 @@ pub fn run() {
             let core_tx = core_tx_for_protocol.clone();
             tauri::async_runtime::spawn(async move {
                 let uri = request.uri();
-                let host = uri.host().unwrap_or_default();
-                let media_id = uri.path().trim_start_matches('/');
-                let mxc_url = format!("mxc://{}/{}", host, media_id);
+                let raw_host = uri.host().unwrap_or_default();
+                let raw_path = uri.path().trim_start_matches('/');
+
+                // On Windows, wry reverts http://<scheme>.localhost/<path>
+                // back to <scheme>://localhost/<path>, so the URI host is
+                // "localhost" and the real Matrix server is the first path segment.
+                let mxc_url = if raw_host == "localhost" {
+                    format!("mxc://{}", raw_path)
+                } else {
+                    format!("mxc://{}/{}", raw_host, raw_path)
+                };
 
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 let _ = core_tx.send(CoreCommand::FetchMedia { mxc_url, respond: tx }).await;
