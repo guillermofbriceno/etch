@@ -2,7 +2,7 @@ use tokio::sync::mpsc;
 use tokio::time::{Duration, Instant, Sleep};
 use crate::events::{CoreEvent, InternalEvent, MatrixEvent};
 use crate::commands::ServerConnectionForm;
-use crate::models::{ConnectionState, VoiceServerConfig};
+use crate::models::{ConnectOutcome, ConnectionState, VoiceServerConfig};
 use crate::traits::MatrixBackend;
 
 use std::pin::Pin;
@@ -49,14 +49,21 @@ impl MatrixConnection {
         self.state = ConnectionState::Connecting;
         let _ = event_tx.send(matrix_conn_event(ConnectionState::Connecting)).await;
 
-        let (success, voice_server) = service.connect(form, internal_tx).await;
-        if success {
-            self.state = ConnectionState::Connected;
-            let _ = event_tx.send(matrix_conn_event(ConnectionState::Connected)).await;
-            voice_server
-        } else {
-            self.schedule_retry(timer, "Connection failed".into(), event_tx).await;
-            None
+        match service.connect(form, internal_tx).await {
+            ConnectOutcome::Connected(voice_server) => {
+                self.state = ConnectionState::Connected;
+                let _ = event_tx.send(matrix_conn_event(ConnectionState::Connected)).await;
+                voice_server
+            }
+            ConnectOutcome::NeedsPassword => {
+                // Don't retry; the user is being prompted for a password.
+                self.state = ConnectionState::Disconnected;
+                None
+            }
+            ConnectOutcome::Failed => {
+                self.schedule_retry(timer, "Connection failed".into(), event_tx).await;
+                None
+            }
         }
     }
 }

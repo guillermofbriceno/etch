@@ -92,6 +92,7 @@ jobs:
       # ---- Build MSI ----
 
       - name: Build MSI
+        id: tauri-build
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -106,3 +107,13 @@ jobs:
           prerelease: false
           includeUpdaterJson: true
           args: --bundles msi
+
+      - name: Show artifact paths
+        shell: bash
+        run: echo '${{ steps.tauri-build.outputs.artifactPaths }}'
+
+      - name: Upload MSI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: etch-windows-msi
+          path: target/release/bundle/msi/*.msi

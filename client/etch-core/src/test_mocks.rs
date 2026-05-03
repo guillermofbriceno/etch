@@ -4,7 +4,7 @@ use tokio::sync::{mpsc, oneshot};
 use crate::commands::{MatrixCommand, MumbleCommand, ServerConnectionForm};
 use crate::error::CoreError;
 use crate::events::InternalEvent;
-use crate::models::VoiceServerConfig;
+use crate::models::{ConnectOutcome, VoiceServerConfig};
 use crate::traits::{MatrixBackend, VoiceService};
 
 /// Labels for trait methods called on the mock, recorded in call order.
@@ -28,7 +28,7 @@ pub struct MockMatrixState {
 
 pub struct MockMatrix {
     pub state: Arc<MockMatrixState>,
-    pub connect_result: (bool, Option<VoiceServerConfig>),
+    pub connect_result: ConnectOutcome,
     pub profile_response: (Option<String>, Option<String>),
     pub media_response: Result<Vec<u8>, String>,
     /// Events sent through `internal_tx` during `connect()`.
@@ -43,15 +43,15 @@ impl MockMatrix {
                 subscribe_calls: Mutex::new(Vec::new()),
                 call_log: Mutex::new(Vec::new()),
             }),
-            connect_result: (true, None),
+            connect_result: ConnectOutcome::Connected(None),
             profile_response: (None, None),
             media_response: Ok(vec![0xDE, 0xAD]),
             internal_events: Vec::new(),
         }
     }
 
-    pub fn with_connect_result(mut self, success: bool, voice: Option<VoiceServerConfig>) -> Self {
-        self.connect_result = (success, voice);
+    pub fn with_connect_result(mut self, outcome: ConnectOutcome) -> Self {
+        self.connect_result = outcome;
         self
     }
 
@@ -71,7 +71,7 @@ impl MatrixBackend for MockMatrix {
         &mut self,
         _form: ServerConnectionForm,
         internal_tx: mpsc::Sender<InternalEvent>,
-    ) -> (bool, Option<VoiceServerConfig>) {
+    ) -> ConnectOutcome {
         self.state.call_log.lock().unwrap().push(MockCall::Connect);
         for event in self.internal_events.drain(..) {
             let _ = internal_tx.send(event).await;

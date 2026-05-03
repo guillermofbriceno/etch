@@ -307,6 +307,7 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
 mod tests {
     use super::*;
     use crate::test_mocks::{MockMatrix, MockMatrixState, MockVoice, MockVoiceState};
+    use crate::models::ConnectOutcome;
     use crate::commands::*;
     use crate::events::*;
     use crate::settings;
@@ -582,7 +583,7 @@ mod tests {
         };
 
         let (events, _, voice) = run_commands(
-            MockMatrix::new().with_connect_result(false, None),
+            MockMatrix::new().with_connect_result(ConnectOutcome::Failed),
             MockVoice::new(),
             tmp.path(),
             vec![CoreCommand::System(SystemCommand::ConnectToServer(form))],

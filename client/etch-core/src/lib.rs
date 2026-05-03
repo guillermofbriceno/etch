@@ -29,10 +29,11 @@ pub fn init_core(
     resource_dir: PathBuf,
     cmd_tx: mpsc::Sender<commands::CoreCommand>,
     cmd_rx: mpsc::Receiver<commands::CoreCommand>,
+    logger: Box<dyn log::Log>,
 ) -> (CoreHandle, ProductionEngine) {
     let (event_tx, event_rx) = mpsc::channel(100);
 
-    logger::init(event_tx.clone());
+    logger::init(event_tx.clone(), logger);
 
     log::info!("Etch core start.");
     log::info!("Data directory set to: {:?}", data_dir);

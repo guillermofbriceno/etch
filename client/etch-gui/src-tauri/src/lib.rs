@@ -6,6 +6,8 @@ use tauri::{AppHandle, Manager, State};
 use tauri::Emitter;
 use tauri_plugin_updater::UpdaterExt;
 use std::io::Cursor;
+use log::LevelFilter;
+use simplelog::{CombinedLogger, TermLogger, WriteLogger, ConfigBuilder, TerminalMode, ColorChoice};
 
 use sfx::SfxPlayer;
 
@@ -101,9 +103,17 @@ pub fn run() {
             let core_tx = core_tx_for_protocol.clone();
             tauri::async_runtime::spawn(async move {
                 let uri = request.uri();
-                let host = uri.host().unwrap_or_default();
-                let media_id = uri.path().trim_start_matches('/');
-                let mxc_url = format!("mxc://{}/{}", host, media_id);
+                let raw_host = uri.host().unwrap_or_default();
+                let raw_path = uri.path().trim_start_matches('/');
+
+                // On Windows, wry reverts http://<scheme>.localhost/<path>
+                // back to <scheme>://localhost/<path>, so the URI host is
+                // "localhost" and the real Matrix server is the first path segment.
+                let mxc_url = if raw_host == "localhost" {
+                    format!("mxc://{}", raw_path)
+                } else {
+                    format!("mxc://{}/{}", raw_host, raw_path)
+                };
 
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 let _ = core_tx.send(CoreCommand::FetchMedia { mxc_url, respond: tx }).await;
@@ -144,7 +154,38 @@ pub fn run() {
             let app_handle = app.handle().clone();
             let data_dir = app.path().app_data_dir().expect("Failed to get app data dir");
             let resource_dir = app.path().resource_dir().expect("Failed to get resource dir");
-            let (mut core_handle, engine) = init_core(data_dir, resource_dir, cmd_tx, cmd_rx);
+
+            std::fs::create_dir_all(&data_dir).expect("Failed to create data dir");
+            let log_path = data_dir.join("etch.log");
+
+            const MAX_LOG_SIZE: u64 = 2 * 1024 * 1024;
+            const KEEP_BYTES: usize = 1024 * 1024;
+            if let Ok(meta) = std::fs::metadata(&log_path) {
+                if meta.len() > MAX_LOG_SIZE {
+                    if let Ok(contents) = std::fs::read(&log_path) {
+                        let tail = &contents[contents.len().saturating_sub(KEEP_BYTES)..];
+                        let start = tail.iter().position(|&b| b == b'\n').map(|i| i + 1).unwrap_or(0);
+                        let _ = std::fs::write(&log_path, &tail[start..]);
+                    }
+                }
+            }
+
+            let log_file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log_path)
+                .expect("Failed to open log file");
+
+            let log_config = ConfigBuilder::default()
+                .set_target_level(LevelFilter::Error)
+                .build();
+
+            let logger = CombinedLogger::new(vec![
+                TermLogger::new(LevelFilter::Trace, log_config.clone(), TerminalMode::Stderr, ColorChoice::Auto),
+                WriteLogger::new(LevelFilter::Trace, log_config, log_file),
+            ]);
+
+            let (mut core_handle, engine) = init_core(data_dir, resource_dir, cmd_tx, cmd_rx, logger);
             app.manage(TauriState { core_tx: core_handle.cmd_tx });
             app.manage(SfxPlayer::new());
 

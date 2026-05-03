@@ -158,7 +158,7 @@ fn init_mumble_config(config_dir: &Path, resource_dir: &Path) -> Result<(), Core
     }
 
     // Install plugin
-    let plugins_dir = mumble_plugins_dir();
+    let plugins_dir = mumble_plugins_dir(config_dir);
     let plugin_dest = plugins_dir.join(BRIDGE_LIB);
     let plugin_src = plugin_build_path(resource_dir);
     let plugin_src = plugin_src.canonicalize()
@@ -198,7 +198,12 @@ fn init_mumble_config(config_dir: &Path, resource_dir: &Path) -> Result<(), Core
     // Register plugin in config
     let plugin_canonical = plugin_dest.canonicalize()
         .context(ReadFileSnafu { path: &plugin_dest })?;
-    let path_str = plugin_canonical.to_string_lossy();
+    // On Windows, canonicalize() adds a \\?\ prefix and uses backslashes.
+    // Mumble (Qt) uses forward slashes everywhere, so we must match that
+    // for both the stored path and the SHA1 hash to agree with Mumble's.
+    let path_str = plugin_canonical.to_string_lossy().to_string();
+    #[cfg(target_os = "windows")]
+    let path_str = path_str.strip_prefix(r"\\?\").unwrap_or(&path_str).replace('\\', "/");
     let hash = format!("{:x}", Sha1::digest(path_str.as_bytes()));
 
     let root = json.as_object_mut()
@@ -264,22 +269,10 @@ fn plugin_build_path(resource_dir: &Path) -> PathBuf {
 }
 
 /// Returns the Mumble plugins directory where the plugin must be installed.
-fn mumble_plugins_dir() -> PathBuf {
-    #[cfg(target_os = "linux")]
-    {
-        let data_home = std::env::var("XDG_DATA_HOME")
-            .unwrap_or_else(|_| {
-                let home = std::env::var("HOME").unwrap_or_default();
-                format!("{}/.local/share", home)
-            });
-        PathBuf::from(data_home).join("com.etch.app/mumble/Plugins")
-    }
-    #[cfg(target_os = "windows")]
-    {
-        // TODO: Windows Mumble plugins path
-        let app_data = std::env::var("APPDATA").unwrap_or_default();
-        PathBuf::from(app_data).join("Mumble/Plugins")
-    }
+/// This must be inside the etch-controlled config dir so Mumble (launched
+/// with -c pointing there) scans it on startup.
+fn mumble_plugins_dir(config_dir: &Path) -> PathBuf {
+    config_dir.join("Plugins")
 }
 
 /// Returns the path to the Mumble binary.

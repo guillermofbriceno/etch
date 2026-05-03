@@ -166,3 +166,10 @@ pub struct VoiceServerConfig {
     pub username: Option<String>,
     pub password: Option<String>,
 }
+
+#[derive(Clone, Debug)]
+pub enum ConnectOutcome {
+    Connected(Option<VoiceServerConfig>),
+    NeedsPassword,
+    Failed,
+}
