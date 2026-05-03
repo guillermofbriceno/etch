@@ -106,10 +106,10 @@ pub fn run() {
                 let raw_host = uri.host().unwrap_or_default();
                 let raw_path = uri.path().trim_start_matches('/');
 
-                // On Windows (WebView2), custom schemes are served via
-                // http://<scheme>.localhost/, so the real Matrix server host
-                // ends up as the first path segment instead of the URI host.
-                let mxc_url = if raw_host.ends_with(".localhost") {
+                // On Windows, wry reverts http://<scheme>.localhost/<path>
+                // back to <scheme>://localhost/<path>, so the URI host is
+                // "localhost" and the real Matrix server is the first path segment.
+                let mxc_url = if raw_host == "localhost" {
                     format!("mxc://{}", raw_path)
                 } else {
                     format!("mxc://{}/{}", raw_host, raw_path)
