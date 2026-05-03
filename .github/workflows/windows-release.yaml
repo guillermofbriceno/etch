@@ -106,3 +106,9 @@ jobs:
           prerelease: false
           includeUpdaterJson: true
           args: --bundles msi
+
+      - name: Upload MSI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: etch-windows-msi
+          path: client/etch-gui/src-tauri/target/release/bundle/msi/*.msi

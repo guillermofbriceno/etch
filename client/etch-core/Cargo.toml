@@ -7,7 +7,7 @@ edition = "2024"
 tokio = { version = "1.50", features = ["full"] }
 serde = "1.0"
 tauri = "2.10"
-log = "0.4"
+log = { version = "0.4", features = ["std"] }
 matrix-sdk = { version = "0.16.0", features = ["bundled-sqlite", "e2e-encryption"] }
 matrix-sdk-ui = "0.16.0"
 anyhow = "1.0"
