@@ -199,6 +199,28 @@ pub fn run() {
                 }
             });
 
+            #[cfg(target_os = "linux")]
+            {
+                let leave_handle = app.handle().clone();
+                let enter_handle = app.handle().clone();
+                let win = app.get_webview_window("main").unwrap();
+                win.with_webview(move |webview| {
+                    use gtk::prelude::{WidgetExt, WidgetExtManual};
+                    let widget = webview.inner();
+                    if let Some(toplevel) = widget.toplevel() {
+                        toplevel.add_events(gtk::gdk::EventMask::ENTER_NOTIFY_MASK | gtk::gdk::EventMask::LEAVE_NOTIFY_MASK);
+                        toplevel.connect_leave_notify_event(move |_, _| {
+                            let _ = leave_handle.emit("cursor-left-window", ());
+                            gtk::glib::Propagation::Proceed
+                        });
+                        toplevel.connect_enter_notify_event(move |_, _| {
+                            let _ = enter_handle.emit("cursor-entered-window", ());
+                            gtk::glib::Propagation::Proceed
+                        });
+                    }
+                }).ok();
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
