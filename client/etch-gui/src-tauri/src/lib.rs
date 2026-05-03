@@ -103,9 +103,17 @@ pub fn run() {
             let core_tx = core_tx_for_protocol.clone();
             tauri::async_runtime::spawn(async move {
                 let uri = request.uri();
-                let host = uri.host().unwrap_or_default();
-                let media_id = uri.path().trim_start_matches('/');
-                let mxc_url = format!("mxc://{}/{}", host, media_id);
+                let raw_host = uri.host().unwrap_or_default();
+                let raw_path = uri.path().trim_start_matches('/');
+
+                // On Windows (WebView2), custom schemes are served via
+                // http://<scheme>.localhost/, so the real Matrix server host
+                // ends up as the first path segment instead of the URI host.
+                let mxc_url = if raw_host.ends_with(".localhost") {
+                    format!("mxc://{}", raw_path)
+                } else {
+                    format!("mxc://{}/{}", raw_host, raw_path)
+                };
 
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 let _ = core_tx.send(CoreCommand::FetchMedia { mxc_url, respond: tx }).await;
