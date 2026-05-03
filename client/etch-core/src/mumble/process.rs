@@ -199,11 +199,9 @@ fn init_mumble_config(config_dir: &Path, resource_dir: &Path) -> Result<(), Core
     let plugin_canonical = plugin_dest.canonicalize()
         .context(ReadFileSnafu { path: &plugin_dest })?;
     // On Windows, canonicalize() adds a \\?\ prefix that Mumble can't parse.
-    let path_str = plugin_canonical.to_string_lossy();
+    let path_str = plugin_canonical.to_string_lossy().to_string();
     #[cfg(target_os = "windows")]
     let path_str = path_str.strip_prefix(r"\\?\").unwrap_or(&path_str).to_string();
-    #[cfg(target_os = "windows")]
-    let path_str = std::borrow::Cow::Owned(path_str);
     let hash = format!("{:x}", Sha1::digest(path_str.as_bytes()));
 
     let root = json.as_object_mut()
