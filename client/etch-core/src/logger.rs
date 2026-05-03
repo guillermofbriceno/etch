@@ -1,11 +1,10 @@
 use log::{Log, Metadata, Record, Level, LevelFilter};
-use simple_logger::SimpleLogger;
 use tokio::sync::mpsc;
 
 use crate::events::{CoreEvent, SystemEvent};
 
 pub struct ForwardingLogger {
-    inner: SimpleLogger,
+    inner: Box<dyn Log>,
     event_tx: mpsc::Sender<CoreEvent>,
 }
 
@@ -15,6 +14,10 @@ impl Log for ForwardingLogger {
     }
 
     fn log(&self, record: &Record) {
+        if record.target().starts_with("html5ever") && record.level() > Level::Warn {
+            return;
+        }
+
         self.inner.log(record);
 
         if record.level() == Level::Error {
@@ -42,16 +45,12 @@ fn parse_level(s: &str) -> LevelFilter {
     }
 }
 
-pub fn init(event_tx: mpsc::Sender<CoreEvent>) {
+pub fn init(event_tx: mpsc::Sender<CoreEvent>, backend: Box<dyn Log>) {
     let level = std::env::var("ETCH_LOG")
         .map(|s| parse_level(&s))
-        .unwrap_or(LevelFilter::Debug);
+        .unwrap_or(if cfg!(debug_assertions) { LevelFilter::Debug } else { LevelFilter::Info });
 
-    let inner = SimpleLogger::new()
-        .with_level(level)
-        .with_module_level("html5ever", LevelFilter::Warn);
-
-    let logger = ForwardingLogger { inner, event_tx };
+    let logger = ForwardingLogger { inner: backend, event_tx };
 
     log::set_boxed_logger(Box::new(logger))
         .map(|()| log::set_max_level(level))
