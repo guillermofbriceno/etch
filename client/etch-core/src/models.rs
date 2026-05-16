@@ -167,7 +167,7 @@ pub struct VoiceServerConfig {
     pub password: Option<String>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub enum ConnectOutcome {
     Connected(Option<VoiceServerConfig>),
     NeedsPassword,

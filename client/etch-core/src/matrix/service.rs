@@ -226,13 +226,13 @@ impl MatrixBackend for MatrixService {
                 ConnectOutcome::NeedsPassword
             }
 
-            Err(e) => {
-                log::error!("Error attempting to start Matrix client: {:?}", e);
+            Ok(ConnectionResult::Error(msg)) => {
+                log::error!("Matrix client returned error: {msg}");
                 ConnectOutcome::Failed
             }
 
-            _unhandled => {
-                log::error!("Error attempting to start Matrix client");
+            Err(e) => {
+                log::error!("Error attempting to start Matrix client: {:?}", e);
                 ConnectOutcome::Failed
             }
         }

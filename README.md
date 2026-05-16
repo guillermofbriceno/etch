@@ -6,6 +6,12 @@ Etch is an experimental Matrix client that wraps Mumble to create a voice-first 
   <img src="client/etch-gui/static/demo_default.png" alt="Etch screenshot" />
 </p>
 
+### A Mumble wrapper?
+
+Etch uses `mumble -platform offscreen` to launch Mumble in the background, invisible to your windowing environment. Using a Mumble plugin, we can communicate with the running Mumble process via a socket to present all of the voice state information in the unified Etch application. A portable version of Mumble is bundled with Etch and is automatically installed.
+
+Because the Mumble plugin API has a few missing events for full voice state synchronizaton, for example user mute/deafen states, Etch bundles its own patched version of Mumble and etch-bridge plugin. The source and artifacts for these patches are available [here](https://github.com/guillermofbriceno/mumble/tree/my-workflow-edits). Note that Etch automatically enables this plugin without user intervention by writing to the Mumble configuration JSON stored in the Etch data directory.
+
 ## Status
 
 Etch is experimental software and is not recommended for real production use.
@@ -43,11 +49,14 @@ nix develop
 # Install frontend deps
 cd client/etch-gui && pnpm install
 
+# Build the bridge plugin
+cargo build -p etch-bridge
+
 # Run in dev mode (Tauri + Vite HMR)
-cd client/etch-gui && cargo tauri dev
+cargo tauri dev
 
 # Build
-cd client/etch-gui && cargo tauri build
+cargo tauri build
 ```
 
 ## Testing

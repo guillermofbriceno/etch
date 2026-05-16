@@ -1,4 +1,5 @@
 import { writable, get } from 'svelte/store';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
 const STORAGE_KEY = 'sidebar-collapsed';
 const FADE_MS = 200;
@@ -43,7 +44,32 @@ export function toggleSidebar(): void {
     }, delay);
 }
 
-/** Clean up timers. Call in tests or when the module is no longer needed. */
+/** Whether the sidebar peek (hover-expand) should be suppressed because the
+ *  cursor has left the window. Only relevant on Linux where GTK cursor events
+ *  drive this state. */
+export const peekSuppressed = writable<boolean>(false);
+
+let unlistenLeave: UnlistenFn | undefined;
+let unlistenEnter: UnlistenFn | undefined;
+
+export async function initCursorTracking(): Promise<void> {
+    unlistenLeave = await listen('cursor-left-window', () => {
+        peekSuppressed.set(true);
+    });
+    unlistenEnter = await listen('cursor-entered-window', () => {
+        peekSuppressed.set(false);
+    });
+}
+
+function destroyCursorTracking(): void {
+    unlistenLeave?.();
+    unlistenEnter?.();
+    unlistenLeave = undefined;
+    unlistenEnter = undefined;
+}
+
+/** Clean up timers and event listeners. */
 export function destroySidebar(): void {
     clearContentTimer();
+    destroyCursorTracking();
 }

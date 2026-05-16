@@ -76,7 +76,7 @@ impl MatrixBackend for MockMatrix {
         for event in self.internal_events.drain(..) {
             let _ = internal_tx.send(event).await;
         }
-        self.connect_result.clone()
+        std::mem::replace(&mut self.connect_result, ConnectOutcome::Failed)
     }
 
     async fn handle_command(&mut self, cmd: MatrixCommand) {

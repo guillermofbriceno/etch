@@ -3,18 +3,38 @@ use tokio::sync::mpsc;
 
 use crate::events::{CoreEvent, SystemEvent};
 
+/// A per-module log level override. Any module whose target starts with `prefix`
+/// will be silenced above `max_level`.
+pub(crate) struct ModuleFilter {
+    pub prefix: &'static str,
+    pub max_level: Level,
+}
+
+/// Default module-level overrides applied when none are provided.
+const DEFAULT_FILTERS: &[ModuleFilter] = &[
+    ModuleFilter { prefix: "html5ever", max_level: Level::Warn },
+];
+
 pub struct ForwardingLogger {
     inner: Box<dyn Log>,
     event_tx: mpsc::Sender<CoreEvent>,
+    module_filters: &'static [ModuleFilter],
 }
 
 impl Log for ForwardingLogger {
     fn enabled(&self, metadata: &Metadata) -> bool {
+        for filter in self.module_filters {
+            if metadata.target().starts_with(filter.prefix)
+                && metadata.level() > filter.max_level
+            {
+                return false;
+            }
+        }
         self.inner.enabled(metadata)
     }
 
     fn log(&self, record: &Record) {
-        if record.target().starts_with("html5ever") && record.level() > Level::Warn {
+        if !self.enabled(record.metadata()) {
             return;
         }
 
@@ -50,7 +70,11 @@ pub fn init(event_tx: mpsc::Sender<CoreEvent>, backend: Box<dyn Log>) {
         .map(|s| parse_level(&s))
         .unwrap_or(if cfg!(debug_assertions) { LevelFilter::Debug } else { LevelFilter::Info });
 
-    let logger = ForwardingLogger { inner: backend, event_tx };
+    let logger = ForwardingLogger {
+        inner: backend,
+        event_tx,
+        module_filters: DEFAULT_FILTERS,
+    };
 
     log::set_boxed_logger(Box::new(logger))
         .map(|()| log::set_max_level(level))
