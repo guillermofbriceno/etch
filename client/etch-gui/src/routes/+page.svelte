@@ -17,7 +17,7 @@
         if (event.key === 'Escape' && $activeOverlay !== 'none') closeOverlay();
     }
 
-    onMount(() => {
+    onMount(async () => {
         initStores();
         loadSettings();
         initTheme();
