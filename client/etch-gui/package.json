@@ -1,5 +1,6 @@
 {
   "name": "etch-gui",
+  "packageManager": "pnpm@10.11.0",
   "version": "0.0.0",
   "description": "",
   "type": "module",

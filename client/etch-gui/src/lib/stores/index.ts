@@ -22,10 +22,11 @@ export { transmissionMode, setTransmissionMode, vadThreshold, setVadThreshold, v
 export type { TransmissionMode } from './voiceSettings';
 export { theme, initTheme } from './theme';
 export { compactChat, initLayout } from './layout';
-export { sidebarCollapsed, sidebarTransitioning, toggleSidebar, destroySidebar } from './sidebar';
+export { sidebarCollapsed, sidebarTransitioning, peekSuppressed, toggleSidebar, initCursorTracking, destroySidebar } from './sidebar';
 export type { Theme } from './theme';
 export { updateStatus, updateVersion, updateError, checkForUpdate, restartApp } from './updater';
 export type { UpdateStatus } from './updater';
+export { initTray, destroyTray } from './tray';
 
 export function initStores(): void {
     initEventRouter();

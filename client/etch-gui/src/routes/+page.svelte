@@ -11,12 +11,7 @@
     import ErrorToast from '$lib/components/ErrorToast.svelte';
 
     import { onMount, onDestroy } from 'svelte';
-    import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-    import { activeOverlay, overlayImageUrl, closeOverlay, loadSettings, initTheme, initLayout, initStores, sidebarCollapsed } from '$lib/stores';
-
-    let peekSuppressed = false;
-    let unlistenLeave: UnlistenFn | undefined;
-    let unlistenEnter: UnlistenFn | undefined;
+    import { activeOverlay, overlayImageUrl, closeOverlay, loadSettings, initTheme, initLayout, initStores, initTray, destroyTray, initCursorTracking, destroySidebar, sidebarCollapsed, peekSuppressed } from '$lib/stores';
 
     function handleKeydown(event: KeyboardEvent) {
         if (event.key === 'Escape' && $activeOverlay !== 'none') closeOverlay();
@@ -27,18 +22,13 @@
         loadSettings();
         initTheme();
         initLayout();
-
-        unlistenLeave = await listen('cursor-left-window', () => {
-            peekSuppressed = true;
-        });
-        unlistenEnter = await listen('cursor-entered-window', () => {
-            peekSuppressed = false;
-        });
+        initTray();
+        initCursorTracking();
     });
 
     onDestroy(() => {
-        unlistenLeave?.();
-        unlistenEnter?.();
+        destroyTray();
+        destroySidebar();
     });
 </script>
 
@@ -48,7 +38,7 @@
     <TitleBar />
     <div class="app-container" class:collapsed={$sidebarCollapsed}>
     <aside class="sidebar">
-        <div class="sidebar-inner" class:peek-suppressed={peekSuppressed}>
+        <div class="sidebar-inner" class:peek-suppressed={$peekSuppressed}>
             <div class="channel-browser-wrapper">
                 <ChannelBrowser />
             </div>

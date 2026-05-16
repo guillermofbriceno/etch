@@ -6,6 +6,7 @@ use tauri::{AppHandle, Manager, State};
 use tauri::Emitter;
 use tauri_plugin_updater::UpdaterExt;
 use std::io::Cursor;
+use std::path::Path;
 use log::LevelFilter;
 use simplelog::{CombinedLogger, TermLogger, WriteLogger, ConfigBuilder, TerminalMode, ColorChoice};
 
@@ -85,6 +86,86 @@ async fn check_for_update(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Truncate the log file if it exceeds the size limit, keeping the tail.
+/// Writes to a temporary file first, then renames for atomicity.
+fn rotate_log_file(log_path: &Path) {
+    const MAX_LOG_SIZE: u64 = 2 * 1024 * 1024;
+    const KEEP_BYTES: usize = 1024 * 1024;
+
+    let meta = match std::fs::metadata(log_path) {
+        Ok(m) => m,
+        Err(_) => return,
+    };
+    if meta.len() <= MAX_LOG_SIZE {
+        return;
+    }
+    let contents = match std::fs::read(log_path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let tail = &contents[contents.len().saturating_sub(KEEP_BYTES)..];
+    let start = tail.iter().position(|&b| b == b'\n').map(|i| i + 1).unwrap_or(0);
+
+    let tmp_path = log_path.with_extension("log.tmp");
+    if std::fs::write(&tmp_path, &tail[start..]).is_ok() {
+        let _ = std::fs::rename(&tmp_path, log_path);
+    }
+}
+
+/// Build the combined logger (terminal + file).
+fn build_logger(log_path: &Path) -> Box<dyn log::Log> {
+    let log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+        .expect("Failed to open log file");
+
+    let log_config = ConfigBuilder::default()
+        .set_target_level(LevelFilter::Error)
+        .build();
+
+    // The global max-level gate is set by ForwardingLogger::init in
+    // etch-core (ETCH_LOG env / build profile). These backend filters are
+    // a second layer: terminal gets everything the global gate allows,
+    // file gets Info+ to avoid churning through the 2 MB rotation cap.
+    CombinedLogger::new(vec![
+        TermLogger::new(LevelFilter::max(), log_config.clone(), TerminalMode::Stderr, ColorChoice::Auto),
+        WriteLogger::new(LevelFilter::Info, log_config, log_file),
+    ])
+}
+
+/// Register GTK enter/leave events so the frontend can suppress sidebar
+/// peek when the cursor leaves the window.
+#[cfg(target_os = "linux")]
+fn setup_cursor_events(app: &tauri::App) {
+    let Some(win) = app.get_webview_window("main") else {
+        log::warn!("Could not find main window for cursor events");
+        return;
+    };
+    let leave_handle = app.handle().clone();
+    let enter_handle = app.handle().clone();
+    let result = win.with_webview(move |webview| {
+        use gtk::prelude::{WidgetExt, WidgetExtManual};
+        let widget = webview.inner();
+        if let Some(toplevel) = widget.toplevel() {
+            toplevel.add_events(
+                gtk::gdk::EventMask::ENTER_NOTIFY_MASK | gtk::gdk::EventMask::LEAVE_NOTIFY_MASK,
+            );
+            toplevel.connect_leave_notify_event(move |_, _| {
+                let _ = leave_handle.emit("cursor-left-window", ());
+                gtk::glib::Propagation::Proceed
+            });
+            toplevel.connect_enter_notify_event(move |_, _| {
+                let _ = enter_handle.emit("cursor-entered-window", ());
+                gtk::glib::Propagation::Proceed
+            });
+        }
+    });
+    if let Err(e) = result {
+        log::warn!("Failed to set up GTK cursor events: {:?}", e);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Create the command channel early so the protocol handler
@@ -157,33 +238,8 @@ pub fn run() {
 
             std::fs::create_dir_all(&data_dir).expect("Failed to create data dir");
             let log_path = data_dir.join("etch.log");
-
-            const MAX_LOG_SIZE: u64 = 2 * 1024 * 1024;
-            const KEEP_BYTES: usize = 1024 * 1024;
-            if let Ok(meta) = std::fs::metadata(&log_path) {
-                if meta.len() > MAX_LOG_SIZE {
-                    if let Ok(contents) = std::fs::read(&log_path) {
-                        let tail = &contents[contents.len().saturating_sub(KEEP_BYTES)..];
-                        let start = tail.iter().position(|&b| b == b'\n').map(|i| i + 1).unwrap_or(0);
-                        let _ = std::fs::write(&log_path, &tail[start..]);
-                    }
-                }
-            }
-
-            let log_file = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&log_path)
-                .expect("Failed to open log file");
-
-            let log_config = ConfigBuilder::default()
-                .set_target_level(LevelFilter::Error)
-                .build();
-
-            let logger = CombinedLogger::new(vec![
-                TermLogger::new(LevelFilter::Trace, log_config.clone(), TerminalMode::Stderr, ColorChoice::Auto),
-                WriteLogger::new(LevelFilter::Trace, log_config, log_file),
-            ]);
+            rotate_log_file(&log_path);
+            let logger = build_logger(&log_path);
 
             let (mut core_handle, engine) = init_core(data_dir, resource_dir, cmd_tx, cmd_rx, logger);
             app.manage(TauriState { core_tx: core_handle.cmd_tx });
@@ -200,26 +256,7 @@ pub fn run() {
             });
 
             #[cfg(target_os = "linux")]
-            {
-                let leave_handle = app.handle().clone();
-                let enter_handle = app.handle().clone();
-                let win = app.get_webview_window("main").unwrap();
-                win.with_webview(move |webview| {
-                    use gtk::prelude::{WidgetExt, WidgetExtManual};
-                    let widget = webview.inner();
-                    if let Some(toplevel) = widget.toplevel() {
-                        toplevel.add_events(gtk::gdk::EventMask::ENTER_NOTIFY_MASK | gtk::gdk::EventMask::LEAVE_NOTIFY_MASK);
-                        toplevel.connect_leave_notify_event(move |_, _| {
-                            let _ = leave_handle.emit("cursor-left-window", ());
-                            gtk::glib::Propagation::Proceed
-                        });
-                        toplevel.connect_enter_notify_event(move |_, _| {
-                            let _ = enter_handle.emit("cursor-entered-window", ());
-                            gtk::glib::Propagation::Proceed
-                        });
-                    }
-                }).ok();
-            }
+            setup_cursor_events(app);
 
             Ok(())
         })

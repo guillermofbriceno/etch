@@ -24,6 +24,14 @@
       "allow": ["$HOME/**", "$DOWNLOADS/**", "$DOCUMENTS/**", "$PICTURES/**", "$DESKTOP/**"]
     },
     "updater:default",
-    "process:allow-restart"
+    "process:allow-restart",
+    "core:tray:default",
+    "core:tray:allow-set-icon",
+    "core:tray:allow-set-tooltip",
+    "core:menu:default",
+    "core:image:default",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-is-visible"
   ]
 }
