@@ -1,7 +1,10 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
+import { tick } from 'svelte';
 import { invoke } from '@tauri-apps/api/core';
+import { stat } from '@tauri-apps/plugin-fs';
+import { open } from '@tauri-apps/plugin-dialog';
 import { activeChannelId, replyingTo, setReply, clearReply } from '$lib/stores';
 import { handleMatrixEvent } from '$lib/stores/messages';
 import type { ChatMessage } from '$lib/types';
@@ -263,5 +266,134 @@ describe('MessageInput', () => {
 
         // No @-word at cursor anymore, so tab completion does nothing
         expect(textarea.value).toBe(firstMatch + 'x');
+    });
+
+    describe('image compression', () => {
+        it('shows compress checkbox for images over 256KB', async () => {
+            // Simulate a paste returning a large image
+            vi.mocked(invoke).mockResolvedValueOnce(['/tmp/etch-paste-123.png', 300_000]);
+
+            const { container } = render(MessageInput);
+            const textarea = screen.getByRole('textbox');
+
+            await fireEvent.paste(textarea);
+            // Wait for async paste handler
+            await vi.waitFor(() => {
+                expect(container.querySelector('.compress-option')).toBeInTheDocument();
+            });
+        });
+
+        it('hides compress checkbox for images under 256KB', async () => {
+            // Simulate a paste returning a small image
+            vi.mocked(invoke).mockResolvedValueOnce(['/tmp/etch-paste-123.png', 100_000]);
+
+            const { container } = render(MessageInput);
+            const textarea = screen.getByRole('textbox');
+
+            await fireEvent.paste(textarea);
+            await vi.waitFor(() => {
+                expect(screen.getByText('etch-paste-123.png')).toBeInTheDocument();
+            });
+            expect(container.querySelector('.compress-option')).not.toBeInTheDocument();
+        });
+
+        it('calls compress_image before sending when checkbox is checked', async () => {
+            vi.mocked(invoke)
+                .mockResolvedValueOnce(['/tmp/etch-paste-123.png', 300_000]) // paste_clipboard_image
+                .mockResolvedValueOnce('/tmp/etch-paste-123.jpg') // compress_image
+                .mockResolvedValue(undefined); // core_command (sendMessage)
+
+            render(MessageInput);
+            const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+
+            await fireEvent.paste(textarea);
+            await vi.waitFor(() => {
+                expect(screen.getByText('etch-paste-123.png')).toBeInTheDocument();
+            });
+
+            // Compress checkbox should be checked by default; press Enter to send
+            await fireEvent.keyDown(textarea, { key: 'Enter' });
+
+            await vi.waitFor(() => {
+                expect(invoke).toHaveBeenCalledWith('compress_image', { path: '/tmp/etch-paste-123.png' });
+            });
+            expect(invoke).toHaveBeenCalledWith('core_command', {
+                command: {
+                    type: 'Matrix',
+                    data: {
+                        type: 'SendMessage',
+                        data: { room_id: ROOM, text: '', html_body: null, attachment_path: '/tmp/etch-paste-123.jpg' },
+                    },
+                },
+            });
+        });
+
+        it('skips compress_image when checkbox is unchecked', async () => {
+            vi.mocked(invoke)
+                .mockResolvedValueOnce(['/tmp/etch-paste-123.png', 300_000]) // paste_clipboard_image
+                .mockResolvedValue(undefined); // core_command (sendMessage)
+
+            const { container } = render(MessageInput);
+            const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+
+            await fireEvent.paste(textarea);
+            await vi.waitFor(() => {
+                expect(screen.getByText('etch-paste-123.png')).toBeInTheDocument();
+            });
+
+            // Uncheck the compress checkbox
+            const checkbox = container.querySelector('.compress-option input[type="checkbox"]') as HTMLInputElement;
+            await fireEvent.click(checkbox);
+            await tick();
+
+            await fireEvent.keyDown(textarea, { key: 'Enter' });
+
+            await vi.waitFor(() => {
+                expect(invoke).toHaveBeenCalledWith('core_command', expect.anything());
+            });
+            expect(invoke).not.toHaveBeenCalledWith('compress_image', expect.anything());
+            expect(invoke).toHaveBeenCalledWith('core_command', {
+                command: {
+                    type: 'Matrix',
+                    data: {
+                        type: 'SendMessage',
+                        data: { room_id: ROOM, text: '', html_body: null, attachment_path: '/tmp/etch-paste-123.png' },
+                    },
+                },
+            });
+        });
+
+        it('shows compress checkbox for large file picker images', async () => {
+            vi.mocked(open).mockResolvedValueOnce('/home/user/photo.jpg');
+            vi.mocked(stat).mockResolvedValueOnce({ size: 500_000, isFile: true, isDirectory: false } as any);
+
+            const { container } = render(MessageInput);
+            const attachBtn = screen.getByLabelText('Attach file');
+            await fireEvent.click(attachBtn);
+
+            await vi.waitFor(() => {
+                expect(screen.getByText('photo.jpg')).toBeInTheDocument();
+            });
+            expect(container.querySelector('.compress-option')).toBeInTheDocument();
+        });
+
+        it('hides compress checkbox for non-image files', async () => {
+            vi.mocked(invoke).mockResolvedValueOnce(['/tmp/etch-paste-123.txt', 500_000]);
+
+            const { container } = render(MessageInput);
+            const textarea = screen.getByRole('textbox');
+
+            // Simulate picking a non-image file by mocking the dialog
+            vi.mocked(open).mockResolvedValueOnce('/home/user/document.pdf');
+            vi.mocked(stat).mockResolvedValueOnce({ size: 500_000, isFile: true, isDirectory: false } as any);
+
+            const attachBtn = screen.getByLabelText('Attach file');
+            await fireEvent.click(attachBtn);
+
+            await vi.waitFor(() => {
+                expect(screen.getByText('document.pdf')).toBeInTheDocument();
+            });
+            expect(container.querySelector('.compress-option')).not.toBeInTheDocument();
+        });
     });
 });

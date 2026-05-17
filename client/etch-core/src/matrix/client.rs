@@ -273,6 +273,11 @@ pub async fn send_message(text: String, html_body: Option<String>, room_id_str: 
                 .unwrap_or("attachment");
             let content_type = sanitize_mime(path);
 
+            // Clean up temp files from clipboard paste now that we've read the data
+            if filename.starts_with("etch-paste-") {
+                let _ = std::fs::remove_file(path);
+            }
+
             if let Err(e) = room.send_attachment(filename, &content_type, data, AttachmentConfig::new()).await {
                 log::error!("Failed to send attachment: {:?}", e);
             }

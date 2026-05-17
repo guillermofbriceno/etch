@@ -2,7 +2,7 @@
     import { onMount, onDestroy, tick } from 'svelte';
     import { get } from 'svelte/store';
     import { open } from '@tauri-apps/plugin-dialog';
-    import { remove } from '@tauri-apps/plugin-fs';
+    import { stat } from '@tauri-apps/plugin-fs';
     import { invoke } from '@tauri-apps/api/core';
     import { sendMessage, activeChannelId, activeChannel, activeWindow, replyingTo, clearReply } from '$lib/stores';
     import { composeHtml, insertMentionLinks } from '$lib/markdown';
@@ -12,8 +12,16 @@
     let showEmojiPicker = false;
     let textareaEl: HTMLTextAreaElement;
     let pickerAnchorEl: HTMLDivElement;
-    let pendingAttachment: { path: string; temp: boolean } | null = null;
+    let pendingAttachment: { path: string; temp: boolean; size: number } | null = null;
+    let compressAttachment = true;
+    let processingPaste = false;
     let composeLock = false;
+
+    const imageExtensions = ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'tiff', 'tif'];
+    function isImage(path: string): boolean {
+        const ext = path.split('.').pop()?.toLowerCase() ?? '';
+        return imageExtensions.includes(ext);
+    }
 
     // Tab-completion state
     let tabPrefix = '';
@@ -96,7 +104,8 @@
     async function pickFile() {
         const selected = await open({ multiple: false, directory: false });
         if (selected) {
-            pendingAttachment = { path: selected as string, temp: false };
+            const meta = await stat(selected as string);
+            pendingAttachment = { path: selected as string, temp: false, size: meta.size };
         }
     }
 
@@ -108,10 +117,21 @@
         return path.split('/').pop() ?? path;
     }
 
+    let pasteInFlight = false;
     async function handlePaste(event: ClipboardEvent) {
-        const path = await invoke<string | null>('paste_clipboard_image');
-        if (path) {
-            pendingAttachment = { path, temp: true };
+        if (pasteInFlight) return;
+        pasteInFlight = true;
+        const spinnerDelay = setTimeout(() => { processingPaste = true; }, 100);
+        try {
+            const result = await invoke<[string, number] | null>('paste_clipboard_image');
+            if (result) {
+                const [path, size] = result;
+                pendingAttachment = { path, temp: true, size };
+            }
+        } finally {
+            clearTimeout(spinnerDelay);
+            processingPaste = false;
+            pasteInFlight = false;
         }
     }
 
@@ -208,6 +228,7 @@
             : trimmed;
 
         const attachment = pendingAttachment;
+        const shouldCompress = compressAttachment;
         const mentions = new Map(mentionMap);
 
         // Save state for recovery on failure
@@ -218,6 +239,7 @@
         // Optimistic clear
         messageText = '';
         pendingAttachment = null;
+        compressAttachment = true;
         mentionMap.clear();
         clearReply();
         requestAnimationFrame(autoResize);
@@ -230,10 +252,11 @@
                 await sendMessage(roomId, body, needsHtml ? withMentions : null, null);
             }
             if (attachment) {
-                await sendMessage(roomId, '', null, attachment.path);
-                if (attachment.temp) {
-                    try { await remove(attachment.path); } catch {}
+                let attachPath = attachment.path;
+                if (shouldCompress && isImage(attachment.path) && attachment.size > 256_000) {
+                    attachPath = await invoke<string>('compress_image', { path: attachment.path });
                 }
+                await sendMessage(roomId, '', null, attachPath);
             }
         } catch {
             // Restore draft so the user doesn't lose their message
@@ -283,15 +306,30 @@
         </div>
     {/if}
 
-    {#if pendingAttachment}
+    {#if processingPaste}
+        <div class="attachment-preview">
+            <div class="attachment-info">
+                <div class="spinner"></div>
+                <span class="attachment-name">Processing paste...</span>
+            </div>
+        </div>
+    {:else if pendingAttachment}
         <div class="attachment-preview">
             <div class="attachment-info">
                 <Icon name="file" size={14} class="attachment-icon" />
                 <span class="attachment-name">{fileName(pendingAttachment.path)}</span>
             </div>
-            <button class="cancel-attachment" aria-label="Remove attachment" on:click={clearAttachment}>
-                <Icon name="close" size={14} />
-            </button>
+            <div class="attachment-actions">
+                {#if isImage(pendingAttachment.path) && pendingAttachment.size > 256_000}
+                    <label class="compress-option">
+                        <input type="checkbox" bind:checked={compressAttachment} />
+                        Compress
+                    </label>
+                {/if}
+                <button class="cancel-attachment" aria-label="Remove attachment" on:click={clearAttachment}>
+                    <Icon name="close" size={14} />
+                </button>
+            </div>
         </div>
     {/if}
 
@@ -448,6 +486,42 @@
         overflow: hidden;
         text-overflow: ellipsis;
     }
+
+    .attachment-actions {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-shrink: 0;
+    }
+
+    .compress-option {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        cursor: pointer;
+        color: #b9bbbe;
+        font-size: 13px;
+        user-select: none;
+    }
+
+    .compress-option input[type="checkbox"] {
+        accent-color: #5865f2;
+        width: 14px;
+        height: 14px;
+        margin: 0;
+        cursor: pointer;
+    }
+
+    .spinner {
+        width: 14px;
+        height: 14px;
+        border: 2px solid rgba(255, 255, 255, 0.1);
+        border-top-color: #b9bbbe;
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
 
     .cancel-attachment {
         flex-shrink: 0;

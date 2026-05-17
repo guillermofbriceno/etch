@@ -27,29 +27,71 @@ fn play_sfx(name: String, volume: f32, state: State<'_, SfxPlayer>) {
 }
 
 #[tauri::command]
-fn paste_clipboard_image() -> Result<Option<String>, String> {
-    let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
-    let img_data = match clipboard.get_image() {
-        Ok(data) => data,
-        Err(_) => return Ok(None),
-    };
+async fn paste_clipboard_image() -> Result<Option<(String, u64)>, String> {
+    tokio::task::spawn_blocking(|| {
+        let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
+        let img_data = match clipboard.get_image() {
+            Ok(data) => data,
+            Err(_) => return Ok(None),
+        };
 
-    let img = image::RgbaImage::from_raw(
-        img_data.width as u32,
-        img_data.height as u32,
-        img_data.bytes.into_owned(),
-    ).ok_or("Failed to create image from clipboard data")?;
+        let img = image::RgbaImage::from_raw(
+            img_data.width as u32,
+            img_data.height as u32,
+            img_data.bytes.into_owned(),
+        ).ok_or("Failed to create image from clipboard data")?;
 
-    let path = std::env::temp_dir().join(format!("etch-paste-{}.png", std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()));
+        let path = std::env::temp_dir().join(format!("etch-paste-{}.png", std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()));
 
-    let mut buf = Cursor::new(Vec::new());
-    img.write_to(&mut buf, image::ImageFormat::Png).map_err(|e| e.to_string())?;
-    std::fs::write(&path, buf.into_inner()).map_err(|e| e.to_string())?;
+        let mut buf = Cursor::new(Vec::new());
+        img.write_to(&mut buf, image::ImageFormat::Png).map_err(|e| e.to_string())?;
+        let bytes = buf.into_inner();
+        let size = bytes.len() as u64;
+        std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
 
-    Ok(Some(path.to_string_lossy().into_owned()))
+        Ok(Some((path.to_string_lossy().into_owned(), size)))
+    }).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn compress_image(path: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        let data = std::fs::read(&path).map_err(|e| e.to_string())?;
+
+        let img = image::ImageReader::new(Cursor::new(&data))
+            .with_guessed_format()
+            .map_err(|e| e.to_string())?
+            .decode()
+            .map_err(|e| e.to_string())?;
+
+        let stem = Path::new(&path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("image");
+
+        let out_path = std::env::temp_dir().join(format!("etch-paste-{}.jpg", stem));
+
+        let mut buf = Cursor::new(Vec::new());
+        let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 80);
+        img.write_with_encoder(encoder).map_err(|e| e.to_string())?;
+        std::fs::write(&out_path, buf.into_inner()).map_err(|e| e.to_string())?;
+
+        // Clean up the original temp file if it was from a paste
+        if Path::new(&path)
+            .file_name()
+            .and_then(|f| f.to_str())
+            .is_some_and(|f| f.starts_with("etch-paste-"))
+        {
+            let _ = std::fs::remove_file(&path);
+        }
+
+        Ok(out_path.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -263,6 +305,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             core_command,
             paste_clipboard_image,
+            compress_image,
             play_sfx,
             check_for_update
         ])
