@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { channels, activeChannelId, setActiveChannel, openConnect, usersByChannel, setUserVolume, matrixConnecting, hideDm, sidebarCollapsed, sidebarTransitioning, toggleSidebar } from '$lib/stores';
+    import { channels, activeChannelId, setActiveChannel, openConnect, usersByChannel, setUserVolume, matrixConnecting, hideDm, dmLastActivity, sidebarCollapsed, sidebarTransitioning, toggleSidebar } from '$lib/stores';
     import { sendCoreCommand } from '$lib/ipc';
     import { resolveMediaUrl, getInitial } from '$lib/media';
     import type { VoiceUser } from '$lib/stores/voiceState';
@@ -46,7 +46,7 @@
         .sort((a, b) => (a.channel_id ?? 999) - (b.channel_id ?? 999));
     $: dmChannels    = $channels
         .filter(c => c.etch_room_type === 'Dm')
-        .sort((a, b) => (a.channel_id ?? 999) - (b.channel_id ?? 999));
+        .sort((a, b) => ($dmLastActivity[b.id] ?? 0) - ($dmLastActivity[a.id] ?? 0));
 
     function toggleDropdown() {
         dropdownOpen = !dropdownOpen;

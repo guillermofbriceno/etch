@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, beforeAll, vi } from 'vitest';
 import { get } from 'svelte/store';
-import { channels, activeChannel, handleMatrixEvent, initChannels, initHiddenDms, hideDm, unhideDm } from '../channels';
+import { channels, activeChannel, dmLastActivity, handleMatrixEvent, initChannels, initHiddenDms, hideDm, unhideDm, resetChannels } from '../channels';
 import { activeChannelId } from '../activeChannel';
 import { currentUser } from '../user';
 import { resetStores } from './helpers';
@@ -324,5 +324,193 @@ describe('hideDm / unhideDm (store-level)', () => {
         hideDm('dm1');
 
         expect(get(activeChannelId)).toBe('t1');
+    });
+});
+
+// --- Helpers for dmLastActivity tests ---
+
+function makeMessage(id: string, sender: string, timestamp: number) {
+    return {
+        sender: { display_name: sender, avatar_url: null },
+        kind: { Message: { id, sender: `@${sender}:s`, body: 'hi', html_body: null, media: null, timestamp, reactions: {} } },
+    };
+}
+
+function makeStateEvent() {
+    return {
+        sender: { display_name: 'system', avatar_url: null },
+        kind: { StateEvent: { RoomNameChanged: { name: 'New Name' } } },
+    };
+}
+
+function makeDayDivider(ts: number) {
+    return { sender: null, kind: { DayDivider: ts } };
+}
+
+describe('dmLastActivity', () => {
+    describe('TimelinePushBack', () => {
+        it('updates timestamp when a message arrives', () => {
+            handleMatrixEvent({
+                type: 'TimelinePushBack',
+                data: ['dm1', makeMessage('e1', 'alice', 1000)],
+            } as any);
+
+            expect(get(dmLastActivity)['dm1']).toBe(1000);
+        });
+
+        it('overwrites with a newer timestamp', () => {
+            handleMatrixEvent({
+                type: 'TimelinePushBack',
+                data: ['dm1', makeMessage('e1', 'alice', 1000)],
+            } as any);
+            handleMatrixEvent({
+                type: 'TimelinePushBack',
+                data: ['dm1', makeMessage('e2', 'alice', 2000)],
+            } as any);
+
+            expect(get(dmLastActivity)['dm1']).toBe(2000);
+        });
+
+        it('does not update for non-message entries (state events)', () => {
+            handleMatrixEvent({
+                type: 'TimelinePushBack',
+                data: ['dm1', makeStateEvent()],
+            } as any);
+
+            expect(get(dmLastActivity)['dm1']).toBeUndefined();
+        });
+
+        it('does not update for string-kind entries (ReadMarker)', () => {
+            handleMatrixEvent({
+                type: 'TimelinePushBack',
+                data: ['dm1', { sender: null, kind: 'ReadMarker' }],
+            } as any);
+
+            expect(get(dmLastActivity)['dm1']).toBeUndefined();
+        });
+
+        it('tracks multiple rooms independently', () => {
+            handleMatrixEvent({
+                type: 'TimelinePushBack',
+                data: ['dm1', makeMessage('e1', 'alice', 1000)],
+            } as any);
+            handleMatrixEvent({
+                type: 'TimelinePushBack',
+                data: ['dm2', makeMessage('e2', 'bob', 2000)],
+            } as any);
+
+            expect(get(dmLastActivity)['dm1']).toBe(1000);
+            expect(get(dmLastActivity)['dm2']).toBe(2000);
+        });
+    });
+
+    describe('TimelineAppend', () => {
+        it('picks the timestamp of the last message in the batch', () => {
+            handleMatrixEvent({
+                type: 'TimelineAppend',
+                data: ['dm1', [
+                    makeMessage('e1', 'alice', 1000),
+                    makeMessage('e2', 'alice', 2000),
+                    makeMessage('e3', 'bob', 3000),
+                ]],
+            } as any);
+
+            expect(get(dmLastActivity)['dm1']).toBe(3000);
+        });
+
+        it('skips non-message entries at the end of the batch', () => {
+            handleMatrixEvent({
+                type: 'TimelineAppend',
+                data: ['dm1', [
+                    makeMessage('e1', 'alice', 5000),
+                    makeDayDivider(86400000),
+                ]],
+            } as any);
+
+            expect(get(dmLastActivity)['dm1']).toBe(5000);
+        });
+
+        it('does not update when batch contains no messages', () => {
+            handleMatrixEvent({
+                type: 'TimelineAppend',
+                data: ['dm1', [makeDayDivider(86400000), makeStateEvent()]],
+            } as any);
+
+            expect(get(dmLastActivity)['dm1']).toBeUndefined();
+        });
+
+        it('does not overwrite a newer timestamp with older history', () => {
+            // Simulate: a new message arrives first, then initial history loads
+            handleMatrixEvent({
+                type: 'TimelinePushBack',
+                data: ['dm1', makeMessage('e-new', 'alice', 9000)],
+            } as any);
+            handleMatrixEvent({
+                type: 'TimelineAppend',
+                data: ['dm1', [
+                    makeMessage('e-old1', 'bob', 1000),
+                    makeMessage('e-old2', 'bob', 2000),
+                ]],
+            } as any);
+
+            expect(get(dmLastActivity)['dm1']).toBe(9000);
+        });
+
+        it('updates when the appended timestamp equals the existing one', () => {
+            dmLastActivity.set({ dm1: 5000 });
+
+            handleMatrixEvent({
+                type: 'TimelineAppend',
+                data: ['dm1', [makeMessage('e1', 'alice', 5000)]],
+            } as any);
+
+            expect(get(dmLastActivity)['dm1']).toBe(5000);
+        });
+    });
+
+    describe('TimelineReset', () => {
+        it('replaces the timestamp with the last message in the new timeline', () => {
+            dmLastActivity.set({ dm1: 1000 });
+
+            handleMatrixEvent({
+                type: 'TimelineReset',
+                data: ['dm1', [
+                    makeMessage('e1', 'alice', 5000),
+                    makeMessage('e2', 'bob', 8000),
+                ]],
+            } as any);
+
+            expect(get(dmLastActivity)['dm1']).toBe(8000);
+        });
+
+        it('preserves existing timestamp when reset timeline has no messages', () => {
+            dmLastActivity.set({ dm1: 5000 });
+
+            handleMatrixEvent({
+                type: 'TimelineReset',
+                data: ['dm1', [makeDayDivider(86400000)]],
+            } as any);
+
+            expect(get(dmLastActivity)['dm1']).toBe(5000);
+        });
+
+        it('can set a timestamp for a room that had none', () => {
+            handleMatrixEvent({
+                type: 'TimelineReset',
+                data: ['dm1', [makeMessage('e1', 'alice', 4000)]],
+            } as any);
+
+            expect(get(dmLastActivity)['dm1']).toBe(4000);
+        });
+    });
+
+    describe('resetChannels', () => {
+        it('clears dmLastActivity', () => {
+            dmLastActivity.set({ dm1: 1000, dm2: 2000 });
+
+            resetChannels();
+
+            expect(get(dmLastActivity)).toEqual({});
+        });
     });
 });

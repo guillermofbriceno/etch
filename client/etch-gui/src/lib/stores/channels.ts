@@ -1,12 +1,24 @@
 import { writable, derived, get } from 'svelte/store';
-import type { RoomInfo } from '$lib/types';
+import type { RoomInfo, TimelineEntry } from '$lib/types';
 import type { MatrixEvent } from '$lib/ipc';
 import { sendCoreCommand } from '$lib/ipc';
 import { activeChannelId, onUnreadMessage } from './activeChannel';
 import { setActiveChannel } from './messages';
 import { currentUser } from './user';
 
+/** Return the timestamp of the last Message in a list of entries, or null. */
+function lastMessageTs(entries: TimelineEntry[]): number | null {
+    for (let i = entries.length - 1; i >= 0; i--) {
+        const kind = entries[i].kind;
+        if (typeof kind === 'object' && 'Message' in kind) {
+            return kind.Message.timestamp;
+        }
+    }
+    return null;
+}
+
 export const channels = writable<RoomInfo[]>([]);
+export const dmLastActivity = writable<Record<string, number>>({});
 
 // --- Hidden DM state (Etch-level, not Matrix) ---
 
@@ -55,6 +67,7 @@ export function unhideDm(roomId: string): void {
 export function resetChannels(): void {
     channels.set([]);
     hiddenDmInfos.set(new Map());
+    dmLastActivity.set({});
 }
 
 // --- Unread / active channel bookkeeping ---
@@ -130,6 +143,25 @@ export function handleMatrixEvent(me: MatrixEvent): void {
                     unhideDm(roomId);
                 }
             }
+        }
+        // Update last-activity timestamp for DM sorting
+        {
+            const kind = entry.kind;
+            if (typeof kind === 'object' && 'Message' in kind) {
+                dmLastActivity.update(m => ({ ...m, [roomId]: kind.Message.timestamp }));
+            }
+        }
+    } else if (me.type === 'TimelineAppend') {
+        const [roomId, entries] = me.data;
+        const ts = lastMessageTs(entries);
+        if (ts != null) {
+            dmLastActivity.update(m => ts >= (m[roomId] ?? 0) ? { ...m, [roomId]: ts } : m);
+        }
+    } else if (me.type === 'TimelineReset') {
+        const [roomId, entries] = me.data;
+        const ts = lastMessageTs(entries);
+        if (ts != null) {
+            dmLastActivity.update(m => ({ ...m, [roomId]: ts }));
         }
     }
 }

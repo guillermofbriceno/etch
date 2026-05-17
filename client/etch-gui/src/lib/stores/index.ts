@@ -5,7 +5,7 @@ export { appFocused } from './eventRouter';
 
 export { activeChannelId } from './activeChannel';
 export { activeWindow, setActiveChannel, loadOlder, sendMessage, createDirectMessage, toggleReaction } from './messages';
-export { channels, activeChannel, hideDm } from './channels';
+export { channels, activeChannel, hideDm, dmLastActivity } from './channels';
 export { currentUser } from './user';
 export { isMuted, isDeafened, toggleMute, toggleDeafen } from './audio';
 export { activeOverlay, overlayImageUrl, settingsTab, showRoomIds, openSettings, openImage, openConnect, closeOverlay } from './overlay';
