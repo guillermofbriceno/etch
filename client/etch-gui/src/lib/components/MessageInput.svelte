@@ -32,11 +32,17 @@
     // Tracks completed mentions in the current message: displayName -> matrixId
     const mentionMap = new Map<string, string>();
 
+    // Mention popup state
+    let showMentionPopup = false;
+    let mentionQuery = '';
+    let mentionSelectedIndex = 0;
+
     // Clear mention and tab-completion state when switching channels
     $: $activeChannelId, (() => {
         mentionMap.clear();
         tabMatches = [];
         tabIndex = -1;
+        showMentionPopup = false;
     })();
 
     // Derived reactively from timeline so we don't rebuild on every Tab press
@@ -54,6 +60,48 @@
         }
         return Array.from(seen, ([matrixId, displayName]) => ({ displayName, matrixId }));
     })();
+
+    $: mentionMatches = showMentionPopup
+        ? roomUsers.filter(u =>
+            u.displayName.toLowerCase().startsWith(mentionQuery.toLowerCase()) ||
+            u.matrixId.slice(1).split(':')[0].toLowerCase().startsWith(mentionQuery.toLowerCase())
+          ).slice(0, 8)
+        : [];
+
+    function checkMentionTrigger() {
+        if (!textareaEl) return;
+        const cursor = textareaEl.selectionStart;
+        const before = messageText.slice(0, cursor);
+        const match = before.match(/@(\S*)$/);
+        if (match) {
+            mentionQuery = match[1];
+            mentionSelectedIndex = 0;
+            showMentionPopup = true;
+        } else {
+            showMentionPopup = false;
+        }
+    }
+
+    async function selectMention(user: { displayName: string; matrixId: string }) {
+        const cursor = textareaEl.selectionStart;
+        const before = messageText.slice(0, cursor);
+        const match = before.match(/@(\S*)$/);
+        if (!match) return;
+
+        const start = cursor - match[0].length;
+        const replacement = `@${user.displayName} `;
+        messageText = messageText.slice(0, start) + replacement + messageText.slice(cursor);
+        mentionMap.set(user.displayName, user.matrixId);
+        showMentionPopup = false;
+
+        await tick();
+        if (!textareaEl) return;
+        const pos = start + replacement.length;
+        textareaEl.selectionStart = pos;
+        textareaEl.selectionEnd = pos;
+        textareaEl.focus();
+        autoResize();
+    }
 
     async function handleTabCompletion() {
         const cursor = textareaEl.selectionStart;
@@ -268,6 +316,30 @@
     }
 
     async function handleKeydown(event: KeyboardEvent) {
+        // Mention popup keyboard navigation
+        if (showMentionPopup && mentionMatches.length > 0) {
+            if (event.key === 'ArrowDown') {
+                event.preventDefault();
+                mentionSelectedIndex = (mentionSelectedIndex + 1) % mentionMatches.length;
+                return;
+            }
+            if (event.key === 'ArrowUp') {
+                event.preventDefault();
+                mentionSelectedIndex = (mentionSelectedIndex - 1 + mentionMatches.length) % mentionMatches.length;
+                return;
+            }
+            if (event.key === 'Tab' || (event.key === 'Enter' && !event.shiftKey)) {
+                event.preventDefault();
+                await selectMention(mentionMatches[mentionSelectedIndex]);
+                return;
+            }
+            if (event.key === 'Escape') {
+                event.preventDefault();
+                showMentionPopup = false;
+                return;
+            }
+        }
+
         if (event.key === 'Tab' && !event.shiftKey) {
             event.preventDefault();
             await handleTabCompletion();
@@ -333,6 +405,22 @@
         </div>
     {/if}
 
+    {#if showMentionPopup && mentionMatches.length > 0}
+        <div class="mention-popup">
+            {#each mentionMatches as user, i}
+                <button
+                    class="mention-option"
+                    class:selected={i === mentionSelectedIndex}
+                    on:mousedown|preventDefault={() => selectMention(user)}
+                    on:mouseenter={() => mentionSelectedIndex = i}
+                >
+                    <span class="mention-name">{user.displayName}</span>
+                    <span class="mention-id">{user.matrixId}</span>
+                </button>
+            {/each}
+        </div>
+    {/if}
+
     <div class="input-container">
         <button class="icon-button attach-button" aria-label="Attach file" on:click={pickFile}>
             <Icon name="plus_circle" />
@@ -345,7 +433,7 @@
             bind:this={textareaEl}
             on:keydown={handleKeydown}
             on:paste={handlePaste}
-            on:input={autoResize}
+            on:input={() => { autoResize(); checkMentionTrigger(); }}
             rows="1"
         ></textarea>
 
@@ -406,6 +494,7 @@
 
 <style>
     .input-wrapper {
+        position: relative;
         width: 100%;
         background-color: transparent;
         border-radius: 10px;
@@ -660,4 +749,46 @@
     .message-box::-webkit-scrollbar { width: 4px; }
     .message-box::-webkit-scrollbar-track { background: transparent; }
     .message-box::-webkit-scrollbar-thumb { background-color: #202225; border-radius: 4px; }
+
+    .mention-popup {
+        position: absolute;
+        bottom: 100%;
+        left: 16px;
+        right: 16px;
+        max-height: 240px;
+        overflow-y: auto;
+        background-color: var(--bg-inset);
+        border: 1px solid var(--border-input);
+        border-radius: 8px;
+        padding: 4px;
+        z-index: 20;
+        box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.3);
+    }
+
+    .mention-popup::-webkit-scrollbar { width: 6px; }
+    .mention-popup::-webkit-scrollbar-track { background: transparent; }
+    .mention-popup::-webkit-scrollbar-thumb { background-color: var(--border-input); border-radius: 3px; }
+
+    .mention-option {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        padding: 8px 12px;
+        background: none;
+        border: none;
+        border-radius: 4px;
+        color: #dcddde;
+        font-size: 14px;
+        cursor: pointer;
+        text-align: left;
+    }
+
+    .mention-option:hover,
+    .mention-option.selected {
+        background-color: var(--bg-hover);
+    }
+
+    .mention-name { font-weight: 500; }
+    .mention-id { color: #72767d; font-size: 12px; }
 </style>

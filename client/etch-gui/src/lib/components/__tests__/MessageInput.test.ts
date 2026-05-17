@@ -219,23 +219,29 @@ describe('MessageInput', () => {
         expect(textarea.value).toBe('@Alice ');
     });
 
-    it('tab completion cycles through matches', async () => {
+    it('tab completion cycles through matches via arrow keys', async () => {
         seedUser(ROOM, '@alice:etch.gg', 'Alice');
         seedUser(ROOM, '@alex:etch.gg', 'Alex');
 
         render(MessageInput);
         const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
 
-        // Type @al and press Tab twice
+        // Type @al to open popup, arrow down to second match, then Tab to select
         await fireEvent.input(textarea, { target: { value: '@al' } });
         textarea.selectionStart = 3;
         textarea.selectionEnd = 3;
         await fireEvent.keyDown(textarea, { key: 'Tab' });
 
         const firstMatch = textarea.value;
+
+        // Start again: type @al, arrow down, then select
+        await fireEvent.input(textarea, { target: { value: '@al' } });
+        textarea.selectionStart = 3;
+        textarea.selectionEnd = 3;
+        await fireEvent.keyDown(textarea, { key: 'ArrowDown' });
         await fireEvent.keyDown(textarea, { key: 'Tab' });
 
-        // Should have cycled to the other match
+        // Should have selected the other match
         expect(textarea.value).not.toBe(firstMatch);
         expect(textarea.value).toMatch(/^@(Alice|Alex) $/);
     });
