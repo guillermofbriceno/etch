@@ -101,32 +101,32 @@
     }
 
     .password-dialog h3 {
-        color: #fff;
+        color: var(--text-bright);
         font-size: 18px;
         font-weight: 600;
         margin: 0 0 8px;
     }
 
     .password-prompt {
-        color: #b9bbbe;
-        font-size: 14px;
+        color: var(--text-secondary);
+        font-size: var(--font-size-base);
         margin: 0 0 20px;
     }
 
     .password-prompt strong {
-        color: #dcddde;
+        color: var(--text-primary);
     }
 
     .error-message {
-        color: #ed4245;
-        font-size: 14px;
+        color: var(--status-danger);
+        font-size: var(--font-size-base);
         margin: 0 0 12px;
     }
 
     .password-dialog input[type="password"] {
         width: 100%;
         background-color: var(--bg-input);
-        color: #dcddde;
+        color: var(--text-primary);
         border: 1px solid var(--border-input);
         border-radius: 4px;
         padding: 10px;
@@ -150,16 +150,16 @@
         padding: 8px 20px;
         border: none;
         border-radius: 4px;
-        font-size: 14px;
+        font-size: var(--font-size-base);
         font-family: 'Inter', sans-serif;
         font-weight: 500;
         cursor: pointer;
         transition: background-color 0.15s;
     }
 
-    .login-btn { background-color: #43b581; color: #fff; }
+    .login-btn { background-color: #43b581; color: var(--text-bright); }
     .login-btn:hover { background-color: #3ca374; }
 
-    .cancel-btn { background-color: #4f545c; color: #fff; }
+    .cancel-btn { background-color: #4f545c; color: var(--text-bright); }
     .cancel-btn:hover { background-color: #5d6269; }
 </style>

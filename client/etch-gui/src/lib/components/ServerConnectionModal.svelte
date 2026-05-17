@@ -191,7 +191,7 @@
     .group-header {
         font-size: 12px;
         font-weight: 700;
-        color: #8e9297;
+        color: var(--text-tertiary);
         text-transform: uppercase;
         margin: 0 0 8px 10px;
         letter-spacing: 0.2px;
@@ -210,7 +210,7 @@
         width: 100%;
         background: transparent;
         border: none;
-        color: #b9bbbe;
+        color: var(--text-secondary);
         text-align: left;
         padding: 6px 10px;
         margin-bottom: 2px;
@@ -224,32 +224,32 @@
         text-overflow: ellipsis;
     }
 
-    .bookmark-item:hover { background-color: var(--bg-hover); color: #dcddde; }
-    .bookmark-item.active { background-color: var(--bg-active); color: #fff; }
+    .bookmark-item:hover { background-color: var(--bg-hover); color: var(--text-primary); }
+    .bookmark-item.active { background-color: var(--bg-active); color: var(--text-bright); }
 
     .add-btn {
         background: transparent;
         border: 1px dashed rgba(255, 255, 255, 0.15);
-        color: #b9bbbe;
+        color: var(--text-secondary);
         padding: 8px 10px;
         margin-top: 8px;
         border-radius: 4px;
-        font-size: 14px;
+        font-size: var(--font-size-base);
         font-family: 'Inter', sans-serif;
         cursor: pointer;
         transition: background-color 0.15s, color 0.15s, border-color 0.15s;
     }
 
-    .add-btn:hover { background-color: var(--bg-hover); color: #dcddde; border-color: rgba(255, 255, 255, 0.25); }
+    .add-btn:hover { background-color: var(--bg-hover); color: var(--text-primary); border-color: rgba(255, 255, 255, 0.25); }
 
     /* ── Content ── */
 
-    .editor-pane h2 { color: #fff; font-size: 20px; font-weight: 600; margin-top: 0; margin-bottom: 20px; }
+    .editor-pane h2 { color: var(--text-bright); font-size: 20px; font-weight: 600; margin-top: 0; margin-bottom: 20px; }
 
     .field-group { margin-bottom: 20px; display: flex; flex-direction: column; }
 
     .field-group label {
-        color: #8e9297;
+        color: var(--text-tertiary);
         font-size: 12px;
         font-weight: 600;
         text-transform: uppercase;
@@ -259,7 +259,7 @@
     .field-group input[type="text"],
     .field-group input[type="number"] {
         background-color: var(--bg-input);
-        color: #dcddde;
+        color: var(--text-primary);
         border: 1px solid var(--border-input);
         border-radius: 4px;
         padding: 10px;
@@ -281,8 +281,8 @@
         display: flex;
         align-items: center;
         gap: 8px;
-        color: #b9bbbe;
-        font-size: 14px;
+        color: var(--text-secondary);
+        font-size: var(--font-size-base);
         text-transform: none;
         font-weight: 400;
         cursor: pointer;
@@ -301,7 +301,7 @@
         gap: 6px;
         background: transparent;
         border: none;
-        color: #8e9297;
+        color: var(--text-tertiary);
         font-size: 12px;
         font-weight: 600;
         text-transform: uppercase;
@@ -313,7 +313,7 @@
         transition: color 0.15s;
     }
 
-    .advanced-toggle:hover { color: #dcddde; }
+    .advanced-toggle:hover { color: var(--text-primary); }
 
     .advanced-arrow {
         display: inline-block;
@@ -328,7 +328,7 @@
     .advanced-section .field-group input[type="text"],
     .advanced-section .field-group input[type="password"] {
         background-color: var(--bg-input);
-        color: #dcddde;
+        color: var(--text-primary);
         border: 1px solid var(--border-input);
         border-radius: 4px;
         padding: 10px;
@@ -348,28 +348,28 @@
         padding: 8px 20px;
         border: none;
         border-radius: 4px;
-        font-size: 14px;
+        font-size: var(--font-size-base);
         font-family: 'Inter', sans-serif;
         font-weight: 500;
         cursor: pointer;
         transition: background-color 0.15s;
     }
 
-    .save-btn { background-color: #7289da; color: #fff; }
+    .save-btn { background-color: #7289da; color: var(--text-bright); }
     .save-btn:hover:not(:disabled) { background-color: #677bc4; }
     .save-btn:disabled { opacity: 0.4; cursor: default; }
 
-    .connect-btn { background-color: #43b581; color: #fff; }
+    .connect-btn { background-color: #43b581; color: var(--text-bright); }
     .connect-btn:hover { background-color: #3ca374; }
 
-    .remove-btn { background-color: #ed4245; color: #fff; }
+    .remove-btn { background-color: var(--status-danger); color: var(--text-bright); }
     .remove-btn:hover { background-color: #d63031; }
 
-    .empty-state { color: #72767d; padding-top: 40px; font-size: 16px; }
+    .empty-state { color: var(--text-muted); padding-top: 40px; font-size: 16px; }
 
     .status-message {
-        color: #b9bbbe;
-        font-size: 14px;
+        color: var(--text-secondary);
+        font-size: var(--font-size-base);
         margin-top: 16px;
     }
 </style>

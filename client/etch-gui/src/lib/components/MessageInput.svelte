@@ -519,26 +519,26 @@
         align-items: center;
         gap: 6px;
         min-width: 0;
-        color: #b9bbbe;
+        color: var(--text-secondary);
         font-size: 13px;
     }
 
     .reply-info :global(.reply-icon) { flex-shrink: 0; color: var(--accent); }
 
-    .reply-sender { font-weight: 600; color: #dcddde; white-space: nowrap; }
+    .reply-sender { font-weight: 600; color: var(--text-primary); white-space: nowrap; }
 
     .reply-body {
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
-        color: #8e9297;
+        color: var(--text-tertiary);
     }
 
     .cancel-reply {
         flex-shrink: 0;
         background: none;
         border: none;
-        color: #72767d;
+        color: var(--text-muted);
         cursor: pointer;
         padding: 2px;
         display: flex;
@@ -547,7 +547,7 @@
         transition: color 0.1s;
     }
 
-    .cancel-reply:hover { color: #dcddde; }
+    .cancel-reply:hover { color: var(--text-primary); }
 
     .attachment-preview {
         display: flex;
@@ -562,7 +562,7 @@
         align-items: center;
         gap: 6px;
         min-width: 0;
-        color: #b9bbbe;
+        color: var(--text-secondary);
         font-size: 13px;
     }
 
@@ -570,7 +570,7 @@
 
     .attachment-name {
         font-weight: 500;
-        color: #dcddde;
+        color: var(--text-primary);
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -588,13 +588,13 @@
         align-items: center;
         gap: 6px;
         cursor: pointer;
-        color: #b9bbbe;
+        color: var(--text-secondary);
         font-size: 13px;
         user-select: none;
     }
 
     .compress-option input[type="checkbox"] {
-        accent-color: #5865f2;
+        accent-color: var(--primary);
         width: 14px;
         height: 14px;
         margin: 0;
@@ -605,7 +605,7 @@
         width: 14px;
         height: 14px;
         border: 2px solid rgba(255, 255, 255, 0.1);
-        border-top-color: #b9bbbe;
+        border-top-color: var(--text-secondary);
         border-radius: 50%;
         animation: spin 0.8s linear infinite;
     }
@@ -616,7 +616,7 @@
         flex-shrink: 0;
         background: none;
         border: none;
-        color: #72767d;
+        color: var(--text-muted);
         cursor: pointer;
         padding: 2px;
         display: flex;
@@ -625,7 +625,7 @@
         transition: color 0.1s;
     }
 
-    .cancel-attachment:hover { color: #dcddde; }
+    .cancel-attachment:hover { color: var(--text-primary); }
 
     .input-container {
         display: flex;
@@ -641,14 +641,14 @@
         padding: 0;
         margin: 0;
         cursor: pointer;
-        color: #b9bbbe;
+        color: var(--text-secondary);
         display: flex;
         align-items: center;
         justify-content: center;
         transition: color 0.1s ease;
     }
 
-    .icon-button:hover { color: #dcddde; }
+    .icon-button:hover { color: var(--text-primary); }
 
     .lock-button.active { color: var(--accent); }
     .lock-button.active:hover { color: var(--accent-hover); }
@@ -665,7 +665,7 @@
         box-sizing: border-box;
         background: transparent;
         border: none;
-        color: #dcddde;
+        color: var(--text-primary);
         font-family: 'Inter', sans-serif;
         font-size: 16px;
         line-height: 22px;
@@ -686,7 +686,7 @@
         width: 352px;
         height: 360px;
         background-color: #2f3136;
-        border: 1px solid #202225;
+        border: 1px solid var(--border-subtle);
         border-radius: 8px;
         display: flex;
         flex-direction: column;
@@ -696,7 +696,7 @@
 
     .emoji-tabs {
         display: flex;
-        border-bottom: 1px solid #202225;
+        border-bottom: 1px solid var(--border-subtle);
         padding: 4px 4px 0;
     }
 
@@ -726,7 +726,7 @@
 
     .emoji-grid::-webkit-scrollbar { width: 6px; }
     .emoji-grid::-webkit-scrollbar-track { background: transparent; }
-    .emoji-grid::-webkit-scrollbar-thumb { background-color: #202225; border-radius: 3px; }
+    .emoji-grid::-webkit-scrollbar-thumb { background-color: var(--scrollbar-thumb); border-radius: 3px; }
 
     .emoji-cell {
         width: 36px;
@@ -744,11 +744,11 @@
 
     .emoji-cell:hover { background-color: var(--bg-hover); }
 
-    .message-box::placeholder { color: #72767d; }
+    .message-box::placeholder { color: var(--text-muted); }
 
     .message-box::-webkit-scrollbar { width: 4px; }
     .message-box::-webkit-scrollbar-track { background: transparent; }
-    .message-box::-webkit-scrollbar-thumb { background-color: #202225; border-radius: 4px; }
+    .message-box::-webkit-scrollbar-thumb { background-color: var(--scrollbar-thumb); border-radius: 4px; }
 
     .mention-popup {
         position: absolute;
@@ -778,8 +778,8 @@
         background: none;
         border: none;
         border-radius: 4px;
-        color: #dcddde;
-        font-size: 14px;
+        color: var(--text-primary);
+        font-size: var(--font-size-base);
         cursor: pointer;
         text-align: left;
     }
@@ -790,5 +790,5 @@
     }
 
     .mention-name { font-weight: 500; }
-    .mention-id { color: #72767d; font-size: 12px; }
+    .mention-id { color: var(--text-muted); font-size: 12px; }
 </style>

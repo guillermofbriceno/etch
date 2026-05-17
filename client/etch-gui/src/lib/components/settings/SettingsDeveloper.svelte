@@ -58,7 +58,7 @@
         <span class="setting-label">Encryption</span>
         <p class="setting-desc">Enable encryption on the currently active room.</p>
         {#if !$activeChannel?.is_encrypted}
-            <p class="setting-desc" style="color: #ed4245;">This is irreversible, do you have permission to do this?</p>
+            <p class="setting-desc" style="color: var(--status-danger);">This is irreversible, do you have permission to do this?</p>
         {/if}
         <button class="action-btn danger" disabled={!$activeChannel || $activeChannel.is_encrypted} on:click={() => {
             if ($activeChannel) {
@@ -73,14 +73,14 @@
     .dm-input {
         flex: 1;
         background-color: var(--bg-input);
-        color: #dcddde;
+        color: var(--text-primary);
         border: 1px solid var(--border-input);
         border-radius: 4px;
         padding: 8px 10px;
-        font-size: 14px;
+        font-size: var(--font-size-base);
         font-family: 'Inter', sans-serif;
         outline: none;
     }
-    .dm-input:focus { border-color: #5865f2; }
+    .dm-input:focus { border-color: var(--primary); }
     .dm-input::placeholder { color: #4f5660; }
 </style>

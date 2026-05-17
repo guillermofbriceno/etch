@@ -2,6 +2,7 @@ import { writable, get } from 'svelte/store';
 import type { ServerBookmark } from '$lib/types';
 import type { MatrixEvent, SystemEvent } from '$lib/ipc';
 import { sendCoreCommand } from '$lib/ipc';
+import { invoke } from '@tauri-apps/api/core';
 import { closeOverlay } from './overlay';
 import { initHiddenDms } from './channels';
 import { transmissionMode, vadThreshold, voiceHold, useMumbleSettings, deafenSuppressesNotifs } from './voiceSettings';
@@ -117,6 +118,20 @@ export function handleSystemEvent(se: SystemEvent): void {
         const autoConnect = se.data.bookmarks.find(b => b.auto_connect);
         if (autoConnect) {
             connectingBookmark.set(autoConnect);
+        }
+
+        if (se.data.custom_css) {
+            invoke('load_custom_css', { path: se.data.custom_css })
+                .then((css) => {
+                    let el = document.getElementById('custom-user-css');
+                    if (!el) {
+                        el = document.createElement('style');
+                        el.id = 'custom-user-css';
+                        document.head.appendChild(el);
+                    }
+                    el.textContent = css as string;
+                })
+                .catch((e) => console.warn('[css] Failed to load custom stylesheet:', e));
         }
     }
 }

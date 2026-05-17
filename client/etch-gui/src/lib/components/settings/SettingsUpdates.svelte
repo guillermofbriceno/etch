@@ -30,6 +30,6 @@
 </div>
 
 <style>
-    .update-info { color: #b9bbbe; font-size: 14px; margin: 0 0 12px; }
-    .update-error { color: #ed4245; font-size: 14px; margin: 0 0 12px; }
+    .update-info { color: var(--text-secondary); font-size: var(--font-size-base); margin: 0 0 12px; }
+    .update-error { color: var(--status-danger); font-size: var(--font-size-base); margin: 0 0 12px; }
 </style>

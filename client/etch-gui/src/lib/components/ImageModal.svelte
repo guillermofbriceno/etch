@@ -73,8 +73,8 @@
         background: none;
         border: none;
         padding: 0;
-        color: #00aff4;
-        font-size: 14px;
+        color: var(--text-link);
+        font-size: var(--font-size-base);
         font-weight: 500;
         text-decoration: none;
         font-family: 'Inter', sans-serif;

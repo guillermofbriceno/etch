@@ -124,7 +124,7 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        color: #fff;
+        color: var(--text-bright);
         opacity: 0;
         transition: opacity 0.15s;
     }
@@ -133,5 +133,5 @@
 
     .display-name-input { flex: 1; }
     .password-input { margin-bottom: 8px; }
-    .password-error { color: #ed4245; font-size: 13px; margin-bottom: 4px; }
+    .password-error { color: var(--status-danger); font-size: 13px; margin-bottom: 4px; }
 </style>

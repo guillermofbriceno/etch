@@ -23,6 +23,8 @@ pub struct Settings {
     pub deafen_suppresses_notifs: Option<bool>,
     #[serde(default)]
     pub sfx_paths: HashMap<String, String>,
+    #[serde(default)]
+    pub custom_css: Option<String>,
 }
 
 pub fn load(data_dir: &Path) -> Settings {
@@ -221,6 +223,24 @@ mod tests {
         assert_eq!(loaded.sfx_paths.len(), 2);
         assert_eq!(loaded.sfx_paths["new_notif"], "/home/user/sounds/ping.wav");
         assert_eq!(loaded.sfx_paths["user_join"], "/home/user/sounds/hello.wav");
+    }
+
+    #[test]
+    fn custom_css_round_trip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut s = Settings::default();
+        s.custom_css = Some("/home/user/theme.css".into());
+
+        save(tmp.path(), &s);
+        let loaded = load(tmp.path());
+        assert_eq!(loaded.custom_css.as_deref(), Some("/home/user/theme.css"));
+    }
+
+    #[test]
+    fn custom_css_defaults_to_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s = load(tmp.path());
+        assert!(s.custom_css.is_none());
     }
 
     #[test]

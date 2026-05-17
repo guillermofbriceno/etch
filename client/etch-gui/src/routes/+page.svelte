@@ -94,7 +94,7 @@
 
     .app-container {
         display: grid;
-        grid-template-columns: 240px 1fr;
+        grid-template-columns: var(--sidebar-width) 1fr;
         transition: grid-template-columns 100ms ease;
         flex: 1;
         min-height: 0;

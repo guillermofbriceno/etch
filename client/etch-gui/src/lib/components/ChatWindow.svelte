@@ -302,22 +302,22 @@
         box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
         flex-shrink: 0;
         z-index: 2;
-        color: #fff;
+        color: var(--text-bright);
     }
 
-    .chat-header :global(.header-icon) { color: #8e9297; margin-right: 8px; }
+    .chat-header :global(.header-icon) { color: var(--text-tertiary); margin-right: 8px; }
 
     .chat-header h2 { font-size: 16px; font-weight: 600; margin: 0; }
     .chat-header :global(.lock-icon) { color: #43b581; margin-left: 8px; flex-shrink: 0; }
     .room-id {
         margin-left: 10px;
         font-size: 12px;
-        color: #72767d;
-        font-family: monospace;
+        color: var(--text-muted);
+        font-family: var(--font-family-mono);
         cursor: pointer;
         user-select: none;
     }
-    .room-id:hover { color: #dcddde; }
+    .room-id:hover { color: var(--text-primary); }
     .room-id:active { color: #43b581; }
 
     .messages-scroller {
@@ -340,14 +340,14 @@
     }
 
     .messages-scroller::-webkit-scrollbar { width: 8px; }
-    .messages-scroller::-webkit-scrollbar-track { background: #2e3035; border-radius: 4px; margin-right: 4px; }
-    .messages-scroller::-webkit-scrollbar-thumb { background-color: #202225; border-radius: 4px; }
+    .messages-scroller::-webkit-scrollbar-track { background: var(--scrollbar-track); border-radius: 4px; margin-right: 4px; }
+    .messages-scroller::-webkit-scrollbar-thumb { background-color: var(--scrollbar-thumb); border-radius: 4px; }
 
     .loading-indicator {
         text-align: center;
         padding: 8px;
         font-size: 12px;
-        color: #72767d;
+        color: var(--text-muted);
     }
 
     .scroll-to-bottom {
@@ -358,8 +358,8 @@
         height: 36px;
         border-radius: 50%;
         background: #36393f;
-        border: 1px solid #202225;
-        color: #dcddde;
+        border: 1px solid var(--border-subtle);
+        color: var(--text-primary);
         cursor: pointer;
         display: flex;
         align-items: center;
@@ -379,7 +379,7 @@
         width: 10px;
         height: 10px;
         border-radius: 50%;
-        background: #5865f2;
+        background: var(--primary);
     }
 
     /* --- Day divider --- */
@@ -394,14 +394,14 @@
         content: '';
         flex: 1;
         height: 1px;
-        background-color: #4f545c;
+        background-color: var(--border-medium);
     }
 
     .day-divider span {
         padding: 0 8px;
         font-size: 12px;
         font-weight: 600;
-        color: #72767d;
+        color: var(--text-muted);
         white-space: nowrap;
     }
 
@@ -410,6 +410,6 @@
         padding: 4px 16px;
         font-size: 13px;
         font-style: italic;
-        color: #72767d;
+        color: var(--text-muted);
     }
 </style>

@@ -37,7 +37,7 @@ export type MumbleEvent =
 export type SystemEvent =
     | { type: 'ServerReset' }
     | { type: 'ConnectionLost' }
-    | { type: 'SettingsLoaded'; data: { bookmarks: ServerBookmark[]; transmission_mode: string | null; vad_threshold: number | null; voice_hold: number | null; use_mumble_settings: boolean | null; deafen_suppresses_notifs: boolean | null; hidden_dms: string[] } }
+    | { type: 'SettingsLoaded'; data: { bookmarks: ServerBookmark[]; transmission_mode: string | null; vad_threshold: number | null; voice_hold: number | null; use_mumble_settings: boolean | null; deafen_suppresses_notifs: boolean | null; hidden_dms: string[]; custom_css: string | null } }
     | { type: 'LogError'; data: { message: string; target: string } }
     | { type: 'UserProfileChanged'; data: { username: string; display_name: string | null; avatar_url: string | null } };
 

@@ -81,7 +81,7 @@
     .group-header {
         font-size: 12px;
         font-weight: 700;
-        color: #8e9297;
+        color: var(--text-tertiary);
         text-transform: uppercase;
         margin: 0 0 8px 10px;
         letter-spacing: 0.2px;
@@ -90,7 +90,7 @@
     .tab {
         background: transparent;
         border: none;
-        color: #b9bbbe;
+        color: var(--text-secondary);
         text-align: left;
         padding: 6px 10px;
         margin-bottom: 2px;
@@ -101,14 +101,14 @@
         transition: background-color 0.15s, color 0.15s;
     }
 
-    .tab:hover { background-color: var(--bg-hover); color: #dcddde; }
-    .tab.active { background-color: var(--bg-active); color: #fff; }
+    .tab:hover { background-color: var(--bg-hover); color: var(--text-primary); }
+    .tab.active { background-color: var(--bg-active); color: var(--text-bright); }
 
     .divider { height: 1px; background-color: var(--bg-active); margin: 10px 10px 14px 10px; }
 
     .error-badge {
-        background-color: #ed4245;
-        color: #fff;
+        background-color: var(--status-danger);
+        color: var(--text-bright);
         font-size: 11px;
         font-weight: 700;
         padding: 1px 5px;
@@ -120,13 +120,13 @@
     /* Scoped under .settings-form so child tab components inherit these
        without redeclaring them. */
 
-    .settings-form :global(.tab-pane h2) { color: #fff; font-size: 20px; font-weight: 600; margin-top: 0; margin-bottom: 20px; }
+    .settings-form :global(.tab-pane h2) { color: var(--text-bright); font-size: 20px; font-weight: 600; margin-top: 0; margin-bottom: 20px; }
 
     .settings-form :global(.tab-header) { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
     .settings-form :global(.tab-header h2) { margin: 0; }
 
     .settings-form :global(.section-header) {
-        color: #fff;
+        color: var(--text-bright);
         font-size: 13px;
         font-weight: 700;
         text-transform: uppercase;
@@ -135,13 +135,13 @@
     }
     .settings-form :global(.section-header:not(:first-of-type)) { margin-top: 20px; }
 
-    .settings-form :global(.placeholder-text) { color: #b9bbbe; }
+    .settings-form :global(.placeholder-text) { color: var(--text-secondary); }
 
     .settings-form :global(.setting-group) { margin-bottom: 24px; display: flex; flex-direction: column; }
 
     .settings-form :global(.setting-group label),
     .settings-form :global(.setting-group .setting-label) {
-        color: #8e9297;
+        color: var(--text-tertiary);
         font-size: 12px;
         font-weight: 600;
         text-transform: uppercase;
@@ -150,49 +150,49 @@
 
     .settings-form :global(.setting-group.disabled) { opacity: 0.4; pointer-events: none; }
 
-    .settings-form :global(.setting-desc) { color: #8e9297; font-size: 13px; margin: 0 0 12px; }
+    .settings-form :global(.setting-desc) { color: var(--text-tertiary); font-size: 13px; margin: 0 0 12px; }
 
     .settings-form :global(.divider) { height: 1px; background-color: var(--bg-active); margin: 10px 0 14px 0; }
 
     .settings-form :global(.action-btn) {
-        background-color: #5865f2;
-        color: #fff;
+        background-color: var(--primary);
+        color: var(--text-bright);
         border: none;
         border-radius: 4px;
         padding: 8px 16px;
-        font-size: 14px;
+        font-size: var(--font-size-base);
         font-family: 'Inter', sans-serif;
         cursor: pointer;
         transition: background-color 0.15s;
         align-self: flex-start;
     }
 
-    .settings-form :global(.action-btn:hover:not(:disabled)) { background-color: #4752c4; }
+    .settings-form :global(.action-btn:hover:not(:disabled)) { background-color: var(--primary-hover); }
     .settings-form :global(.action-btn:disabled) { opacity: 0.4; cursor: default; }
     .settings-form :global(.action-btn.secondary) { background-color: var(--bg-active); }
     .settings-form :global(.action-btn.secondary:hover) { background-color: rgba(255, 255, 255, 0.12); }
-    .settings-form :global(.action-btn.danger) { background-color: #ed4245; }
+    .settings-form :global(.action-btn.danger) { background-color: var(--status-danger); }
     .settings-form :global(.action-btn.danger:hover:not(:disabled)) { background-color: #c93b3e; }
 
     .settings-form :global(.action-row) { display: flex; gap: 8px; }
 
     .settings-form :global(.text-input) {
         background-color: var(--bg-input);
-        color: #dcddde;
+        color: var(--text-primary);
         border: 1px solid var(--border-input);
         border-radius: 4px;
         padding: 8px 10px;
-        font-size: 14px;
+        font-size: var(--font-size-base);
         font-family: 'Inter', sans-serif;
         outline: none;
     }
 
-    .settings-form :global(.text-input:focus) { border-color: #5865f2; }
+    .settings-form :global(.text-input:focus) { border-color: var(--primary); }
     .settings-form :global(.text-input::placeholder) { color: #4f5660; }
 
     .settings-form :global(.hardware-select) {
         background-color: var(--bg-input);
-        color: #dcddde;
+        color: var(--text-primary);
         border: 1px solid var(--border-input);
         border-radius: 4px;
         padding: 10px;
@@ -213,13 +213,13 @@
     }
 
     .settings-form :global(.checkbox-option input[type="checkbox"]) {
-        accent-color: #5865f2;
+        accent-color: var(--primary);
         width: 16px;
         height: 16px;
         margin: 0;
     }
 
-    .settings-form :global(.checkbox-label) { color: #dcddde; font-size: 14px; font-weight: 500; text-transform: none; }
+    .settings-form :global(.checkbox-label) { color: var(--text-primary); font-size: var(--font-size-base); font-weight: 500; text-transform: none; }
 
     .settings-form :global(.radio-group) { display: flex; flex-direction: column; gap: 2px; }
 
@@ -232,7 +232,7 @@
     }
 
     .settings-form :global(.radio-option input[type="radio"]) {
-        accent-color: #5865f2;
+        accent-color: var(--primary);
         width: 16px;
         height: 16px;
         margin: 0;
@@ -240,11 +240,11 @@
     }
 
     .settings-form :global(.radio-content) { display: flex; flex-direction: column; gap: 1px; }
-    .settings-form :global(.radio-label) { color: #dcddde; font-size: 14px; font-weight: 500; }
+    .settings-form :global(.radio-label) { color: var(--text-primary); font-size: var(--font-size-base); font-weight: 500; }
     .settings-form :global(.radio-label), .settings-form :global(.radio-desc) { text-transform: none; }
-    .settings-form :global(.radio-desc) { color: #72767d; font-size: 12px; }
+    .settings-form :global(.radio-desc) { color: var(--text-muted); font-size: 12px; }
 
     .settings-form :global(.slider-container) { display: flex; align-items: center; gap: 16px; }
     .settings-form :global(.range-input) { flex-grow: 1; cursor: pointer; }
-    .settings-form :global(.volume-readout) { color: #dcddde; font-size: 14px; min-width: 40px; }
+    .settings-form :global(.volume-readout) { color: var(--text-primary); font-size: var(--font-size-base); min-width: 40px; }
 </style>

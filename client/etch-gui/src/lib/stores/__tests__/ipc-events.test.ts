@@ -257,6 +257,7 @@ describe('System event routing', () => {
                         use_mumble_settings: null,
                         deafen_suppresses_notifs: null,
                         hidden_dms: [],
+                        custom_css: null,
                     },
                 },
             } satisfies CoreEvent,

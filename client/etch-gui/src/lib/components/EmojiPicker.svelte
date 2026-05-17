@@ -28,7 +28,7 @@
         right: 16px;
         display: flex;
         background-color: #2f3136;
-        border: 1px solid #202225;
+        border: 1px solid var(--border-subtle);
         border-radius: 4px;
         opacity: 0;
         pointer-events: none;
@@ -45,13 +45,13 @@
         height: 30px;
         background: transparent;
         border: none;
-        color: #b9bbbe;
+        color: var(--text-secondary);
         cursor: pointer;
         border-radius: 3px;
         transition: background-color 0.1s, color 0.1s;
     }
 
-    .action-btn:hover { background-color: #393c43; color: #fff; }
+    .action-btn:hover { background-color: #393c43; color: var(--text-bright); }
 
     .emoji-btn { font-size: 16px; }
 </style>

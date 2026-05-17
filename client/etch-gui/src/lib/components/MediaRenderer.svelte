@@ -57,15 +57,15 @@
         gap: 8px;
         padding: 10px 14px;
         background-color: #2f3136;
-        border: 1px solid #202225;
+        border: 1px solid var(--border-subtle);
         border-radius: 4px;
-        color: #dcddde;
+        color: var(--text-primary);
         cursor: pointer;
         font: inherit;
         transition: background-color 0.15s ease;
     }
     .file-download:hover { background-color: #36393f; }
     .file-download :global(.file-icon) { flex-shrink: 0; color: #7289da; }
-    .file-name { color: #00aff4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .file-download :global(.download-icon) { flex-shrink: 0; color: #b9bbbe; }
+    .file-name { color: var(--text-link); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .file-download :global(.download-icon) { flex-shrink: 0; color: var(--text-secondary); }
 </style>

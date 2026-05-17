@@ -61,7 +61,7 @@
         align-items: center;
         height: 100%;
         background-color: transparent;
-        color: #fff;
+        color: var(--text-bright);
     }
 
     .user-identity {
@@ -104,9 +104,9 @@
         background-color: #747f8d;
     }
 
-    .status-dot.connected { background-color: #3ba55d; }
-    .status-dot.connecting { background-color: #faa61a; }
-    .status-dot.disconnected { background-color: #ed4245; }
+    .status-dot.connected { background-color: var(--status-success); }
+    .status-dot.connecting { background-color: var(--status-warning); }
+    .status-dot.disconnected { background-color: var(--status-danger); }
 
     .user-text {
         display: flex;
@@ -118,14 +118,14 @@
     }
 
     .username {
-        font-size: 14px;
+        font-size: var(--font-size-base);
         font-weight: 600;
         white-space: nowrap;
         text-overflow: ellipsis;
         overflow: hidden;
     }
 
-    .discriminator { font-size: 12px; color: #b9bbbe; }
+    .discriminator { font-size: 12px; color: var(--text-secondary); }
 
     .controls {
         display: flex;
@@ -143,15 +143,15 @@
         background: transparent;
         border: none;
         border-radius: 4px;
-        color: #b9bbbe;
+        color: var(--text-secondary);
         cursor: pointer;
         padding: 0;
         transition: color 0.15s ease, background-color 0.15s ease;
         line-height: 0;
     }
 
-    .control-btn:hover { color: #dcddde; background-color: rgba(79, 84, 92, 0.4); }
-    .control-btn.danger-state { color: #ed4245; }
+    .control-btn:hover { color: var(--text-primary); background-color: rgba(79, 84, 92, 0.4); }
+    .control-btn.danger-state { color: var(--status-danger); }
     .control-btn.danger-state:hover { color: #ff6b6b; background-color: rgba(237, 66, 69, 0.15); }
 
     @container sidebar (max-width: 149px) {

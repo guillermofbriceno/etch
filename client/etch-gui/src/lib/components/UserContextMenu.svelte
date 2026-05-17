@@ -65,7 +65,7 @@
     .user-context-menu {
         position: fixed;
         z-index: 100;
-        background-color: #18191c;
+        background-color: var(--bg-floating);
         border-radius: 4px;
         padding: 6px;
         box-shadow: 0 8px 16px rgba(0, 0, 0, 0.24);
@@ -76,7 +76,7 @@
         padding: 6px 10px;
         font-size: 13px;
         font-weight: 600;
-        color: #fff;
+        color: var(--text-bright);
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -87,17 +87,17 @@
         width: 100%;
         background: transparent;
         border: none;
-        color: #b9bbbe;
+        color: var(--text-secondary);
         text-align: left;
         padding: 8px 10px;
         border-radius: 3px;
-        font-size: 14px;
+        font-size: var(--font-size-base);
         font-family: 'Inter', sans-serif;
         cursor: pointer;
         transition: background-color 0.1s, color 0.1s;
     }
 
-    .context-item:hover { background-color: #5865f2; color: #fff; }
+    .context-item:hover { background-color: var(--primary); color: var(--text-bright); }
 
     .context-divider {
         height: 1px;
@@ -117,7 +117,7 @@
         text-transform: uppercase;
         font-weight: 600;
         letter-spacing: 0.25px;
-        color: #8e9297;
+        color: var(--text-tertiary);
         margin-bottom: 6px;
     }
 
@@ -125,7 +125,7 @@
         font-weight: 400;
         text-transform: none;
         letter-spacing: normal;
-        color: #b9bbbe;
+        color: var(--text-secondary);
     }
 
     .volume-slider {

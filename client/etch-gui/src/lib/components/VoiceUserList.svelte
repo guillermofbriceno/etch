@@ -16,9 +16,9 @@
     }
 
     function ringColor(user: VoiceUser, talking: boolean): string {
-        if (user.deafened) return '#ed4245';
-        if (user.muted) return '#72767d';
-        if (talking) return '#3ba55d';
+        if (user.deafened) return 'var(--status-danger)';
+        if (user.muted) return 'var(--text-muted)';
+        if (talking) return 'var(--status-success)';
         return '#2d2dba';
     }
 
@@ -69,12 +69,12 @@
         align-items: center;
         padding: 3px 8px 3px 32px;
         margin-bottom: 1px;
-        color: #b9bbbe;
+        color: var(--text-secondary);
         list-style: none;
     }
 
     .voice-user-name {
-        font-size: 14px;
+        font-size: var(--font-size-base);
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -88,7 +88,7 @@
         flex-shrink: 0;
     }
 
-    .voice-status-icons :global(.voice-status-icon) { color: #72767d; }
+    .voice-status-icons :global(.voice-status-icon) { color: var(--text-muted); }
 
     /* Hidden by default; shown by container query when narrow */
     .voice-avatars {

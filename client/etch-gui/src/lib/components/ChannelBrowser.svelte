@@ -216,7 +216,7 @@
         flex-direction: column;
         height: 100%;
         background-color: transparent;
-        color: #8e9297;
+        color: var(--text-tertiary);
     }
 
     .browser-header {
@@ -256,24 +256,24 @@
         flex-shrink: 0;
         background: none;
         border: none;
-        color: #b9bbbe;
+        color: var(--text-secondary);
         cursor: pointer;
         transition: color 0.15s;
     }
 
-    .collapse-btn:hover { color: #dcddde; }
+    .collapse-btn:hover { color: var(--text-primary); }
 
     .header-toggle h1 {
-        font-size: 16px;
+        font-size: var(--font-size-channel);
         font-weight: 700;
-        color: #fff;
+        color: var(--text-bright);
         margin: 0;
     }
 
     .dropdown-indicator {
-        color: #b9bbbe;
+        color: var(--text-secondary);
         margin-left: 6px;
-        font-size: 14px;
+        font-size: var(--font-size-base);
         transition: transform 0.15s;
     }
 
@@ -284,7 +284,7 @@
         top: 100%;
         left: 8px;
         right: 8px;
-        background-color: #18191c;
+        background-color: var(--bg-floating);
         border-radius: 4px;
         padding: 6px;
         box-shadow: 0 8px 16px rgba(0, 0, 0, 0.24);
@@ -296,17 +296,17 @@
         width: 100%;
         background: transparent;
         border: none;
-        color: #b9bbbe;
+        color: var(--text-secondary);
         text-align: left;
         padding: 8px 10px;
         border-radius: 3px;
-        font-size: 14px;
+        font-size: var(--font-size-base);
         font-family: 'Inter', sans-serif;
         cursor: pointer;
         transition: background-color 0.1s, color 0.1s;
     }
 
-    .dropdown-item:hover:not(:disabled) { background-color: #7289da; color: #fff; }
+    .dropdown-item:hover:not(:disabled) { background-color: #7289da; color: var(--text-bright); }
     .dropdown-item.disabled { color: #4f545c; cursor: default; }
 
     .scroller {
@@ -318,7 +318,7 @@
 
     .scroller::-webkit-scrollbar { width: 4px; }
     .scroller::-webkit-scrollbar-track { background: transparent; }
-    .scroller::-webkit-scrollbar-thumb { background-color: #202225; border-radius: 4px; }
+    .scroller::-webkit-scrollbar-thumb { background-color: var(--scrollbar-thumb); border-radius: 4px; }
 
     .category { margin-bottom: 20px; }
 
@@ -351,7 +351,7 @@
         align-items: center;
         flex: 1;
         min-width: 0;
-        padding: 6px 8px 6px 0;
+        padding: var(--channel-item-padding);
         background: none;
         border: none;
         color: inherit;
@@ -375,14 +375,14 @@
         width: 6px;
         height: 6px;
         border-radius: 50%;
-        background-color: #5865f2;
+        background-color: var(--primary);
         opacity: 0;
     }
 
     .unread-slot.visible .unread-dot { opacity: 1; }
 
     .channel-name {
-        font-size: 16px;
+        font-size: var(--font-size-channel);
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -394,8 +394,8 @@
     .transitioning .channel-name { opacity: 0; }
     .transitioning .category-name { opacity: 0; }
 
-    .channel-item:hover { background-color: #393c43; color: #dcddde; }
-    .channel-item.active { background-color: #42464d; color: #fff; }
+    .channel-item:hover { background-color: #393c43; color: var(--text-primary); }
+    .channel-item.active { background-color: #42464d; color: var(--text-bright); }
 
     /* Default: show full names, hide abbreviations */
     .channel-name.abbr { display: none; }
@@ -405,7 +405,7 @@
         margin-left: auto;
         background: transparent;
         border: none;
-        color: #8e9297;
+        color: var(--text-tertiary);
         cursor: pointer;
         padding: 2px;
         border-radius: 3px;
@@ -413,7 +413,7 @@
         align-items: center;
     }
 
-    .hide-dm-btn:hover { color: #fff; background-color: rgba(255, 255, 255, 0.1); }
+    .hide-dm-btn:hover { color: var(--text-bright); background-color: rgba(255, 255, 255, 0.1); }
     .dm-item:hover .hide-dm-btn { display: flex; }
 
     .dm-avatar {
@@ -430,15 +430,15 @@
         align-items: center;
         gap: 10px;
         padding: 12px 8px;
-        color: #b9bbbe;
-        font-size: 14px;
+        color: var(--text-secondary);
+        font-size: var(--font-size-base);
     }
 
     .spinner {
         width: 16px;
         height: 16px;
         border: 2px solid rgba(255, 255, 255, 0.1);
-        border-top-color: #b9bbbe;
+        border-top-color: var(--text-secondary);
         border-radius: 50%;
         animation: spin 0.8s linear infinite;
     }

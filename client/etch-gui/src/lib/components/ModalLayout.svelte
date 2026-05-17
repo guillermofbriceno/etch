@@ -55,7 +55,7 @@
 
     .modal-content::-webkit-scrollbar { width: 6px; }
     .modal-content::-webkit-scrollbar-track { background: transparent; }
-    .modal-content::-webkit-scrollbar-thumb { background-color: #202225; border-radius: 3px; }
+    .modal-content::-webkit-scrollbar-thumb { background-color: var(--scrollbar-thumb); border-radius: 3px; }
 
     .content-container { width: 100%; max-width: 740px; padding-bottom: 60px; }
 
@@ -74,8 +74,8 @@
         height: 36px;
         border-radius: 50%;
         background-color: transparent;
-        border: 2px solid #72767d;
-        color: #72767d;
+        border: 2px solid var(--text-muted);
+        color: var(--text-muted);
         display: flex;
         align-items: center;
         justify-content: center;
@@ -83,7 +83,7 @@
         transition: background-color 0.15s, color 0.15s, border-color 0.15s;
     }
 
-    .close-btn:hover { background-color: rgba(255, 255, 255, 0.1); color: #dcddde; border-color: #dcddde; }
+    .close-btn:hover { background-color: rgba(255, 255, 255, 0.1); color: var(--text-primary); border-color: var(--text-primary); }
 
-    .esc-hint { color: #72767d; font-size: 13px; font-weight: 600; }
+    .esc-hint { color: var(--text-muted); font-size: 13px; font-weight: 600; }
 </style>

@@ -27,6 +27,11 @@ fn play_sfx(name: String, volume: f32, state: State<'_, SfxPlayer>) {
 }
 
 #[tauri::command]
+fn load_custom_css(path: String) -> Result<String, String> {
+    std::fs::read_to_string(&path).map_err(|e| format!("Failed to read CSS from {path}: {e}"))
+}
+
+#[tauri::command]
 async fn paste_clipboard_image() -> Result<Option<(String, u64)>, String> {
     tokio::task::spawn_blocking(|| {
         let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
@@ -308,6 +313,7 @@ pub fn run() {
             paste_clipboard_image,
             compress_image,
             play_sfx,
+            load_custom_css,
             check_for_update
         ])
         .run(tauri::generate_context!())

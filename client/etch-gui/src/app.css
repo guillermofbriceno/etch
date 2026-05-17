@@ -16,8 +16,33 @@
     --bg-panel: rgba(255, 255, 255, 0.04);
     --border-panel: transparent;
     --bg-inset: #2f3136;
+    --bg-floating: #18191c;
     --accent: #7289da;
     --accent-hover: #8ea1e1;
+    --primary: #5865f2;
+    --primary-hover: #4752c4;
+    --text-bright: #fff;
+    --text-primary: #dcddde;
+    --text-secondary: #b9bbbe;
+    --text-tertiary: #8e9297;
+    --text-muted: #72767d;
+    --text-link: #00aff4;
+    --status-success: #3ba55d;
+    --status-warning: #faa61a;
+    --status-danger: #ed4245;
+    --border-subtle: #202225;
+    --border-medium: #4f545c;
+    --scrollbar-thumb: #202225;
+    --scrollbar-track: #2e3035;
+    --font-family: 'Inter', sans-serif;
+    --font-family-mono: 'Consolas', monospace;
+    --font-size-base: 14px;
+    --font-size-channel: 16px;
+    --font-size-chat: 15px;
+    --message-spacing: 16px;
+    --channel-item-padding: 6px 8px;
+    --sidebar-width: 240px;
+    --avatar-size: 40px;
 }
 
 [data-theme="oled"] {
@@ -32,6 +57,9 @@
     --bg-inset: #1a1a1e;
     --bg-panel: #000000;
     --border-panel: 2px solid rgba(255, 255, 255, 0.08);
+    --bg-floating: #000000;
+    --scrollbar-thumb: #1a1a1e;
+    --scrollbar-track: #0a0a0a;
 }
 
 body, html {
@@ -40,6 +68,6 @@ body, html {
     height: 100%;
     background: #000000;
     background: var(--bg-base);
-    font-family: 'Inter', sans-serif;
+    font-family: var(--font-family);
     overflow: hidden;
 }

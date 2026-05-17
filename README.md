@@ -161,3 +161,7 @@ Available keys:
 | `new_notif` | New message notification |
 
 Only keys you specify are overridden; the rest use the built-in sounds. If a file fails to load, the built-in default is used and a warning is logged.
+
+## Custom Stylesheets
+
+You can override the app's appearance by pointing to a custom CSS file in `settings.json`. See [client/etch-gui/THEMING.md](client/etch-gui/THEMING.md) for the full list of available CSS variables.

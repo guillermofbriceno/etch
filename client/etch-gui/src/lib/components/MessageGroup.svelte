@@ -212,7 +212,7 @@
         position: relative;
         display: flex;
         padding: 4px 16px;
-        margin-top: 16px;
+        margin-top: var(--message-spacing);
     }
 
     .message-block.continuation { margin-top: 0; padding-top: 1px; padding-bottom: 1px; }
@@ -223,7 +223,7 @@
         padding-left: 13px;
     }
     .message-block.mentioned:hover { background-color: color-mix(in srgb, var(--accent) 12%, transparent); }
-    .avatar-gutter { width: 40px; margin-right: 16px; flex-shrink: 0; }
+    .avatar-gutter { width: var(--avatar-size); margin-right: 16px; flex-shrink: 0; }
 
     /* Reveal EmojiPicker (message-actions) on hover */
     .message-block:hover > :global(.message-actions) {
@@ -252,8 +252,8 @@
         border: 1px solid transparent;
         border-radius: 4px;
         cursor: pointer;
-        font-size: 14px;
-        color: #b9bbbe;
+        font-size: var(--font-size-base);
+        color: var(--text-secondary);
         transition: background-color 0.1s, border-color 0.1s;
     }
 
@@ -276,8 +276,8 @@
 
     /* --- Message content --- */
     .avatar {
-        width: 40px;
-        height: 40px;
+        width: var(--avatar-size);
+        height: var(--avatar-size);
         border-radius: 50%;
         overflow: hidden;
         margin-right: 16px;
@@ -292,47 +292,47 @@
 
     .sender { font-weight: 500; margin-right: 8px; }
 
-    .timestamp { font-size: 12px; color: #72767d; }
+    .timestamp { font-size: 12px; color: var(--text-muted); }
 
     .body {
-        color: #dcddde;
+        color: var(--text-primary);
         line-height: 1.5;
-        font-size: 15px;
+        font-size: var(--font-size-chat);
         overflow-wrap: anywhere;
     }
 
     .body :global(p) { margin: 0; }
     .body :global(p + p) { margin-top: 4px; }
-    .body :global(strong) { font-weight: 600; color: #fff; }
+    .body :global(strong) { font-weight: 600; color: var(--text-bright); }
     .body :global(em) { font-style: italic; }
     .body :global(code) {
-        font-family: 'Consolas', monospace;
+        font-family: var(--font-family-mono);
         background-color: var(--bg-inset);
         padding: 2px 4px;
         border-radius: 3px;
-        font-size: 14px;
+        font-size: var(--font-size-base);
     }
     .body :global(pre) {
         background-color: var(--bg-inset);
         padding: 8px;
         border-radius: 4px;
-        border: 1px solid #202225;
+        border: 1px solid var(--border-subtle);
         overflow-x: auto;
     }
     .body :global(pre code) { background-color: transparent; padding: 0; }
     .body :global(blockquote) {
-        border-left: 3px solid #4f545c;
+        border-left: 3px solid var(--border-medium);
         padding: 2px 12px;
         margin: 4px 0;
         color: #a3a6aa;
     }
-    .body :global(a) { color: #00aff4; text-decoration: none; }
+    .body :global(a) { color: var(--text-link); text-decoration: none; }
     .body :global(a:hover) { text-decoration: underline; }
     .body :global(ul), .body :global(ol) { padding-left: 24px; margin: 4px 0; }
     .body :global(li) { margin: 2px 0; }
     .body :global(img) { max-width: 400px; max-height: 300px; border-radius: 4px; cursor: pointer; }
-    .body :global(h1), .body :global(h2), .body :global(h3) { color: #fff; margin: 8px 0 4px; }
-    .body :global(hr) { border: none; border-top: 1px solid #4f545c; margin: 8px 0; }
+    .body :global(h1), .body :global(h2), .body :global(h3) { color: var(--text-bright); margin: 8px 0 4px; }
+    .body :global(hr) { border: none; border-top: 1px solid var(--border-medium); margin: 8px 0; }
     .body :global(del), .body :global(s) { text-decoration: line-through; color: #a3a6aa; }
     .body :global(mx-reply) { display: none; }
     .body :global(.mention) {
@@ -406,6 +406,6 @@
 
     .compact .reaction-badges { margin-top: 2px; }
     .compact .reaction-badge { font-size: 12px; }
-    .compact .reaction-emoji { font-size: 14px; }
+    .compact .reaction-emoji { font-size: var(--font-size-base); }
     .compact .reaction-count { font-size: 11px; }
 </style>

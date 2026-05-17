@@ -51,7 +51,7 @@
     .title {
         font-size: 12px;
         font-weight: 600;
-        color: #8e9297;
+        color: var(--text-tertiary);
     }
 
     .controls {
@@ -67,7 +67,7 @@
         height: 24px;
         background: transparent;
         border: none;
-        color: #b9bbbe;
+        color: var(--text-secondary);
         cursor: pointer;
         border-radius: 4px;
         transition: background-color 0.1s, color 0.1s;
@@ -75,11 +75,11 @@
 
     .control-btn:hover {
         background-color: rgba(255, 255, 255, 0.1);
-        color: #fff;
+        color: var(--text-bright);
     }
 
     .close-btn:hover {
-        background-color: #ed4245;
-        color: #fff;
+        background-color: var(--status-danger);
+        color: var(--text-bright);
     }
 </style>

@@ -17,8 +17,8 @@
         align-items: center;
         justify-content: center;
         border-radius: 50%;
-        background-color: #5865f2;
-        color: #fff;
+        background-color: var(--primary);
+        color: var(--text-bright);
         font-weight: 600;
         flex-shrink: 0;
     }
