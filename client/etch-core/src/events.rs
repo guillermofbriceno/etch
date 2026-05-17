@@ -44,6 +44,7 @@ pub enum MumbleEvent {
     TransmissionModeChanged(String),
     VadThresholdChanged(f64),
     VoiceHoldChanged(i64),
+    CertificateChanged { host: String, port: u16, new_fingerprint: String },
     ConnectionState(ConnectionState),
 }
 

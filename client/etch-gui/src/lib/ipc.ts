@@ -31,6 +31,7 @@ export type MumbleEvent =
     | { type: 'TransmissionModeChanged'; data: 'voice_activation' | 'continuous' | 'push_to_talk' }
     | { type: 'VadThresholdChanged'; data: number }
     | { type: 'VoiceHoldChanged'; data: number }
+    | { type: 'CertificateChanged'; data: { host: string; port: number; new_fingerprint: string } }
     | { type: 'ConnectionState'; data: { type: 'Disconnected' } | { type: 'Connecting' } | { type: 'Connected' } | { type: 'Failed'; reason: string; retries: number; retry_in_secs: number } };
 
 export type SystemEvent =
@@ -80,7 +81,8 @@ export type SystemCommand =
     | { type: 'TestError' }
     | { type: 'SetDeafenSuppressesNotifs'; data: boolean }
     | { type: 'HideDm'; data: { room_id: string } }
-    | { type: 'UnhideDm'; data: { room_id: string } };
+    | { type: 'UnhideDm'; data: { room_id: string } }
+    | { type: 'AcceptMumbleCert'; data: { host: string; port: number; fingerprint: string } };
 
 export type CoreCommand =
     | { type: 'Matrix'; data: MatrixCommand }

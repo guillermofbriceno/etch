@@ -8,6 +8,7 @@
     import ImageModal from '$lib/components/ImageModal.svelte';
     import ServerConnectionModal from '$lib/components/ServerConnectionModal.svelte';
     import PasswordDialog from '$lib/components/PasswordDialog.svelte';
+    import CertDialog from '$lib/components/CertDialog.svelte';
     import ErrorToast from '$lib/components/ErrorToast.svelte';
 
     import { onMount, onDestroy } from 'svelte';
@@ -60,6 +61,7 @@
     </main>
 
     <PasswordDialog />
+    <CertDialog />
 
     {#if $activeOverlay !== 'none'}
         <div class="overlay-backdrop">

@@ -19,6 +19,8 @@ pub struct CoreEngine<M, V> {
     conn: MatrixConnection,
     mumble_credentials: Option<VoiceServerConfig>,
     pub(crate) data_dir: PathBuf,
+    /// Stashed launch params while waiting for user to accept a changed cert.
+    pending_cert_launch: Option<(VoiceServerConfig, bool, String, mpsc::Sender<InternalEvent>)>,
 }
 
 pub struct CoreHandle {
@@ -42,6 +44,7 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
             conn: MatrixConnection::new(),
             mumble_credentials: None,
             data_dir,
+            pending_cert_launch: None,
         }
     }
 
@@ -152,6 +155,20 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
             }
             SystemCommand::UnhideDm { room_id } => {
                 settings::unhide_dm(&self.data_dir, &room_id);
+            }
+            SystemCommand::AcceptMumbleCert { host, port, fingerprint } => {
+                let db_path = self.data_dir.join("mumble/mumble.sqlite");
+                if let Err(e) = crate::mumble::cert::store_cert(&db_path, &host, port, &fingerprint) {
+                    log::error!("Failed to store accepted cert: {:?}", e);
+                    return;
+                }
+                log::info!("User accepted new cert for {}:{}", host, port);
+                // Resume the stashed voice launch
+                if let Some((creds, show_gui, extra_args, itx)) = self.pending_cert_launch.take() {
+                    if let Err(e) = self.voice.launch(creds, itx, show_gui, &extra_args).await {
+                        log::error!("Failed to launch voice after cert accept: {:?}", e);
+                    }
+                }
             }
         }
     }
@@ -297,6 +314,42 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
     }
 
     async fn launch_voice(&mut self, creds: VoiceServerConfig, show_gui: bool, extra_args: &str, internal_tx: mpsc::Sender<InternalEvent>) {
+        // Pre-check: probe the server certificate and compare against stored value
+        let db_path = self.data_dir.join("mumble/mumble.sqlite");
+        match crate::mumble::cert::probe_server_cert(&creds.host, creds.port).await {
+            Ok(fingerprint) => {
+                let stored = crate::mumble::cert::get_stored_cert(&db_path, &creds.host, creds.port);
+                match stored {
+                    None => {
+                        // TOFU: first time seeing this server, store and proceed
+                        log::info!("First connection to {}:{}, storing cert fingerprint", creds.host, creds.port);
+                        if let Err(e) = crate::mumble::cert::store_cert(&db_path, &creds.host, creds.port, &fingerprint) {
+                            log::warn!("Failed to store cert: {:?}", e);
+                        }
+                    }
+                    Some(ref stored_fp) if stored_fp == &fingerprint => {
+                        log::debug!("Cert fingerprint matches for {}:{}", creds.host, creds.port);
+                    }
+                    Some(_) => {
+                        // Certificate has changed -- prompt the user
+                        log::warn!("Certificate changed for {}:{}, awaiting user approval", creds.host, creds.port);
+                        let _ = self.event_tx.send(CoreEvent::Mumble(MumbleEvent::CertificateChanged {
+                            host: creds.host.clone(),
+                            port: creds.port,
+                            new_fingerprint: fingerprint,
+                        })).await;
+                        // Stash credentials so AcceptMumbleCert can resume the launch
+                        self.pending_cert_launch = Some((creds, show_gui, extra_args.to_string(), internal_tx));
+                        return;
+                    }
+                }
+            }
+            Err(e) => {
+                // Probe failed (network issue, etc.) -- log and proceed anyway
+                log::warn!("Cert probe failed for {}:{}: {:?}", creds.host, creds.port, e);
+            }
+        }
+
         if let Err(e) = self.voice.launch(creds, internal_tx, show_gui, extra_args).await {
             log::error!("Failed to launch voice: {:?}", e);
         }
@@ -1052,5 +1105,225 @@ mod tests {
 
         let launches = voice_state.launched_with.lock().unwrap();
         assert!(launches.is_empty(), "OpenMumbleGui without prior connect should not launch voice");
+    }
+
+    // --- Certificate check tests ---
+
+    /// Helper: start a local TLS server on a random port using a self-signed cert.
+    /// Returns (port, SHA1 fingerprint of the cert's DER).
+    async fn start_tls_server() -> (u16, String) {
+        use sha1::{Sha1, Digest};
+        use std::sync::Arc;
+
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
+        let key_pair = rcgen::KeyPair::generate().unwrap();
+        let params = rcgen::CertificateParams::new(vec!["127.0.0.1".into()]).unwrap();
+        let cert = params.self_signed(&key_pair).unwrap();
+        let cert_der = cert.der().to_vec();
+        let key_der = key_pair.serialize_der();
+        let fingerprint = format!("{:x}", Sha1::digest(&cert_der));
+
+        let server_config = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![rustls_pki_types::CertificateDer::from(cert_der)],
+                rustls_pki_types::PrivateKeyDer::try_from(key_der).unwrap(),
+            ).unwrap();
+
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        tokio::spawn(async move {
+            // Accept connections in a loop until the test ends
+            while let Ok((stream, _)) = listener.accept().await {
+                let acc = acceptor.clone();
+                tokio::spawn(async move {
+                    // Complete the TLS handshake, then drop
+                    let _ = acc.accept(stream).await;
+                });
+            }
+        });
+
+        (port, fingerprint)
+    }
+
+    /// Helper: create a mumble.sqlite with the cert table in a temp dir.
+    fn seed_cert_db(data_dir: &std::path::Path, host: &str, port: u16, digest: &str) {
+        let mumble_dir = data_dir.join("mumble");
+        std::fs::create_dir_all(&mumble_dir).unwrap();
+        let db_path = mumble_dir.join("mumble.sqlite");
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS cert (id INTEGER PRIMARY KEY AUTOINCREMENT, hostname TEXT, port INTEGER, digest TEXT);
+             CREATE UNIQUE INDEX IF NOT EXISTS cert_host_port ON cert(hostname, port);"
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO cert (hostname, port, digest) VALUES (?1, ?2, ?3)",
+            rusqlite::params![host, port as i64, digest],
+        ).unwrap();
+    }
+
+    #[tokio::test]
+    async fn cert_mismatch_blocks_launch_and_emits_event() {
+        let (port, _real_fp) = start_tls_server().await;
+        let tmp = tempfile::tempdir().unwrap();
+        seed_cert_db(tmp.path(), "127.0.0.1", port, "wrong_fingerprint");
+
+        let form = ServerConnectionForm {
+            username: "testuser".into(),
+            hostname: "matrix.example.com".into(),
+            port: "8448".into(),
+            password: None,
+            mumble_host: Some("127.0.0.1".into()),
+            mumble_port: Some(port),
+            mumble_username: None,
+            mumble_password: None,
+            homeserver_url: None,
+        };
+
+        let (events, _, voice_state) = run_commands(
+            MockMatrix::new(),
+            MockVoice::new(),
+            tmp.path(),
+            vec![CoreCommand::System(SystemCommand::ConnectToServer(form))],
+        ).await;
+
+        // Should have emitted CertificateChanged
+        let cert_event = events.iter().find_map(|e| match e {
+            CoreEvent::Mumble(MumbleEvent::CertificateChanged { host, port: p, new_fingerprint }) =>
+                Some((host.clone(), *p, new_fingerprint.clone())),
+            _ => None,
+        });
+        assert!(cert_event.is_some(), "Expected CertificateChanged event");
+        let (host, p, _fp) = cert_event.unwrap();
+        assert_eq!(host, "127.0.0.1");
+        assert_eq!(p, port);
+
+        // Voice should NOT have been launched
+        let launches = voice_state.launched_with.lock().unwrap();
+        assert!(launches.is_empty(), "Voice should not launch when cert mismatches");
+    }
+
+    #[tokio::test]
+    async fn accept_cert_stores_and_launches_voice() {
+        let (port, real_fp) = start_tls_server().await;
+        let tmp = tempfile::tempdir().unwrap();
+        seed_cert_db(tmp.path(), "127.0.0.1", port, "wrong_fingerprint");
+
+        let form = ServerConnectionForm {
+            username: "testuser".into(),
+            hostname: "matrix.example.com".into(),
+            port: "8448".into(),
+            password: None,
+            mumble_host: Some("127.0.0.1".into()),
+            mumble_port: Some(port),
+            mumble_username: None,
+            mumble_password: None,
+            homeserver_url: None,
+        };
+
+        let (events, _, voice_state) = run_commands(
+            MockMatrix::new(),
+            MockVoice::new(),
+            tmp.path(),
+            vec![
+                CoreCommand::System(SystemCommand::ConnectToServer(form)),
+                CoreCommand::System(SystemCommand::AcceptMumbleCert {
+                    host: "127.0.0.1".into(),
+                    port,
+                    fingerprint: real_fp.clone(),
+                }),
+            ],
+        ).await;
+
+        // CertificateChanged should still have been emitted
+        assert!(events.iter().any(|e| matches!(e, CoreEvent::Mumble(MumbleEvent::CertificateChanged { .. }))));
+
+        // Voice SHOULD have been launched after accept
+        let launches = voice_state.launched_with.lock().unwrap();
+        assert_eq!(launches.len(), 1, "Voice should launch after cert accept");
+        assert_eq!(launches[0].host, "127.0.0.1");
+        assert_eq!(launches[0].port, port);
+
+        // Cert should be stored in the DB
+        let db_path = tmp.path().join("mumble/mumble.sqlite");
+        let stored = crate::mumble::cert::get_stored_cert(&db_path, "127.0.0.1", port);
+        assert_eq!(stored, Some(real_fp), "Accepted fingerprint should be persisted");
+    }
+
+    #[tokio::test]
+    async fn cert_first_use_stores_and_launches() {
+        let (port, real_fp) = start_tls_server().await;
+        let tmp = tempfile::tempdir().unwrap();
+        // Create DB with cert table but NO entry for this host
+        seed_cert_db(tmp.path(), "other.host", 9999, "irrelevant");
+
+        let form = ServerConnectionForm {
+            username: "testuser".into(),
+            hostname: "matrix.example.com".into(),
+            port: "8448".into(),
+            password: None,
+            mumble_host: Some("127.0.0.1".into()),
+            mumble_port: Some(port),
+            mumble_username: None,
+            mumble_password: None,
+            homeserver_url: None,
+        };
+
+        let (events, _, voice_state) = run_commands(
+            MockMatrix::new(),
+            MockVoice::new(),
+            tmp.path(),
+            vec![CoreCommand::System(SystemCommand::ConnectToServer(form))],
+        ).await;
+
+        // No CertificateChanged -- TOFU should auto-accept
+        assert!(!events.iter().any(|e| matches!(e, CoreEvent::Mumble(MumbleEvent::CertificateChanged { .. }))),
+            "TOFU should not emit CertificateChanged");
+
+        // Voice should have launched
+        let launches = voice_state.launched_with.lock().unwrap();
+        assert_eq!(launches.len(), 1, "Voice should launch on first use");
+
+        // Cert should be stored
+        let db_path = tmp.path().join("mumble/mumble.sqlite");
+        let stored = crate::mumble::cert::get_stored_cert(&db_path, "127.0.0.1", port);
+        assert_eq!(stored, Some(real_fp), "TOFU should store the fingerprint");
+    }
+
+    #[tokio::test]
+    async fn cert_match_launches_without_event() {
+        let (port, real_fp) = start_tls_server().await;
+        let tmp = tempfile::tempdir().unwrap();
+        // Pre-store the CORRECT fingerprint
+        seed_cert_db(tmp.path(), "127.0.0.1", port, &real_fp);
+
+        let form = ServerConnectionForm {
+            username: "testuser".into(),
+            hostname: "matrix.example.com".into(),
+            port: "8448".into(),
+            password: None,
+            mumble_host: Some("127.0.0.1".into()),
+            mumble_port: Some(port),
+            mumble_username: None,
+            mumble_password: None,
+            homeserver_url: None,
+        };
+
+        let (events, _, voice_state) = run_commands(
+            MockMatrix::new(),
+            MockVoice::new(),
+            tmp.path(),
+            vec![CoreCommand::System(SystemCommand::ConnectToServer(form))],
+        ).await;
+
+        // No CertificateChanged
+        assert!(!events.iter().any(|e| matches!(e, CoreEvent::Mumble(MumbleEvent::CertificateChanged { .. }))));
+
+        // Voice launched normally
+        let launches = voice_state.launched_with.lock().unwrap();
+        assert_eq!(launches.len(), 1);
     }
 }

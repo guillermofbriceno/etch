@@ -57,6 +57,7 @@ pub enum SystemCommand {
     SetDeafenSuppressesNotifs(bool),
     HideDm { room_id: String },
     UnhideDm { room_id: String },
+    AcceptMumbleCert { host: String, port: u16, fingerprint: String },
 }
 
 #[derive(Clone, Deserialize)]

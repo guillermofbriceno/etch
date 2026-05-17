@@ -33,4 +33,7 @@ pub enum CoreError {
 
     #[snafu(display("Spawning Mumble binary '{}'", path))]
     MumbleSpawn { source: std::io::Error, path: String },
+
+    #[snafu(display("Certificate probe: {}", message))]
+    CertProbe { message: String },
 }

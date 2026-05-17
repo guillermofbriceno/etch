@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { get } from 'svelte/store';
 import {
     voiceChannels, voiceUsers, talkingUsers, mumbleStatus, voiceConnected,
-    usersByChannel, handleMumbleEvent, handleSystemEvent,
+    usersByChannel, handleMumbleEvent, handleSystemEvent, certChangeRequest,
 } from '../voiceState';
 import { isMuted, isDeafened } from '../audio';
 import { userVolumes } from '../userVolumes';
@@ -645,5 +645,30 @@ describe('usersByChannel (derived)', () => {
         const names = get(usersByChannel).get(5)?.map(u => u.name);
         // localeCompare sorts case-insensitively by default in most locales
         expect(names).toEqual(['alice', 'Bob', 'Charlie']);
+    });
+});
+
+describe('CertificateChanged', () => {
+    it('sets certChangeRequest store on CertificateChanged event', () => {
+        handleMumbleEvent({
+            type: 'CertificateChanged',
+            data: { host: 'mumble.example.com', port: 64738, new_fingerprint: 'abc123' },
+        } as any);
+
+        expect(get(certChangeRequest)).toEqual({
+            host: 'mumble.example.com',
+            port: 64738,
+            new_fingerprint: 'abc123',
+        });
+    });
+
+    it('clears certChangeRequest when set to null', () => {
+        handleMumbleEvent({
+            type: 'CertificateChanged',
+            data: { host: 'example.com', port: 64738, new_fingerprint: 'xyz' },
+        } as any);
+
+        certChangeRequest.set(null);
+        expect(get(certChangeRequest)).toBeNull();
     });
 });

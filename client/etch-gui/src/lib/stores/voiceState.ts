@@ -28,6 +28,7 @@ export const voiceUsers = writable<Map<number, VoiceUser>>(new Map());
 export const talkingUsers = writable<Set<number>>(new Set());
 export type MumbleStatus = 'disconnected' | 'connecting' | 'connected';
 export const mumbleStatus = writable<MumbleStatus>('disconnected');
+export const certChangeRequest = writable<{ host: string; port: number; new_fingerprint: string } | null>(null);
 export const voiceConnected = derived(mumbleStatus, ($s) => $s === 'connected');
 
 // Users grouped by channel ID, sorted alphabetically by name
@@ -142,6 +143,10 @@ export function handleMumbleEvent(me: MumbleEvent): void {
         }
         case 'VoiceHoldChanged': {
             if (get(useMumbleSettings)) voiceHold.set(me.data);
+            break;
+        }
+        case 'CertificateChanged': {
+            certChangeRequest.set(me.data);
             break;
         }
         case 'ConnectionState': {
