@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 use serde::{Deserialize, Serialize};
 use crate::models::ServerBookmark;
@@ -20,6 +21,8 @@ pub struct Settings {
     pub hidden_dms: Vec<String>,
     #[serde(default)]
     pub deafen_suppresses_notifs: Option<bool>,
+    #[serde(default)]
+    pub sfx_paths: HashMap<String, String>,
 }
 
 pub fn load(data_dir: &Path) -> Settings {
@@ -204,6 +207,27 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let s = load(tmp.path());
         assert_eq!(s.deafen_suppresses_notifs, None);
+    }
+
+    #[test]
+    fn sfx_paths_round_trip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut s = Settings::default();
+        s.sfx_paths.insert("new_notif".into(), "/home/user/sounds/ping.wav".into());
+        s.sfx_paths.insert("user_join".into(), "/home/user/sounds/hello.wav".into());
+
+        save(tmp.path(), &s);
+        let loaded = load(tmp.path());
+        assert_eq!(loaded.sfx_paths.len(), 2);
+        assert_eq!(loaded.sfx_paths["new_notif"], "/home/user/sounds/ping.wav");
+        assert_eq!(loaded.sfx_paths["user_join"], "/home/user/sounds/hello.wav");
+    }
+
+    #[test]
+    fn sfx_paths_defaults_to_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s = load(tmp.path());
+        assert!(s.sfx_paths.is_empty());
     }
 
     #[test]

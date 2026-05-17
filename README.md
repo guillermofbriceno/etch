@@ -132,3 +132,32 @@ To tell Etch where the Mumble server is, send an `etch.voice_server` state event
 When Etch connects, it reads this from Matrix and uses it to connect to Mumble automatically. Users can still override these values in the bookmark's advanced options.
 
 Both events can be sent with any Matrix client that supports custom state events.
+
+## Custom Sound Effects
+
+You can override built-in sound effects by adding a `sfx_paths` object to your `settings.json` file. Each key maps to an absolute path to a WAV file on disk.
+
+```json
+{
+  "sfx_paths": {
+    "new_notif": "/home/user/sounds/ping.wav",
+    "user_join": "/home/user/sounds/hello.wav"
+  }
+}
+```
+
+Available keys:
+
+| Key | Event |
+|---|---|
+| `mute` | Local user mutes |
+| `unmute` | Local user unmutes |
+| `deafen` | Local user deafens |
+| `undeafen` | Local user undeafens |
+| `server_join` | Connected to voice server |
+| `server_disconnect` | Disconnected from voice server |
+| `user_join` | A user enters your voice channel |
+| `user_leave` | A user leaves your voice channel |
+| `new_notif` | New message notification |
+
+Only keys you specify are overridden; the rest use the built-in sounds. If a file fails to load, the built-in default is used and a warning is logged.

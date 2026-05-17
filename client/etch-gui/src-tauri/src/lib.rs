@@ -283,9 +283,10 @@ pub fn run() {
             rotate_log_file(&log_path);
             let logger = build_logger(&log_path);
 
+            let sfx_player = SfxPlayer::new(&data_dir);
             let (mut core_handle, engine) = init_core(data_dir, resource_dir, cmd_tx, cmd_rx, logger);
             app.manage(TauriState { core_tx: core_handle.cmd_tx });
-            app.manage(SfxPlayer::new());
+            app.manage(sfx_player);
 
             tauri::async_runtime::spawn(async move {
                 engine.run().await;

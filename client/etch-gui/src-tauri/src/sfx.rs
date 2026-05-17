@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::io::Cursor;
+use std::path::Path;
 use std::sync::Arc;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -122,7 +123,7 @@ pub struct SfxPlayer {
 }
 
 impl SfxPlayer {
-    pub fn new() -> Self {
+    pub fn new(data_dir: &Path) -> Self {
         let host = cpal::default_host();
         let device = host.default_output_device().expect("No default audio output device");
         let supported = device.default_output_config().expect("No default output config");
@@ -148,7 +149,7 @@ impl SfxPlayer {
             buffer_size,
         };
 
-        let library = include_sfx!(device_rate,
+        let mut library = include_sfx!(device_rate,
             "mute"              => "../../static/sfx/mute.wav",
             "unmute"            => "../../static/sfx/unmute.wav",
             "deafen"            => "../../static/sfx/deafen.wav",
@@ -159,6 +160,25 @@ impl SfxPlayer {
             "user_leave"        => "../../static/sfx/user_leave.wav",
             "new_notif"         => "../../static/sfx/new_notif.wav",
         );
+
+        // Apply user SFX overrides from settings
+        let settings = etch_core::settings::load(data_dir);
+        for (name, path) in &settings.sfx_paths {
+            match std::fs::read(path) {
+                Ok(bytes) => {
+                    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        load_wav(&bytes, device_rate)
+                    })) {
+                        Ok(samples) => {
+                            log::info!("[sfx] Loaded custom SFX '{name}' from {path}");
+                            library.insert(name.clone(), Arc::new(samples));
+                        }
+                        Err(_) => log::warn!("[sfx] Invalid WAV for '{name}' at {path}, using default"),
+                    }
+                }
+                Err(e) => log::warn!("[sfx] Failed to read custom SFX '{name}' from {path}: {e}"),
+            }
+        }
 
         let (play_tx, play_rx) = std::sync::mpsc::channel::<PlayCmd>();
 

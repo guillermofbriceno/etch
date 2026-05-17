@@ -10,7 +10,7 @@ mod connection;
 mod matrix;
 mod mumble;
 mod logger;
-mod settings;
+pub mod settings;
 
 #[cfg(test)]
 mod test_mocks;
