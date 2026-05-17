@@ -19,11 +19,11 @@
     }
 
     function handleVolumeInput(event: Event) {
-        setUserVolume(user.session_id, parseFloat((event.target as HTMLInputElement).value));
+        setUserVolume(user.name, user.session_id, parseFloat((event.target as HTMLInputElement).value));
     }
 
     function handleVolumeDblClick() {
-        setUserVolume(user.session_id, 0);
+        setUserVolume(user.name, user.session_id, 0);
     }
 </script>
 
@@ -38,12 +38,12 @@
         <label class="context-volume-label" for="context-user-volume">
             Volume
             <span class="context-volume-value">
-                {#if ($userVolumes[user.session_id] ?? 0) === 0}
+                {#if ($userVolumes[user.name] ?? 0) === 0}
                     0 dB
-                {:else if $userVolumes[user.session_id] > 0}
-                    +{$userVolumes[user.session_id].toFixed(1)} dB
+                {:else if $userVolumes[user.name] > 0}
+                    +{$userVolumes[user.name].toFixed(1)} dB
                 {:else}
-                    {$userVolumes[user.session_id].toFixed(1)} dB
+                    {$userVolumes[user.name].toFixed(1)} dB
                 {/if}
             </span>
         </label>
@@ -53,7 +53,7 @@
             min="-30"
             max="30"
             step="0.5"
-            value={$userVolumes[user.session_id] ?? 0}
+            value={$userVolumes[user.name] ?? 0}
             on:input={handleVolumeInput}
             on:dblclick={handleVolumeDblClick}
             class="volume-slider"

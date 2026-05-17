@@ -2,7 +2,7 @@ import { writable, derived, get } from 'svelte/store';
 import type { MumbleEvent, SystemEvent } from '$lib/ipc';
 import { playSfx } from './sfx';
 import { isMuted, isDeafened } from './audio';
-import { userVolumes } from './userVolumes';
+import { userVolumes, setUserVolume } from './userVolumes';
 import { transmissionMode, vadThreshold, voiceHold, useMumbleSettings } from './voiceSettings';
 import type { TransmissionMode } from './voiceSettings';
 
@@ -117,7 +117,16 @@ export function handleMumbleEvent(me: MumbleEvent): void {
         }
         case 'UserVolume': {
             const { session_id, volume_db } = me.data;
-            userVolumes.update(v => ({ ...v, [session_id]: Math.round(volume_db * 10) / 10 }));
+            const user = get(voiceUsers).get(session_id);
+            if (user && user.name) {
+                const stored = get(userVolumes)[user.name];
+                if (stored != null && stored !== 0) {
+                    // We have a local preference; re-send it for the new session
+                    setUserVolume(user.name, session_id, stored);
+                } else {
+                    userVolumes.update(v => ({ ...v, [user.name]: Math.round(volume_db * 10) / 10 }));
+                }
+            }
             break;
         }
         case 'UserRemoved': {

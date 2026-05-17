@@ -255,36 +255,76 @@ describe('handleMumbleEvent', () => {
 
     describe('UserVolume', () => {
         it('stores volume rounded to one decimal place', () => {
+            addUser(10, 'alice', 1);
             handleMumbleEvent({ type: 'UserVolume', data: { session_id: 10, volume_db: -3.456 } } as any);
 
-            expect(get(userVolumes)[10]).toBe(-3.5);
+            expect(get(userVolumes)['alice']).toBe(-3.5);
         });
 
         it('stores positive volume values', () => {
+            addUser(10, 'alice', 1);
             handleMumbleEvent({ type: 'UserVolume', data: { session_id: 10, volume_db: 6.789 } } as any);
 
-            expect(get(userVolumes)[10]).toBe(6.8);
+            expect(get(userVolumes)['alice']).toBe(6.8);
         });
 
         it('stores zero volume', () => {
+            addUser(10, 'alice', 1);
             handleMumbleEvent({ type: 'UserVolume', data: { session_id: 10, volume_db: 0 } } as any);
 
-            expect(get(userVolumes)[10]).toBe(0);
+            expect(get(userVolumes)['alice']).toBe(0);
         });
 
         it('tracks volumes for multiple users independently', () => {
+            addUser(10, 'alice', 1);
+            addUser(20, 'bob', 1);
             handleMumbleEvent({ type: 'UserVolume', data: { session_id: 10, volume_db: -3.0 } } as any);
             handleMumbleEvent({ type: 'UserVolume', data: { session_id: 20, volume_db: 5.0 } } as any);
 
-            expect(get(userVolumes)[10]).toBe(-3.0);
-            expect(get(userVolumes)[20]).toBe(5.0);
+            expect(get(userVolumes)['alice']).toBe(-3.0);
+            expect(get(userVolumes)['bob']).toBe(5.0);
         });
 
-        it('overwrites a previous volume for the same user', () => {
-            handleMumbleEvent({ type: 'UserVolume', data: { session_id: 10, volume_db: -3.0 } } as any);
+        it('accepts backend volume when no local preference exists', () => {
+            addUser(10, 'alice', 1);
             handleMumbleEvent({ type: 'UserVolume', data: { session_id: 10, volume_db: 2.0 } } as any);
 
-            expect(get(userVolumes)[10]).toBe(2.0);
+            expect(get(userVolumes)['alice']).toBe(2.0);
+        });
+
+        it('ignores volume if user is not yet known', () => {
+            handleMumbleEvent({ type: 'UserVolume', data: { session_id: 99, volume_db: -5.0 } } as any);
+
+            expect(get(userVolumes)['99']).toBeUndefined();
+        });
+
+        it('persists volume when user reconnects with new session_id', () => {
+            addUser(10, 'alice', 1);
+            handleMumbleEvent({ type: 'UserVolume', data: { session_id: 10, volume_db: -5.0 } } as any);
+            expect(get(userVolumes)['alice']).toBe(-5.0);
+
+            // Alice leaves and rejoins with new session
+            handleMumbleEvent({ type: 'UserRemoved', data: 10 } as any);
+            addUser(42, 'alice', 1);
+
+            // Backend reports 0.0 for new session (Mumble default)
+            handleMumbleEvent({ type: 'UserVolume', data: { session_id: 42, volume_db: 0.0 } } as any);
+
+            // Our stored preference is kept, not overwritten
+            expect(get(userVolumes)['alice']).toBe(-5.0);
+        });
+
+        it('accepts backend volume after user resets to zero', () => {
+            addUser(10, 'alice', 1);
+            // User previously had a volume, then reset to 0
+            handleMumbleEvent({ type: 'UserVolume', data: { session_id: 10, volume_db: 0.0 } } as any);
+
+            // Alice reconnects, backend reports 0
+            handleMumbleEvent({ type: 'UserRemoved', data: 10 } as any);
+            addUser(42, 'alice', 1);
+            handleMumbleEvent({ type: 'UserVolume', data: { session_id: 42, volume_db: 0.0 } } as any);
+
+            expect(get(userVolumes)['alice']).toBe(0);
         });
     });
 

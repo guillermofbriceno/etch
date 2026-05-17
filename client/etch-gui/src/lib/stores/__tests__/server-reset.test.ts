@@ -100,7 +100,7 @@ describe('ServerReset clears session state', () => {
         const { setReply } = await import('../compose');
         setReply({ id: '$e1', sender: '@alice:a', body: 'hello', html_body: null, media: null, timestamp: Date.now(), reactions: {} });
         const { setUserVolume } = await import('../userVolumes');
-        setUserVolume(1, -3.5);
+        setUserVolume('alice', 1, -3.5);
 
         // Sanity: state is populated
         expect(get(channels).length).toBeGreaterThan(0);
@@ -108,7 +108,7 @@ describe('ServerReset clears session state', () => {
         expect(get(currentUser).username).toBe('alice');
         expect(get(mediaBaseUrl)).toBe('https://a.example.com');
         expect(get(replyingTo)).not.toBeNull();
-        expect(get(userVolumes)).toHaveProperty('1');
+        expect(get(userVolumes)).toHaveProperty('alice');
 
         // Fire ServerReset
         fireServerReset();
