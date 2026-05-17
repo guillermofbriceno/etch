@@ -1,5 +1,5 @@
 import { vi } from 'vitest';
-import { voiceChannels, voiceUsers, talkingUsers, mumbleStatus } from '../voiceState';
+import { voiceChannels, voiceUsers, talkingUsers, mumbleStatus, certChangeRequest } from '../voiceState';
 import { handleMumbleEvent } from '../voiceState';
 import { channels, dmLastActivity } from '../channels';
 import { activeChannelId } from '../activeChannel';
@@ -24,6 +24,7 @@ export function resetStores(): void {
     voiceUsers.set(new Map());
     talkingUsers.set(new Set());
     mumbleStatus.set('disconnected');
+    certChangeRequest.set(null);
 
     // Channels
     channels.set([]);
