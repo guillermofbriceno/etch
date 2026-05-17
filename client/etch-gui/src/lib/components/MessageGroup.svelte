@@ -231,6 +231,10 @@
         pointer-events: auto;
     }
 
+    .message-block.compact > :global(.message-actions) {
+        top: -28px;
+    }
+
     /* --- Reaction badges --- */
     .reaction-badges {
         display: flex;

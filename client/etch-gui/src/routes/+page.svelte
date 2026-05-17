@@ -49,7 +49,7 @@
         </div>
     </aside>
 
-    <main class="chat-area">
+    <main class="chat-area" class:peek-suppressed={$peekSuppressed}>
         <div class="chat-window-wrapper">
             <ChatWindow />
         </div>
@@ -173,6 +173,11 @@
         background-color: rgba(0, 0, 0, 0.0);
         min-height: 0;
         min-width: 0;
+    }
+
+    .chat-area.peek-suppressed :global(.message-actions) {
+        opacity: 0 !important;
+        pointer-events: none !important;
     }
 
     .chat-window-wrapper {
