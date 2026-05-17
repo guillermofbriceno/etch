@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
 use sha1::{Sha1, Digest};
 use snafu::ResultExt;
 use bridge_types::MumbleCommand as BridgeCommand;
@@ -7,6 +8,7 @@ use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
 use crate::error::*;
 use crate::events::{CoreEvent, InternalEvent};
+use crate::scripting::ScriptDispatcher;
 
 pub struct MumbleProcess {
     child: Child,
@@ -22,6 +24,7 @@ pub struct MumbleProcess {
 impl MumbleProcess {
     /// Start the bridge listener, then spawn the Mumble client pointed at the
     /// given server.  Returns once the process is running (not once it connects).
+    #[allow(clippy::too_many_arguments)]
     pub async fn spawn(
         host: &str,
         port: u16,
@@ -33,6 +36,7 @@ impl MumbleProcess {
         extra_args: &str,
         data_dir: &Path,
         resource_dir: &Path,
+        dispatcher: Arc<ScriptDispatcher>,
     ) -> Result<Self, CoreError> {
         // 1. Build mumble:// URL
         let url = match password {
@@ -48,7 +52,7 @@ impl MumbleProcess {
         init_mumble_config(&mumble_config_dir, resource_dir)?;
 
         // 3. Start bridge listener
-        let (sock_name, cmd_tx, bridge_handle) = crate::mumble::bridge::start(event_tx, internal_tx)
+        let (sock_name, cmd_tx, bridge_handle) = crate::mumble::bridge::start(event_tx, internal_tx, dispatcher)
             .context(BridgeStartSnafu)?;
 
         // 4. Parse extra args

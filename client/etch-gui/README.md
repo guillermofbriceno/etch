@@ -28,3 +28,8 @@ The suite covers three layers:
 - **Component tests** -- Render real Svelte components, simulate user interaction, and assert on DOM output and IPC calls.
 
 For detailed information on test patterns, file layout, mocking strategy, and known gotchas, see [`src/lib/stores/__tests__/README.md`](src/lib/stores/__tests__/README.md).
+
+## Customization
+
+- [Custom Stylesheets](THEMING.md) -- Override CSS variables and styles via `settings.json`.
+- [Event Scripts](SCRIPTING.md) -- Run shell commands on chat and voice events.

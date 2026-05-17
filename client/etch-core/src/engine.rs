@@ -164,10 +164,10 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
                 }
                 log::info!("User accepted new cert for {}:{}", host, port);
                 // Resume the stashed voice launch
-                if let Some((creds, show_gui, extra_args, itx)) = self.pending_cert_launch.take() {
-                    if let Err(e) = self.voice.launch(creds, itx, show_gui, &extra_args).await {
-                        log::error!("Failed to launch voice after cert accept: {:?}", e);
-                    }
+                if let Some((creds, show_gui, extra_args, itx)) = self.pending_cert_launch.take()
+                    && let Err(e) = self.voice.launch(creds, itx, show_gui, &extra_args).await
+                {
+                    log::error!("Failed to launch voice after cert accept: {:?}", e);
                 }
             }
         }

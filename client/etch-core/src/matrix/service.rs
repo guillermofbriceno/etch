@@ -1,5 +1,6 @@
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
+use std::sync::Arc;
 use std::time::Duration;
 use matrix_sdk::config::SyncSettings;
 use matrix_sdk::media::{MediaRequestParameters, MediaFormat};
@@ -12,6 +13,7 @@ use crate::events::{CoreEvent, MatrixEvent, InternalEvent, InternalMatrixEvent};
 use crate::matrix::client::{start_matrix_client, ConnectionResult};
 use crate::matrix::timeline::TimelineManager;
 use crate::models::{ConnectOutcome, RoomInfo, RoomType};
+use crate::scripting::ScriptDispatcher;
 use crate::traits::MatrixBackend;
 use crate::matrix;
 
@@ -23,17 +25,19 @@ pub struct MatrixService {
     event_tx: mpsc::Sender<CoreEvent>,
     sync_handle: Option<JoinHandle<()>>,
     data_dir: PathBuf,
+    dispatcher: Arc<ScriptDispatcher>,
 }
 
 impl MatrixService {
-    pub fn new(event_tx: mpsc::Sender<CoreEvent>, data_dir: PathBuf) -> Self {
-        let timeline_manager = TimelineManager::new(event_tx.clone());
+    pub fn new(event_tx: mpsc::Sender<CoreEvent>, data_dir: PathBuf, dispatcher: Arc<ScriptDispatcher>) -> Self {
+        let timeline_manager = TimelineManager::new(event_tx.clone(), dispatcher.clone());
         Self {
             client: None,
             timeline_manager,
             event_tx,
             sync_handle: None,
             data_dir,
+            dispatcher,
         }
     }
 
@@ -112,6 +116,7 @@ impl MatrixBackend for MatrixService {
                 if let Some(user_id) = client.user_id() {
                     let username = user_id.localpart().to_string();
                     let matrix_id = user_id.to_string();
+                    self.timeline_manager.set_local_user_id(matrix_id.clone());
                     let (display_name, avatar_url) = match client.account().fetch_user_profile_of(user_id).await {
                         Ok(profile) => (
                             profile.get("displayname").and_then(|v| v.as_str()).map(|s| s.to_string()),
@@ -316,14 +321,14 @@ impl MatrixBackend for MatrixService {
                 // Spawn as a background task so slow receipt RPCs don't block
                 // the command loop and delay subsequent commands.
                 tokio::spawn(async move {
-                    if let Some(room) = client.get_room(&rid) {
-                        if let Err(e) = room.send_single_receipt(
+                    if let Some(room) = client.get_room(&rid)
+                        && let Err(e) = room.send_single_receipt(
                             matrix_sdk::ruma::api::client::receipt::create_receipt::v3::ReceiptType::Read,
                             matrix_sdk::ruma::events::receipt::ReceiptThread::Unthreaded,
                             eid,
-                        ).await {
-                            log::error!("Failed to send read receipt: {:?}", e);
-                        }
+                        ).await
+                    {
+                        log::error!("Failed to send read receipt: {:?}", e);
                     }
                 });
             }
@@ -367,25 +372,25 @@ impl MatrixBackend for MatrixService {
 
                 // If a DM room with this user already exists, reuse it
                 if let Some(existing_room_id) = Self::find_existing_dm(&client, &target).await {
-                    if let Ok(rid) = matrix_sdk::ruma::RoomId::parse(&existing_room_id) {
-                        if let Some(room) = client.get_room(&rid) {
-                            let is_encrypted = room.latest_encryption_state().await
-                                .map(|s| s.is_encrypted()).unwrap_or(false);
-                            let unread = room.unread_notification_counts();
-                            let room_info = RoomInfo {
-                                id: existing_room_id,
-                                display_name: display_name.clone(),
-                                etch_room_type: RoomType::Dm,
-                                channel_id: None,
-                                is_default: false,
-                                unread_count: unread.notification_count,
-                                is_encrypted,
-                                avatar_url: avatar_url.clone(),
-                            };
-                            let _ = self.event_tx.send(
-                                CoreEvent::Matrix(MatrixEvent::DmCreated(room_info))
-                            ).await;
-                        }
+                    if let Ok(rid) = matrix_sdk::ruma::RoomId::parse(&existing_room_id)
+                        && let Some(room) = client.get_room(&rid)
+                    {
+                        let is_encrypted = room.latest_encryption_state().await
+                            .map(|s| s.is_encrypted()).unwrap_or(false);
+                        let unread = room.unread_notification_counts();
+                        let room_info = RoomInfo {
+                            id: existing_room_id,
+                            display_name: display_name.clone(),
+                            etch_room_type: RoomType::Dm,
+                            channel_id: None,
+                            is_default: false,
+                            unread_count: unread.notification_count,
+                            is_encrypted,
+                            avatar_url: avatar_url.clone(),
+                        };
+                        let _ = self.event_tx.send(
+                            CoreEvent::Matrix(MatrixEvent::DmCreated(room_info))
+                        ).await;
                     }
                     return;
                 }
@@ -428,16 +433,19 @@ impl MatrixBackend for MatrixService {
                             .request_user_identity(&target).await;
 
                         // Subscribe to the new room's timeline in the background
-                        if let Ok(rid) = matrix_sdk::ruma::RoomId::parse(&room_id) {
-                            if let Some(room) = client.get_room(&rid) {
-                                let event_tx = self.event_tx.clone();
-                                let media_sources = self.timeline_manager.media_sources.clone();
-                                tokio::spawn(async move {
-                                    TimelineManager::subscribe_and_paginate(
-                                        event_tx, &room, &rid, 20, media_sources,
-                                    ).await;
-                                });
-                            }
+                        if let Ok(rid) = matrix_sdk::ruma::RoomId::parse(&room_id)
+                            && let Some(room) = client.get_room(&rid)
+                        {
+                            let event_tx = self.event_tx.clone();
+                            let media_sources = self.timeline_manager.media_sources.clone();
+                            let dispatcher = self.dispatcher.clone();
+                            let local_user_id = self.timeline_manager.local_user_id().map(|s| s.to_string());
+                            tokio::spawn(async move {
+                                TimelineManager::subscribe_and_paginate(
+                                    event_tx, &room, &rid, 20, media_sources,
+                                    dispatcher, local_user_id,
+                                ).await;
+                            });
                         }
                     }
                     Err(e) => {
@@ -506,7 +514,8 @@ mod tests {
     async fn reset_aborts_sync_and_clears_state() {
         let tmp = tempfile::tempdir().unwrap();
         let (tx, _rx) = mpsc::channel(1);
-        let mut service = MatrixService::new(tx, tmp.path().to_path_buf());
+        let dispatcher = Arc::new(ScriptDispatcher::empty());
+        let mut service = MatrixService::new(tx, tmp.path().to_path_buf(), dispatcher);
 
         // Simulate a live session: a running sync task and cached media sources.
         let sync_handle = tokio::spawn(async {

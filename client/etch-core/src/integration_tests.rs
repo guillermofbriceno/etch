@@ -3,6 +3,7 @@
 //! Run with: cargo test -p etch-core --features integration-tests -- --test-threads=1
 //! Or via the orchestrator: ./tests/integration/run.sh
 
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
@@ -13,6 +14,7 @@ use crate::events::{CoreEvent, MatrixEvent, SystemEvent};
 use crate::matrix::service::MatrixService;
 use crate::matrix::timeline::TimelineEntryKind;
 use crate::models::{ConnectionState, RoomInfo, RoomType};
+use crate::scripting::ScriptDispatcher;
 use crate::test_mocks::MockVoice;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -37,7 +39,8 @@ impl TestHarness {
         let (cmd_tx, cmd_rx) = mpsc::channel(32);
         let (event_tx, event_rx) = mpsc::channel(256);
 
-        let matrix = MatrixService::new(event_tx.clone(), data_dir.path().to_path_buf());
+        let dispatcher = Arc::new(ScriptDispatcher::new(data_dir.path()));
+        let matrix = MatrixService::new(event_tx.clone(), data_dir.path().to_path_buf(), dispatcher);
         let voice = MockVoice::new();
         let engine = CoreEngine::new(
             cmd_rx, event_tx, matrix, voice, data_dir.path().to_path_buf(),

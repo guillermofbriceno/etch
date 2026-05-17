@@ -25,6 +25,8 @@ pub struct Settings {
     pub sfx_paths: HashMap<String, String>,
     #[serde(default)]
     pub custom_css: Option<String>,
+    #[serde(default)]
+    pub event_scripts: HashMap<String, String>,
 }
 
 pub fn load(data_dir: &Path) -> Settings {
@@ -40,10 +42,10 @@ pub fn save(data_dir: &Path, settings: &Settings) {
     let tmp_path = data_dir.join("settings.json.tmp");
 
     let _ = std::fs::create_dir_all(data_dir);
-    if let Ok(json) = serde_json::to_string_pretty(settings) {
-        if std::fs::write(&tmp_path, &json).is_ok() {
-            let _ = std::fs::rename(&tmp_path, &path);
-        }
+    if let Ok(json) = serde_json::to_string_pretty(settings)
+        && std::fs::write(&tmp_path, &json).is_ok()
+    {
+        let _ = std::fs::rename(&tmp_path, &path);
     }
 }
 
@@ -114,11 +116,13 @@ mod tests {
     #[test]
     fn save_and_load_round_trip() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut s = Settings::default();
-        s.transmission_mode = Some("continuous".into());
-        s.vad_threshold = Some(0.5);
-        s.voice_hold = Some(300);
-        s.use_mumble_settings = Some(true);
+        let s = Settings {
+            transmission_mode: Some("continuous".into()),
+            vad_threshold: Some(0.5),
+            voice_hold: Some(300),
+            use_mumble_settings: Some(true),
+            ..Default::default()
+        };
 
         save(tmp.path(), &s);
         let loaded = load(tmp.path());
@@ -228,8 +232,10 @@ mod tests {
     #[test]
     fn custom_css_round_trip() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut s = Settings::default();
-        s.custom_css = Some("/home/user/theme.css".into());
+        let s = Settings {
+            custom_css: Some("/home/user/theme.css".into()),
+            ..Default::default()
+        };
 
         save(tmp.path(), &s);
         let loaded = load(tmp.path());
@@ -248,6 +254,27 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let s = load(tmp.path());
         assert!(s.sfx_paths.is_empty());
+    }
+
+    #[test]
+    fn event_scripts_round_trip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut s = Settings::default();
+        s.event_scripts.insert("user_join".into(), "echo hello".into());
+        s.event_scripts.insert("new_message".into(), "notify-send \"$ETCH_USER\"".into());
+
+        save(tmp.path(), &s);
+        let loaded = load(tmp.path());
+        assert_eq!(loaded.event_scripts.len(), 2);
+        assert_eq!(loaded.event_scripts["user_join"], "echo hello");
+        assert_eq!(loaded.event_scripts["new_message"], "notify-send \"$ETCH_USER\"");
+    }
+
+    #[test]
+    fn event_scripts_defaults_to_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s = load(tmp.path());
+        assert!(s.event_scripts.is_empty());
     }
 
     #[test]

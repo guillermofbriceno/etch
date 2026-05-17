@@ -9,12 +9,13 @@ use matrix_sdk_ui::timeline::{Timeline, TimelineItem, TimelineItemContent,
 use matrix_sdk::ruma::events::FullStateEventContent;
 use matrix_sdk::ruma::{OwnedRoomId, events::room::message::MessageType};
 use matrix_sdk_ui::eyeball_im::VectorDiff;
-use futures_util::StreamExt;
+use futures_util::{FutureExt, StreamExt};
 use tokio::sync::mpsc;
 use crate::events::{CoreEvent, MatrixEvent};
 use crate::models::ChatMessageReceive;
 use crate::models::MediaInfo;
 use crate::models::SenderProfile;
+use crate::scripting::ScriptDispatcher;
 use serde::{Deserialize, Serialize};
 
 /// Bounded cache for encrypted media source metadata (key material, IV, hashes).
@@ -42,10 +43,10 @@ impl BoundedMediaSources {
         if self.map.contains_key(&key) {
             return;
         }
-        if self.order.len() >= self.capacity {
-            if let Some(oldest) = self.order.pop_front() {
-                self.map.remove(&oldest);
-            }
+        if self.order.len() >= self.capacity
+            && let Some(oldest) = self.order.pop_front()
+        {
+            self.map.remove(&oldest);
         }
         self.order.push_back(key.clone());
         self.map.insert(key, source);
@@ -62,6 +63,8 @@ pub struct TimelineManager {
     timelines: HashMap<OwnedRoomId, Arc<Timeline>>,
     event_tx: mpsc::Sender<CoreEvent>,
     pub media_sources: MediaSourceMap,
+    dispatcher: Arc<ScriptDispatcher>,
+    local_user_id: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -78,7 +81,7 @@ pub enum StateEventKind {
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub enum TimelineEntryKind {
-    Message(ChatMessageReceive),
+    Message(Box<ChatMessageReceive>),
     StateEvent(StateEventKind),
     DayDivider(u128),
     ReadMarker,
@@ -93,12 +96,22 @@ pub struct TimelineEntry {
 }
 
 impl TimelineManager {
-    pub fn new(event_tx: mpsc::Sender<CoreEvent>) -> Self {
+    pub fn new(event_tx: mpsc::Sender<CoreEvent>, dispatcher: Arc<ScriptDispatcher>) -> Self {
         Self {
             timelines: HashMap::new(),
             event_tx,
             media_sources: Arc::new(RwLock::new(BoundedMediaSources::new(MEDIA_SOURCE_CACHE_CAP))),
+            dispatcher,
+            local_user_id: None,
         }
+    }
+
+    pub fn set_local_user_id(&mut self, id: String) {
+        self.local_user_id = Some(id);
+    }
+
+    pub fn local_user_id(&self) -> Option<&str> {
+        self.local_user_id.as_deref()
     }
 
     /// Clear all timeline subscriptions and the media source cache.
@@ -143,11 +156,32 @@ impl TimelineManager {
         let event_tx = self.event_tx.clone();
         let rid = room_id_str.clone();
         let sources = self.media_sources.clone();
+        let dispatcher = self.dispatcher.clone();
+        let local_user_id = self.local_user_id.clone();
 
         tokio::spawn(async move {
+            // Drain any buffered backfill diffs without firing scripts
+            loop {
+                match stream.next().now_or_never() {
+                    Some(Some(diffs)) => {
+                        for diff in diffs {
+                            if let Some(entry) = map_diff(diff, &rid, &sources)
+                                && event_tx.send(entry).await.is_err()
+                            {
+                                log::warn!("[timeline] Event channel closed for room {}, stopping diff task", rid);
+                                return;
+                            }
+                        }
+                    }
+                    Some(None) => return, // stream closed
+                    None => break,        // buffer empty, go live
+                }
+            }
+            // Live events: fire scripts for new messages
             while let Some(diffs) = stream.next().await {
                 for diff in diffs {
                     if let Some(entry) = map_diff(diff, &rid, &sources) {
+                        maybe_fire_new_message(&entry, &rid, &dispatcher, local_user_id.as_deref());
                         if event_tx.send(entry).await.is_err() {
                             log::warn!("[timeline] Event channel closed for room {}, stopping diff task", rid);
                             return;
@@ -226,6 +260,8 @@ impl TimelineManager {
         room_id: &OwnedRoomId,
         back_count: u16,
         media_sources: MediaSourceMap,
+        dispatcher: Arc<ScriptDispatcher>,
+        local_user_id: Option<String>,
     ) {
         let Ok(timeline) = room.timeline().await else {
             log::error!("Failed to get timeline for room: {}", room_id);
@@ -256,9 +292,28 @@ impl TimelineManager {
         let sources = media_sources.clone();
         tokio::spawn(async move {
             let _timeline = timeline; // prevent drop
+            // Drain buffered pagination diffs without firing scripts
+            loop {
+                match stream.next().now_or_never() {
+                    Some(Some(diffs)) => {
+                        for diff in diffs {
+                            if let Some(entry) = map_diff(diff, &rid, &sources)
+                                && tx.send(entry).await.is_err()
+                            {
+                                log::warn!("[timeline] Event channel closed for room {}, stopping diff task", rid);
+                                return;
+                            }
+                        }
+                    }
+                    Some(None) => return,
+                    None => break,
+                }
+            }
+            // Live events: fire scripts for new messages
             while let Some(diffs) = stream.next().await {
                 for diff in diffs {
                     if let Some(entry) = map_diff(diff, &rid, &sources) {
+                        maybe_fire_new_message(&entry, &rid, &dispatcher, local_user_id.as_deref());
                         if tx.send(entry).await.is_err() {
                             log::warn!("[timeline] Event channel closed for room {}, stopping diff task", rid);
                             return;
@@ -382,7 +437,7 @@ fn event_item_to_entry(
 
                     let ts: u64 = event.timestamp().0.into();
 
-                    TimelineEntryKind::Message(ChatMessageReceive {
+                    TimelineEntryKind::Message(Box::new(ChatMessageReceive {
                         id: event.event_id().map(|id| id.to_string()).unwrap_or_default(),
                         sender: event.sender().to_string(),
                         body: message.body().to_string(),
@@ -390,7 +445,7 @@ fn event_item_to_entry(
                         media,
                         timestamp: ts as u128,
                         reactions,
-                    })
+                    }))
                 }
                 MsgLikeKind::Redacted => TimelineEntryKind::Redacted,
                 other => {
@@ -458,6 +513,27 @@ fn virtual_item_to_entry(virt: &VirtualTimelineItem) -> TimelineEntry {
         _ => TimelineEntryKind::Other,
     };
     TimelineEntry { sender: None, kind }
+}
+
+fn maybe_fire_new_message(
+    event: &CoreEvent,
+    room_id: &str,
+    dispatcher: &ScriptDispatcher,
+    local_user_id: Option<&str>,
+) {
+    let CoreEvent::Matrix(MatrixEvent::TimelinePushBack(_, entry)) = event else { return };
+    let TimelineEntryKind::Message(ref msg) = entry.kind else { return };
+    if local_user_id == Some(msg.sender.as_str()) {
+        return;
+    }
+    let display = entry.sender.as_ref()
+        .and_then(|s| s.display_name.as_deref())
+        .unwrap_or(&msg.sender);
+    dispatcher.fire("new_message", &[
+        ("USER", display),
+        ("MESSAGE", &msg.body),
+        ("ROOM", room_id),
+    ]);
 }
 
 fn map_diff(
@@ -550,7 +626,7 @@ mod tests {
         // diff-stream tasks, and clearing media sources prevents stale
         // encrypted-media metadata from leaking across sessions.
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
-        let mut mgr = TimelineManager::new(tx);
+        let mut mgr = TimelineManager::new(tx, Arc::new(ScriptDispatcher::empty()));
 
         // Populate the media source cache via the shared lock (same path
         // the real code takes through extract_media_url).

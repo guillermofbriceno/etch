@@ -1,12 +1,14 @@
 use tokio::sync::mpsc;
 use bridge_types::MumbleCommand as BridgeCommand;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::commands::MumbleCommand;
 use crate::error::CoreError;
 use crate::events::{CoreEvent, InternalEvent};
 use crate::models::VoiceServerConfig;
 use crate::mumble::process::MumbleProcess;
+use crate::scripting::ScriptDispatcher;
 use crate::traits::VoiceService;
 
 pub struct MumbleVoiceService {
@@ -14,6 +16,7 @@ pub struct MumbleVoiceService {
     event_tx: mpsc::Sender<CoreEvent>,
     data_dir: PathBuf,
     resource_dir: PathBuf,
+    dispatcher: Arc<ScriptDispatcher>,
 }
 
 impl MumbleVoiceService {
@@ -21,12 +24,14 @@ impl MumbleVoiceService {
         event_tx: mpsc::Sender<CoreEvent>,
         data_dir: PathBuf,
         resource_dir: PathBuf,
+        dispatcher: Arc<ScriptDispatcher>,
     ) -> Self {
         Self {
             process: None,
             event_tx,
             data_dir,
             resource_dir,
+            dispatcher,
         }
     }
 }
@@ -45,7 +50,7 @@ impl VoiceService for MumbleVoiceService {
         let proc = MumbleProcess::spawn(
             &creds.host, creds.port, username, creds.password.as_deref(),
             self.event_tx.clone(), internal_tx, show_gui, extra_args,
-            &self.data_dir, &self.resource_dir,
+            &self.data_dir, &self.resource_dir, self.dispatcher.clone(),
         ).await?;
         log::info!("Mumble launched, bridge socket: {}", proc.sock_name);
         self.process = Some(proc);

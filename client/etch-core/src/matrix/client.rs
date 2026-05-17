@@ -113,12 +113,12 @@ pub async fn start_matrix_client(tx: mpsc::Sender<InternalEvent>, event_tx: mpsc
     let mut need_fresh_login = true;
 
     if session_path.exists() {
-        match (|| async {
+        match async {
             let session_json = std::fs::read_to_string(&session_path)?;
             let session = serde_json::from_str(&session_json)?;
             client.matrix_auth().restore_session(session, RoomLoadSettings::default()).await?;
             anyhow::Ok(())
-        })().await {
+        }.await {
             Ok(()) => { need_fresh_login = false; }
             Err(e) => {
                 log::warn!("Stale session for {}, starting fresh: {e}", conn_form.hostname);

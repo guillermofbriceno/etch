@@ -11,6 +11,7 @@ mod matrix;
 mod mumble;
 mod logger;
 pub mod settings;
+pub(crate) mod scripting;
 
 #[cfg(test)]
 mod test_mocks;
@@ -20,6 +21,7 @@ mod integration_tests;
 
 use tokio::sync::mpsc;
 use std::path::PathBuf;
+use std::sync::Arc;
 use crate::engine::*;
 
 pub type ProductionEngine = CoreEngine<matrix::MatrixService, mumble::service::MumbleVoiceService>;
@@ -39,8 +41,10 @@ pub fn init_core(
     log::info!("Data directory set to: {:?}", data_dir);
     log::info!("Resource directory set to: {:?}", resource_dir);
 
-    let matrix = matrix::MatrixService::new(event_tx.clone(), data_dir.clone());
-    let voice = mumble::service::MumbleVoiceService::new(event_tx.clone(), data_dir.clone(), resource_dir);
+    let dispatcher = Arc::new(scripting::ScriptDispatcher::new(&data_dir));
+
+    let matrix = matrix::MatrixService::new(event_tx.clone(), data_dir.clone(), dispatcher.clone());
+    let voice = mumble::service::MumbleVoiceService::new(event_tx.clone(), data_dir.clone(), resource_dir, dispatcher);
 
     let handle = CoreHandle { cmd_tx, event_rx };
     let engine = CoreEngine::new(cmd_rx, event_tx, matrix, voice, data_dir);
