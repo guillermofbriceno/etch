@@ -43,6 +43,7 @@ impl VoiceService for MumbleVoiceService {
         internal_tx: mpsc::Sender<InternalEvent>,
         show_gui: bool,
         extra_args: &str,
+        channel_path: Option<&str>,
     ) -> Result<(), CoreError> {
         self.shutdown().await;
 
@@ -51,6 +52,7 @@ impl VoiceService for MumbleVoiceService {
             &creds.host, creds.port, username, creds.password.as_deref(),
             self.event_tx.clone(), internal_tx, show_gui, extra_args,
             &self.data_dir, &self.resource_dir, self.dispatcher.clone(),
+            channel_path,
         ).await?;
         log::info!("Mumble launched, bridge socket: {}", proc.sock_name);
         self.process = Some(proc);

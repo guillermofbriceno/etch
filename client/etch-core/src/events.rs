@@ -82,6 +82,9 @@ pub enum InternalMumbleEvent {
         name: String,
         volume_db: f32,
     },
+    LocalChannelChanged { channel_path: String },
+    LocalMuteChanged(bool),
+    LocalDeafChanged(bool),
 }
 
 #[derive(Debug)]

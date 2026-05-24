@@ -38,6 +38,7 @@ pub trait VoiceService: Send {
         internal_tx: mpsc::Sender<InternalEvent>,
         show_gui: bool,
         extra_args: &str,
+        channel_path: Option<&str>,
     ) -> impl Future<Output = Result<(), CoreError>> + Send;
 
     fn send_command(&mut self, cmd: MumbleCommand) -> impl Future<Output = ()> + Send;

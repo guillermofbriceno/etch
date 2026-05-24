@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot};
 
@@ -113,6 +114,7 @@ impl MatrixBackend for MockMatrix {
 /// mock into the engine so tests can inspect recorded calls afterward.
 pub struct MockVoiceState {
     pub launched_with: Mutex<Vec<VoiceServerConfig>>,
+    pub launched_channel_paths: Mutex<Vec<Option<String>>>,
     pub commands: Mutex<Vec<MumbleCommand>>,
     pub shutdown_count: Mutex<u32>,
     pub launch_error: Mutex<bool>,
@@ -120,8 +122,8 @@ pub struct MockVoiceState {
 
 pub struct MockVoice {
     pub state: Arc<MockVoiceState>,
-    /// Events sent through `internal_tx` during `launch()`.
-    pub internal_events: Vec<InternalEvent>,
+    /// Event batches sent through `internal_tx` during successive `launch()` calls.
+    launch_event_batches: VecDeque<Vec<InternalEvent>>,
 }
 
 impl MockVoice {
@@ -129,16 +131,19 @@ impl MockVoice {
         Self {
             state: Arc::new(MockVoiceState {
                 launched_with: Mutex::new(Vec::new()),
+                launched_channel_paths: Mutex::new(Vec::new()),
                 commands: Mutex::new(Vec::new()),
                 shutdown_count: Mutex::new(0),
                 launch_error: Mutex::new(false),
             }),
-            internal_events: Vec::new(),
+            launch_event_batches: VecDeque::new(),
         }
     }
 
+    /// Queue a batch of events to emit during the next `launch()` call.
+    /// Call multiple times to queue events for successive launches.
     pub fn with_internal_events(mut self, events: Vec<InternalEvent>) -> Self {
-        self.internal_events = events;
+        self.launch_event_batches.push_back(events);
         self
     }
 }
@@ -150,13 +155,17 @@ impl VoiceService for MockVoice {
         internal_tx: mpsc::Sender<InternalEvent>,
         _show_gui: bool,
         _extra_args: &str,
+        channel_path: Option<&str>,
     ) -> Result<(), CoreError> {
         if *self.state.launch_error.lock().unwrap() {
             return Err(CoreError::InvalidConfig { message: "mock launch failure".into() });
         }
         self.state.launched_with.lock().unwrap().push(creds);
-        for event in self.internal_events.drain(..) {
-            let _ = internal_tx.send(event).await;
+        self.state.launched_channel_paths.lock().unwrap().push(channel_path.map(String::from));
+        if let Some(events) = self.launch_event_batches.pop_front() {
+            for event in events {
+                let _ = internal_tx.send(event).await;
+            }
         }
         Ok(())
     }

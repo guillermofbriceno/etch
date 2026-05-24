@@ -37,12 +37,19 @@ impl MumbleProcess {
         data_dir: &Path,
         resource_dir: &Path,
         dispatcher: Arc<ScriptDispatcher>,
+        channel_path: Option<&str>,
     ) -> Result<Self, CoreError> {
         // 1. Build mumble:// URL
-        let url = match password {
+        let mut url = match password {
             Some(pw) => format!("mumble://{}:{}@{}:{}", username, pw, host, port),
             None => format!("mumble://{}@{}:{}", username, host, port),
         };
+        if let Some(path) = channel_path {
+            if !path.is_empty() {
+                url.push('/');
+                url.push_str(path);
+            }
+        }
 
         log::info!("Spawning Mumble: {} (gui={})", url, show_gui);
 

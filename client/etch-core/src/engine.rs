@@ -10,6 +10,16 @@ use crate::traits::{MatrixBackend, VoiceService};
 use std::path::PathBuf;
 use std::pin::Pin;
 
+/// Voice state tracked in memory for restoration after Mumble restarts.
+/// Reset when connecting to a new server; preserved across process restarts
+/// on the same server.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct VoiceSessionState {
+    pub channel_path: Option<String>,
+    pub muted: bool,
+    pub deafened: bool,
+}
+
 pub struct CoreEngine<M, V> {
     pub(crate) cmd_rx: mpsc::Receiver<CoreCommand>,
     pub(crate) event_tx: mpsc::Sender<CoreEvent>,
@@ -21,6 +31,8 @@ pub struct CoreEngine<M, V> {
     pub(crate) data_dir: PathBuf,
     /// Stashed launch params while waiting for user to accept a changed cert.
     pending_cert_launch: Option<(VoiceServerConfig, bool, String, mpsc::Sender<InternalEvent>)>,
+    /// Voice state persisted across Mumble client restarts.
+    pub(crate) voice_session: VoiceSessionState,
 }
 
 pub struct CoreHandle {
@@ -45,6 +57,7 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
             mumble_credentials: None,
             data_dir,
             pending_cert_launch: None,
+            voice_session: VoiceSessionState::default(),
         }
     }
 
@@ -69,6 +82,11 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
                         CoreCommand::System(cmd) => {
                             self.handle_system_command(cmd, &mut retry_timer, internal_tx.clone()).await;
                         }
+                    }
+                    // Drain internal events that arrived during command processing
+                    // so they're handled before the next command.
+                    while let Ok(event) = internal_rx.try_recv() {
+                        self.handle_internal_event(event, &mut retry_timer).await;
                     }
                 }
 
@@ -103,6 +121,7 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
     ) {
         match cmd {
             SystemCommand::ConnectToServer(form) => {
+                self.voice_session = VoiceSessionState::default();
                 self.conn.form = Some(form.clone());
                 self.connect_to_server(&form, retry_timer, internal_tx).await;
             }
@@ -165,7 +184,7 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
                 log::info!("User accepted new cert for {}:{}", host, port);
                 // Resume the stashed voice launch
                 if let Some((creds, show_gui, extra_args, itx)) = self.pending_cert_launch.take()
-                    && let Err(e) = self.voice.launch(creds, itx, show_gui, &extra_args).await
+                    && let Err(e) = self.voice.launch(creds, itx, show_gui, &extra_args, self.voice_session.channel_path.as_deref()).await
                 {
                     log::error!("Failed to launch voice after cert accept: {:?}", e);
                 }
@@ -225,6 +244,22 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
                                 self.voice.send_command(MumbleCommand::SetVoiceHold(value)).await;
                             }
                         }
+                        // Restore mute/deafen from previous session.
+                        // Deafen implies mute in Mumble, so only send one.
+                        if self.voice_session.deafened {
+                            self.voice.send_command(MumbleCommand::DeafenSelf(true)).await;
+                        } else if self.voice_session.muted {
+                            self.voice.send_command(MumbleCommand::MuteSelf(true)).await;
+                        }
+                    }
+                    InternalMumbleEvent::LocalChannelChanged { channel_path } => {
+                        self.voice_session.channel_path = Some(channel_path);
+                    }
+                    InternalMumbleEvent::LocalMuteChanged(muted) => {
+                        self.voice_session.muted = muted;
+                    }
+                    InternalMumbleEvent::LocalDeafChanged(deafened) => {
+                        self.voice_session.deafened = deafened;
                     }
                     _ => {
                         log::debug!("Internal Mumble event: {:?}", evt);
@@ -350,7 +385,7 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
             }
         }
 
-        if let Err(e) = self.voice.launch(creds, internal_tx, show_gui, extra_args).await {
+        if let Err(e) = self.voice.launch(creds, internal_tx, show_gui, extra_args, self.voice_session.channel_path.as_deref()).await {
             log::error!("Failed to launch voice: {:?}", e);
         }
     }
@@ -1325,5 +1360,196 @@ mod tests {
         // Voice launched normally
         let launches = voice_state.launched_with.lock().unwrap();
         assert_eq!(launches.len(), 1);
+    }
+
+    // --- Voice state restoration tests ---
+
+    #[tokio::test]
+    async fn reconnect_restores_mute_and_deafen() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // First launch: emit state changes.
+        // Second launch (RestartMumble): emit Connected to trigger restore.
+        let voice = MockVoice::new()
+            .with_internal_events(vec![
+                InternalEvent::Mumble(InternalMumbleEvent::LocalMuteChanged(true)),
+                InternalEvent::Mumble(InternalMumbleEvent::LocalDeafChanged(true)),
+            ])
+            .with_internal_events(vec![
+                InternalEvent::Mumble(InternalMumbleEvent::Connected),
+            ]);
+
+        let (_, _, voice_state) = run_commands(
+            MockMatrix::new(),
+            voice,
+            tmp.path(),
+            vec![
+                CoreCommand::System(SystemCommand::ConnectToServer(connect_form())),
+                CoreCommand::System(SystemCommand::RestartMumble(String::new())),
+            ],
+        ).await;
+
+        let cmds = voice_state.commands.lock().unwrap();
+        assert!(cmds.contains(&MumbleCommand::MuteSelf(true)),
+            "Expected MuteSelf(true) restore command, got: {:?}", *cmds);
+        assert!(cmds.contains(&MumbleCommand::DeafenSelf(true)),
+            "Expected DeafenSelf(true) restore command, got: {:?}", *cmds);
+    }
+
+    #[tokio::test]
+    async fn reconnect_passes_channel_path_in_launch() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // First launch: user moves to a channel.
+        let voice = MockVoice::new()
+            .with_internal_events(vec![
+                InternalEvent::Mumble(InternalMumbleEvent::LocalChannelChanged {
+                    channel_path: "Voice/General".into(),
+                }),
+            ]);
+
+        let (_, _, voice_state) = run_commands(
+            MockMatrix::new(),
+            voice,
+            tmp.path(),
+            vec![
+                CoreCommand::System(SystemCommand::ConnectToServer(connect_form())),
+                CoreCommand::System(SystemCommand::RestartMumble(String::new())),
+            ],
+        ).await;
+
+        let paths = voice_state.launched_channel_paths.lock().unwrap();
+        assert_eq!(paths.len(), 2);
+        assert_eq!(paths[0], None, "First launch should have no channel path");
+        assert_eq!(paths[1], Some("Voice/General".into()),
+            "Second launch should include saved channel path");
+    }
+
+    #[tokio::test]
+    async fn connect_to_server_clears_saved_voice_state() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let voice = MockVoice::new();
+        let voice_state = voice.state.clone();
+        let (_, cmd_rx) = mpsc::channel(32);
+        let (event_tx, _) = mpsc::channel(100);
+        let mut engine = CoreEngine::new(cmd_rx, event_tx, MockMatrix::new(), voice, tmp.path().to_path_buf());
+
+        // Simulate state saved from a previous session
+        engine.voice_session = VoiceSessionState {
+            channel_path: Some("Voice/General".into()),
+            muted: true,
+            deafened: true,
+        };
+
+        // ConnectToServer should clear all saved state
+        let mut retry_timer = Box::pin(sleep(Duration::from_secs(3600)));
+        let (itx, _) = mpsc::channel(32);
+        engine.handle_system_command(
+            SystemCommand::ConnectToServer(connect_form()),
+            &mut retry_timer,
+            itx,
+        ).await;
+
+        assert_eq!(engine.voice_session, VoiceSessionState::default());
+
+        // Voice launched with no channel path
+        let paths = voice_state.launched_channel_paths.lock().unwrap();
+        assert_eq!(paths[0], None, "ConnectToServer should launch with no channel path");
+    }
+
+    #[tokio::test]
+    async fn unmute_before_crash_does_not_restore_mute() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // First launch: mute then unmute before crash.
+        // Second launch: emit Connected to trigger restore.
+        let voice = MockVoice::new()
+            .with_internal_events(vec![
+                InternalEvent::Mumble(InternalMumbleEvent::LocalMuteChanged(true)),
+                InternalEvent::Mumble(InternalMumbleEvent::LocalMuteChanged(false)),
+            ])
+            .with_internal_events(vec![
+                InternalEvent::Mumble(InternalMumbleEvent::Connected),
+            ]);
+
+        let (_, _, voice_state) = run_commands(
+            MockMatrix::new(),
+            voice,
+            tmp.path(),
+            vec![
+                CoreCommand::System(SystemCommand::ConnectToServer(connect_form())),
+                CoreCommand::System(SystemCommand::RestartMumble(String::new())),
+            ],
+        ).await;
+
+        let cmds = voice_state.commands.lock().unwrap();
+        assert!(!cmds.contains(&MumbleCommand::MuteSelf(true)),
+            "MuteSelf(true) should NOT be sent when user unmuted before crash, got: {:?}", *cmds);
+    }
+
+    #[tokio::test]
+    async fn multiple_channel_moves_restores_only_last() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // User moves through three channels before crash.
+        let voice = MockVoice::new()
+            .with_internal_events(vec![
+                InternalEvent::Mumble(InternalMumbleEvent::LocalChannelChanged {
+                    channel_path: "Voice/Alpha".into(),
+                }),
+                InternalEvent::Mumble(InternalMumbleEvent::LocalChannelChanged {
+                    channel_path: "Voice/Beta".into(),
+                }),
+                InternalEvent::Mumble(InternalMumbleEvent::LocalChannelChanged {
+                    channel_path: "Voice/Gamma".into(),
+                }),
+            ]);
+
+        let (_, _, voice_state) = run_commands(
+            MockMatrix::new(),
+            voice,
+            tmp.path(),
+            vec![
+                CoreCommand::System(SystemCommand::ConnectToServer(connect_form())),
+                CoreCommand::System(SystemCommand::RestartMumble(String::new())),
+            ],
+        ).await;
+
+        let paths = voice_state.launched_channel_paths.lock().unwrap();
+        assert_eq!(paths.len(), 2);
+        assert_eq!(paths[1], Some("Voice/Gamma".into()),
+            "Should restore only the last channel the user was in");
+    }
+
+    #[tokio::test]
+    async fn deafen_only_restores_without_mute() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // User deafens but never explicitly mutes (Mumble UI auto-mutes on
+        // deafen, but the bridge reports them as separate state changes).
+        let voice = MockVoice::new()
+            .with_internal_events(vec![
+                InternalEvent::Mumble(InternalMumbleEvent::LocalDeafChanged(true)),
+            ])
+            .with_internal_events(vec![
+                InternalEvent::Mumble(InternalMumbleEvent::Connected),
+            ]);
+
+        let (_, _, voice_state) = run_commands(
+            MockMatrix::new(),
+            voice,
+            tmp.path(),
+            vec![
+                CoreCommand::System(SystemCommand::ConnectToServer(connect_form())),
+                CoreCommand::System(SystemCommand::RestartMumble(String::new())),
+            ],
+        ).await;
+
+        let cmds = voice_state.commands.lock().unwrap();
+        assert!(cmds.contains(&MumbleCommand::DeafenSelf(true)),
+            "DeafenSelf(true) should be restored, got: {:?}", *cmds);
+        assert!(!cmds.contains(&MumbleCommand::MuteSelf(true)),
+            "MuteSelf(true) should NOT be sent when only deafen was set, got: {:?}", *cmds);
     }
 }

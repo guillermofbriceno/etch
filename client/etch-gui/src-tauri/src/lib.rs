@@ -9,6 +9,7 @@ use std::io::Cursor;
 use std::path::Path;
 use log::LevelFilter;
 use simplelog::{CombinedLogger, TermLogger, WriteLogger, ConfigBuilder, TerminalMode, ColorChoice};
+use time::macros::format_description;
 
 use sfx::SfxPlayer;
 
@@ -169,15 +170,19 @@ fn build_logger(log_path: &Path) -> Box<dyn log::Log> {
 
     let log_config = ConfigBuilder::default()
         .set_target_level(LevelFilter::Error)
+        .set_time_format_custom(format_description!(
+            "[year]-[month]-[day] [hour]:[minute]:[second]"
+        ))
+        .set_time_offset_to_local()
+        .unwrap_or_else(|b| b)
         .build();
 
     // The global max-level gate is set by ForwardingLogger::init in
-    // etch-core (ETCH_LOG env / build profile). These backend filters are
-    // a second layer: terminal gets everything the global gate allows,
-    // file gets Info+ to avoid churning through the 2 MB rotation cap.
+    // etch-core (ETCH_LOG env / build profile). Both backends pass
+    // everything the global gate allows.
     CombinedLogger::new(vec![
         TermLogger::new(LevelFilter::max(), log_config.clone(), TerminalMode::Stderr, ColorChoice::Auto),
-        WriteLogger::new(LevelFilter::Info, log_config, log_file),
+        WriteLogger::new(LevelFilter::max(), log_config, log_file),
     ])
 }
 

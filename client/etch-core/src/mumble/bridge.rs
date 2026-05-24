@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use bridge_types::{MumbleCommand as BridgeCommand, MumbleEvent as BridgeEvent, TalkingState, TransmissionMode};
 use crate::events::{CoreEvent, InternalEvent, InternalMumbleEvent, MumbleEvent};
@@ -102,9 +102,15 @@ fn internal_mumble(me: InternalMumbleEvent) -> InternalEvent {
     InternalEvent::Mumble(me)
 }
 
+struct ChannelInfo {
+    name: String,
+    parent_id: u32,
+}
+
 struct BridgeState {
     session_names: HashMap<u32, String>,
     session_channels: HashMap<u32, u32>,
+    channel_tree: HashMap<u32, ChannelInfo>,
     local_session: Option<u32>,
     dispatcher: Arc<ScriptDispatcher>,
 }
@@ -114,9 +120,25 @@ impl BridgeState {
         Self {
             session_names: HashMap::new(),
             session_channels: HashMap::new(),
+            channel_tree: HashMap::new(),
             local_session: None,
             dispatcher,
         }
+    }
+
+    /// Build a URL-safe channel path by walking from `channel_id` up to the
+    /// root (id 0). The root channel itself is omitted from the path.
+    fn channel_path(&self, channel_id: u32) -> String {
+        let mut segments = Vec::new();
+        let mut current = channel_id;
+        let mut visited = HashSet::new();
+        while let Some(info) = self.channel_tree.get(&current) {
+            if current == 0 || !visited.insert(current) { break; }
+            segments.push(encode_path_segment(&info.name));
+            current = info.parent_id;
+        }
+        segments.reverse();
+        segments.join("/")
     }
 
     fn local_channel(&self) -> Option<u32> {
@@ -135,8 +157,10 @@ impl BridgeState {
             }
             BridgeEvent::ServerSync { local_session, channels, users } => {
                 self.local_session = Some(local_session);
+                self.channel_tree.clear();
                 let _ = tx.send(mumble(MumbleEvent::LocalSession(local_session))).await;
                 for ch in channels {
+                    self.channel_tree.insert(ch.id as u32, ChannelInfo { name: ch.name.clone(), parent_id: ch.parent as u32 });
                     let _ = tx.send(mumble(MumbleEvent::ChannelState {
                         id: ch.id as u32,
                         name: ch.name,
@@ -222,6 +246,12 @@ impl BridgeState {
                     }
                 }
 
+                // Track local user's channel for reconnect restoration
+                if Some(session) == self.local_session {
+                    let path = self.channel_path(new_ch);
+                    let _ = itx.send(internal_mumble(InternalMumbleEvent::LocalChannelChanged { channel_path: path })).await;
+                }
+
                 let _ = tx.send(mumble(MumbleEvent::UserState {
                     session_id: session,
                     name: None,
@@ -243,6 +273,9 @@ impl BridgeState {
             BridgeEvent::UserMuteStateChanged { session, mute_state } => {
                 // Bit 1 (0x02) = MUMBLE_MS_SELF_MUTED
                 let self_mute = (mute_state & 0x02) != 0;
+                if Some(session) == self.local_session {
+                    let _ = itx.send(internal_mumble(InternalMumbleEvent::LocalMuteChanged(self_mute))).await;
+                }
                 let _ = tx.send(mumble(MumbleEvent::UserState {
                     session_id: session,
                     name: None,
@@ -257,6 +290,9 @@ impl BridgeState {
             BridgeEvent::UserDeafStateChanged { session, deaf_state } => {
                 // Bit 1 (0x02) = MUMBLE_DS_SELF_DEAFENED
                 let self_deaf = (deaf_state & 0x02) != 0;
+                if Some(session) == self.local_session {
+                    let _ = itx.send(internal_mumble(InternalMumbleEvent::LocalDeafChanged(self_deaf))).await;
+                }
                 let _ = tx.send(mumble(MumbleEvent::UserState {
                     session_id: session,
                     name: None,
@@ -269,6 +305,7 @@ impl BridgeState {
                 })).await;
             }
             BridgeEvent::ChannelAdded { channel } => {
+                self.channel_tree.insert(channel.id as u32, ChannelInfo { name: channel.name.clone(), parent_id: channel.parent as u32 });
                 let _ = tx.send(mumble(MumbleEvent::ChannelState {
                     id: channel.id as u32,
                     name: channel.name,
@@ -276,9 +313,13 @@ impl BridgeState {
                 })).await;
             }
             BridgeEvent::ChannelRemoved { id } => {
+                self.channel_tree.remove(&(id as u32));
                 let _ = tx.send(mumble(MumbleEvent::ChannelRemoved(id as u32))).await;
             }
             BridgeEvent::ChannelRenamed { id, name } => {
+                if let Some(info) = self.channel_tree.get_mut(&(id as u32)) {
+                    info.name = name.clone();
+                }
                 let _ = tx.send(mumble(MumbleEvent::ChannelState {
                     id: id as u32,
                     name,
@@ -300,5 +341,75 @@ impl BridgeState {
                 let _ = tx.send(mumble(MumbleEvent::VoiceHoldChanged(value))).await;
             }
         }
+    }
+}
+
+/// Percent-encode a single URL path segment, preserving unreserved characters
+/// per RFC 3986 (alphanumeric, `-`, `.`, `_`, `~`).
+fn encode_path_segment(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for byte in s.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(byte as char);
+            }
+            _ => {
+                out.push('%');
+                out.push(char::from(HEX[(byte >> 4) as usize]));
+                out.push(char::from(HEX[(byte & 0x0f) as usize]));
+            }
+        }
+    }
+    out
+}
+
+const HEX: [u8; 16] = *b"0123456789ABCDEF";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encode_unreserved_passthrough() {
+        let input = "AZaz09-._~";
+        assert_eq!(encode_path_segment(input), input);
+    }
+
+    #[test]
+    fn encode_space_and_slash() {
+        assert_eq!(encode_path_segment("hello world"), "hello%20world");
+        assert_eq!(encode_path_segment("a/b"), "a%2Fb");
+    }
+
+    #[test]
+    fn encode_multibyte_utf8() {
+        // Euro sign U+20AC is 3 bytes: 0xE2, 0x82, 0xAC
+        assert_eq!(encode_path_segment("€"), "%E2%82%AC");
+    }
+
+    #[test]
+    fn encode_empty_string() {
+        assert_eq!(encode_path_segment(""), "");
+    }
+
+    #[test]
+    fn channel_path_stops_at_root() {
+        let mut state = BridgeState::new(Arc::new(crate::scripting::ScriptDispatcher::new(std::path::Path::new("/tmp"))));
+        state.channel_tree.insert(0, ChannelInfo { name: "Root".into(), parent_id: 0 });
+        state.channel_tree.insert(1, ChannelInfo { name: "Voice".into(), parent_id: 0 });
+        state.channel_tree.insert(2, ChannelInfo { name: "General".into(), parent_id: 1 });
+        assert_eq!(state.channel_path(2), "Voice/General");
+        assert_eq!(state.channel_path(1), "Voice");
+        assert_eq!(state.channel_path(0), "");
+    }
+
+    #[test]
+    fn channel_path_handles_cycle() {
+        let mut state = BridgeState::new(Arc::new(crate::scripting::ScriptDispatcher::new(std::path::Path::new("/tmp"))));
+        state.channel_tree.insert(3, ChannelInfo { name: "A".into(), parent_id: 5 });
+        state.channel_tree.insert(5, ChannelInfo { name: "B".into(), parent_id: 3 });
+        // Should terminate instead of looping forever
+        let path = state.channel_path(3);
+        assert!(!path.is_empty());
     }
 }
