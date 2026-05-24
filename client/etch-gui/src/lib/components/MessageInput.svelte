@@ -303,7 +303,9 @@
 
         const reply = get(replyingTo);
         const body = reply
-            ? `> ${reply.sender}: ${reply.body}\n\n${trimmed}`
+            ? reply.body.split('\n').map((l: string, i: number) =>
+                  i === 0 ? `> ${reply.sender}: ${l}` : `> ${l}`
+              ).join('\n') + `\n\n${trimmed}`
             : trimmed;
 
         const attachment = pendingAttachment;
