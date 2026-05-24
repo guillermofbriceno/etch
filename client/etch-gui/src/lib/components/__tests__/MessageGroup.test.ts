@@ -54,6 +54,7 @@ function makeMsg(overrides: Partial<ChatMessage> = {}): ChatMessage {
         html_body: null,
         media: null,
         timestamp: Date.now(),
+        edited: false,
         reactions: {},
         ...overrides,
     };
@@ -63,7 +64,7 @@ const sender: SenderProfile = { display_name: 'Alice', avatar_url: null };
 
 describe('MessageGroup collapse', () => {
     it('short message shows no collapse button', async () => {
-        render(MessageGroup, { props: { msg: makeMsg(), sender, continuation: false } });
+        render(MessageGroup, { props: { msg: makeMsg(), sender, continuation: false, roomId: '!room:test' } });
         await flushRAF();
 
         expect(screen.queryByText('See more')).not.toBeInTheDocument();
@@ -71,7 +72,7 @@ describe('MessageGroup collapse', () => {
 
     it('long message shows "See more" button', async () => {
         const { container } = render(MessageGroup, {
-            props: { msg: makeMsg(), sender, continuation: false },
+            props: { msg: makeMsg(), sender, continuation: false, roomId: '!room:test' },
         });
 
         const bodyEl = container.querySelector('.body')!;
@@ -84,7 +85,7 @@ describe('MessageGroup collapse', () => {
 
     it('long message wrapper has collapsed class', async () => {
         const { container } = render(MessageGroup, {
-            props: { msg: makeMsg(), sender, continuation: false },
+            props: { msg: makeMsg(), sender, continuation: false, roomId: '!room:test' },
         });
 
         const bodyEl = container.querySelector('.body')!;
@@ -97,7 +98,7 @@ describe('MessageGroup collapse', () => {
 
     it('"See more" expands the message', async () => {
         const { container } = render(MessageGroup, {
-            props: { msg: makeMsg(), sender, continuation: false },
+            props: { msg: makeMsg(), sender, continuation: false, roomId: '!room:test' },
         });
 
         const bodyEl = container.querySelector('.body')!;
@@ -113,7 +114,7 @@ describe('MessageGroup collapse', () => {
 
     it('"See less" collapses the message back', async () => {
         const { container } = render(MessageGroup, {
-            props: { msg: makeMsg(), sender, continuation: false },
+            props: { msg: makeMsg(), sender, continuation: false, roomId: '!room:test' },
         });
 
         const bodyEl = container.querySelector('.body')!;
@@ -132,7 +133,7 @@ describe('MessageGroup collapse', () => {
 
     it('message at exact threshold does not collapse', async () => {
         const { container } = render(MessageGroup, {
-            props: { msg: makeMsg(), sender, continuation: false },
+            props: { msg: makeMsg(), sender, continuation: false, roomId: '!room:test' },
         });
 
         const bodyEl = container.querySelector('.body')!;
@@ -147,7 +148,7 @@ describe('MessageGroup collapse', () => {
 describe('MessageGroup compact mode', () => {
     it('default mode uses full-size avatar', () => {
         const { container } = render(MessageGroup, {
-            props: { msg: makeMsg(), sender, continuation: false },
+            props: { msg: makeMsg(), sender, continuation: false, roomId: '!room:test' },
         });
 
         expect(container.querySelector('.avatar')).toBeInTheDocument();
@@ -159,7 +160,7 @@ describe('MessageGroup compact mode', () => {
         await tick();
 
         const { container } = render(MessageGroup, {
-            props: { msg: makeMsg(), sender, continuation: false },
+            props: { msg: makeMsg(), sender, continuation: false, roomId: '!room:test' },
         });
 
         expect(container.querySelector('.compact-avatar')).toBeInTheDocument();
@@ -168,7 +169,7 @@ describe('MessageGroup compact mode', () => {
 
     it('default continuation uses avatar-gutter', () => {
         const { container } = render(MessageGroup, {
-            props: { msg: makeMsg(), sender, continuation: true },
+            props: { msg: makeMsg(), sender, continuation: true, roomId: '!room:test' },
         });
 
         expect(container.querySelector('.avatar-gutter')).toBeInTheDocument();
@@ -180,7 +181,7 @@ describe('MessageGroup compact mode', () => {
         await tick();
 
         const { container } = render(MessageGroup, {
-            props: { msg: makeMsg(), sender, continuation: true },
+            props: { msg: makeMsg(), sender, continuation: true, roomId: '!room:test' },
         });
 
         expect(container.querySelector('.compact-gutter')).toBeInTheDocument();
@@ -192,7 +193,7 @@ describe('MessageGroup compact mode', () => {
         await tick();
 
         const { container } = render(MessageGroup, {
-            props: { msg: makeMsg(), sender, continuation: false },
+            props: { msg: makeMsg(), sender, continuation: false, roomId: '!room:test' },
         });
 
         expect(container.querySelector('.message-block')).toHaveClass('compact');
@@ -200,7 +201,7 @@ describe('MessageGroup compact mode', () => {
 
     it('default mode does not have compact class', () => {
         const { container } = render(MessageGroup, {
-            props: { msg: makeMsg(), sender, continuation: false },
+            props: { msg: makeMsg(), sender, continuation: false, roomId: '!room:test' },
         });
 
         expect(container.querySelector('.message-block')).not.toHaveClass('compact');
@@ -208,7 +209,7 @@ describe('MessageGroup compact mode', () => {
 
     it('reacts when compactChat toggles after mount', async () => {
         const { container } = render(MessageGroup, {
-            props: { msg: makeMsg(), sender, continuation: false },
+            props: { msg: makeMsg(), sender, continuation: false, roomId: '!room:test' },
         });
 
         expect(container.querySelector('.avatar')).toBeInTheDocument();
@@ -224,7 +225,7 @@ describe('MessageGroup compact mode', () => {
 
     it('default mode passes full-size props to AvatarFallback', () => {
         const { container } = render(MessageGroup, {
-            props: { msg: makeMsg(), sender: { ...sender, avatar_url: null }, continuation: false },
+            props: { msg: makeMsg(), sender: { ...sender, avatar_url: null }, continuation: false, roomId: '!room:test' },
         });
 
         const fallback = container.querySelector('.avatar-fallback') as HTMLElement;
@@ -239,7 +240,7 @@ describe('MessageGroup compact mode', () => {
         await tick();
 
         const { container } = render(MessageGroup, {
-            props: { msg: makeMsg(), sender: { ...sender, avatar_url: null }, continuation: false },
+            props: { msg: makeMsg(), sender: { ...sender, avatar_url: null }, continuation: false, roomId: '!room:test' },
         });
 
         const fallback = container.querySelector('.avatar-fallback') as HTMLElement;

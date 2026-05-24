@@ -118,6 +118,7 @@ pub struct ChatMessageReceive {
     pub media: Option<MediaInfo>,
 
     pub timestamp: u128,
+    pub edited: bool,
     // emoji key → list of sender user IDs (aggregated from m.reaction events)
     pub reactions: HashMap<String, Vec<String>>,
 }

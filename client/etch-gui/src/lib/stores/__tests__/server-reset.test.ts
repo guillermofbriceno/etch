@@ -60,7 +60,7 @@ function makeTimelineEntry(id: string, body: string) {
         kind: {
             Message: {
                 id, sender: '@alice:s', body, html_body: null,
-                media: null, timestamp: Date.now(), reactions: {},
+                media: null, timestamp: Date.now(), edited: false, reactions: {},
             },
         },
     };
@@ -98,7 +98,7 @@ describe('ServerReset clears session state', () => {
 
         // Set some compose and volume state
         const { setReply } = await import('../compose');
-        setReply({ id: '$e1', sender: '@alice:a', body: 'hello', html_body: null, media: null, timestamp: Date.now(), reactions: {} });
+        setReply({ id: '$e1', sender: '@alice:a', body: 'hello', html_body: null, media: null, timestamp: Date.now(), edited: false, reactions: {} });
         const { setUserVolume } = await import('../userVolumes');
         setUserVolume('alice', 1, -3.5);
 

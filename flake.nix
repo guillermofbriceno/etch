@@ -89,6 +89,7 @@
         gst_all_1.gst-plugins-bad   # openh264, webm/vp8/vp9
         gst_all_1.gst-libav         # ffmpeg-based decoders (h264, aac, etc.)
 
+        cargo-llvm-cov # for test coverage
       ];
     in
     {
@@ -97,7 +98,7 @@
           # pinned to 1.93 due to issues with matrix-rust-sdk
           # https://github.com/matrix-org/matrix-rust-sdk/issues/6254
           (pkgs.rust-bin.stable."1.93.0".default.override {
-            extensions = [ "rust-src" "rust-analyzer" ];
+            extensions = [ "rust-src" "rust-analyzer" "llvm-tools-preview" ];
           })
         ];
 

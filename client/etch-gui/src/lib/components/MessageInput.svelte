@@ -4,7 +4,7 @@
     import { open } from '@tauri-apps/plugin-dialog';
     import { stat } from '@tauri-apps/plugin-fs';
     import { invoke } from '@tauri-apps/api/core';
-    import { sendMessage, activeChannelId, activeChannel, activeWindow, replyingTo, clearReply } from '$lib/stores';
+    import { sendMessage, editMessage, activeChannelId, activeChannel, activeWindow, replyingTo, clearReply, editingMessage, clearEditing } from '$lib/stores';
     import { composeHtml, insertMentionLinks } from '$lib/markdown';
     import Icon from './Icon.svelte';
 
@@ -44,6 +44,19 @@
         tabIndex = -1;
         showMentionPopup = false;
     })();
+
+    // Populate input when entering edit mode
+    let prevEditingId: string | null = null;
+    $: {
+        const id = $editingMessage?.id ?? null;
+        if (id !== prevEditingId) {
+            prevEditingId = id;
+            if ($editingMessage) {
+                messageText = $editingMessage.body;
+                requestAnimationFrame(() => { autoResize(); textareaEl?.focus(); });
+            }
+        }
+    }
 
     // Derived reactively from timeline so we don't rebuild on every Tab press
     $: roomUsers = (() => {
@@ -270,6 +283,24 @@
 
         const roomId = get(activeChannelId);
         if (!roomId) return;
+
+        // Edit mode: fire-and-forget update. The timeline diff stream will
+        // reflect success (optimistic local echo) or revert on server rejection.
+        const editing = get(editingMessage);
+        if (editing) {
+            const rawHtml = composeHtml(trimmed);
+            const withMentions = insertMentionLinks(rawHtml, new Map(mentionMap));
+            const needsHtml = mentionMap.size > 0 || withMentions !== `<p>${trimmed}</p>\n`;
+
+            messageText = '';
+            clearEditing();
+            mentionMap.clear();
+            requestAnimationFrame(autoResize);
+
+            editMessage(roomId, editing.id, trimmed, needsHtml ? withMentions : null);
+            return;
+        }
+
         const reply = get(replyingTo);
         const body = reply
             ? `> ${reply.sender}: ${reply.body}\n\n${trimmed}`
@@ -352,6 +383,14 @@
             tabIndex = -1;
         }
 
+        if (event.key === 'Escape' && get(editingMessage)) {
+            event.preventDefault();
+            messageText = '';
+            clearEditing();
+            requestAnimationFrame(autoResize);
+            return;
+        }
+
         if (event.key === 'Enter' && !event.shiftKey) {
             if (composeLock) return;
             event.preventDefault();
@@ -365,7 +404,18 @@
 </script>
 
 <div class="input-wrapper" class:compose-locked={composeLock}>
-    {#if $replyingTo}
+    {#if $editingMessage}
+        <div class="reply-preview editing-preview">
+            <div class="reply-info">
+                <Icon name="edit" size={12} class="reply-icon" />
+                <span class="reply-sender">Editing</span>
+                <span class="reply-body">{truncate($editingMessage.body)}</span>
+            </div>
+            <button class="cancel-reply" aria-label="Cancel edit" on:click={() => { messageText = ''; clearEditing(); requestAnimationFrame(autoResize); }}>
+                <Icon name="close" size={14} />
+            </button>
+        </div>
+    {:else if $replyingTo}
         <div class="reply-preview">
             <div class="reply-info">
                 <Icon name="reply" size={12} class="reply-icon" />

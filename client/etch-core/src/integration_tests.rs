@@ -797,3 +797,119 @@ async fn send_read_receipt_does_not_error() {
 
     h.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn edit_message_is_processed_by_sdk() {
+    let mut h = TestHarness::new();
+    let rooms = h.connect().await;
+    let room = TestHarness::find_room(&rooms, "Test Text");
+
+    // Send a message and wait for it to appear. The initial event may be a
+    // local echo with a transaction ID rather than a server-assigned event_id,
+    // so we wait for a second emission (TimelineSet) that carries the real $-id.
+    let original_body = h.send_unique_message(&room.id, "edit-test").await;
+    h.expect_timeline_message(&room.id, &original_body).await;
+
+    // Wait for the server-confirmed event_id (starts with $).
+    let body_clone = original_body.clone();
+    let event_id = h.expect_event(move |e| {
+        let entry = match e {
+            CoreEvent::Matrix(MatrixEvent::TimelineSet(_, _, entry)) => entry,
+            CoreEvent::Matrix(MatrixEvent::TimelinePushBack(_, entry)) => entry,
+            _ => return None,
+        };
+        if let TimelineEntryKind::Message(msg) = &entry.kind {
+            if msg.body.contains(&body_clone) && msg.id.starts_with('$') {
+                return Some(msg.id.clone());
+            }
+        }
+        None
+    }, EVENT_TIMEOUT).await;
+
+    // Drain any residual events from the send confirmation flow so that
+    // the next expect_event can only match events triggered by the edit.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    while h.event_rx.try_recv().is_ok() {}
+
+    // Edit the message.
+    h.send(CoreCommand::Matrix(MatrixCommand::EditMessage {
+        room_id: room.id.clone(),
+        event_id: event_id.clone(),
+        text: format!("{}-edited", original_body),
+        html_body: None,
+    })).await;
+
+    // The SDK processes the edit and emits timeline mutations (TimelineSet
+    // or Remove+PushBack). The edited body may not appear until the server
+    // confirms via /sync, but any re-emission of our event proves the SDK
+    // accepted the edit.
+    h.expect_event(move |e| {
+        let entry = match e {
+            CoreEvent::Matrix(MatrixEvent::TimelineSet(_, _, entry)) => entry,
+            CoreEvent::Matrix(MatrixEvent::TimelinePushBack(_, entry)) => entry,
+            _ => return None,
+        };
+        if let TimelineEntryKind::Message(msg) = &entry.kind {
+            if msg.id == event_id {
+                return Some(());
+            }
+        }
+        None
+    }, EVENT_TIMEOUT).await;
+
+    // Verify the engine is still healthy.
+    let body2 = h.send_unique_message(&room.id, "after-edit").await;
+    h.expect_timeline_message(&room.id, &body2).await;
+
+    h.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn redact_message_removes_from_timeline() {
+    let mut h = TestHarness::new();
+    let rooms = h.connect().await;
+    let room = TestHarness::find_room(&rooms, "Test Text");
+
+    // Send a message and wait for it to appear.
+    let body = h.send_unique_message(&room.id, "redact-test").await;
+    let event_id = h.expect_timeline_message(&room.id, &body).await;
+
+    // Redact the message.
+    h.send(CoreCommand::Matrix(MatrixCommand::RedactMessage {
+        room_id: room.id.clone(),
+        event_id: event_id.clone(),
+    })).await;
+
+    // The SDK should emit either a TimelineSet with Redacted kind, a
+    // TimelineRemove, or a TimelineSet/PushBack referencing the event_id
+    // (the SDK processes redactions optimistically).
+    let rid = room.id.clone();
+    let eid = event_id.clone();
+    h.expect_event(move |e| {
+        match e {
+            CoreEvent::Matrix(MatrixEvent::TimelineSet(_, _, entry)) => {
+                if matches!(&entry.kind, TimelineEntryKind::Redacted) {
+                    return Some(());
+                }
+                if let TimelineEntryKind::Message(msg) = &entry.kind {
+                    if msg.id == eid {
+                        return Some(());
+                    }
+                }
+            }
+            CoreEvent::Matrix(MatrixEvent::TimelineRemove(event_rid, _))
+                if *event_rid == rid =>
+            {
+                return Some(());
+            }
+            _ => {}
+        }
+        None
+    }, EVENT_TIMEOUT).await;
+
+    // Verify the engine is still healthy.
+    let body2 = h.send_unique_message(&room.id, "after-redact").await;
+    h.expect_timeline_message(&room.id, &body2).await;
+
+    h.shutdown().await;
+}

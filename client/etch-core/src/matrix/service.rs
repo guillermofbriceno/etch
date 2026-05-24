@@ -267,6 +267,12 @@ impl MatrixBackend for MatrixService {
                     }
                 }
             }
+            MatrixCommand::EditMessage { room_id, event_id, text, html_body } => {
+                self.timeline_manager.edit_message(&room_id, &event_id, &text, html_body.as_deref()).await;
+            }
+            MatrixCommand::RedactMessage { room_id, event_id } => {
+                self.timeline_manager.redact_message(&room_id, &event_id).await;
+            }
             MatrixCommand::ToggleReaction { room_id, event_id, key } => {
                 self.timeline_manager.toggle_reaction(&room_id, &event_id, &key).await;
             }

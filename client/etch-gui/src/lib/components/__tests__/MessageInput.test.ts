@@ -5,7 +5,7 @@ import { tick } from 'svelte';
 import { invoke } from '@tauri-apps/api/core';
 import { stat } from '@tauri-apps/plugin-fs';
 import { open } from '@tauri-apps/plugin-dialog';
-import { activeChannelId, replyingTo, setReply, clearReply } from '$lib/stores';
+import { activeChannelId, replyingTo, setReply, clearReply, editingMessage, setEditing, clearEditing } from '$lib/stores';
 import { handleMatrixEvent } from '$lib/stores/messages';
 import type { ChatMessage } from '$lib/types';
 import { resetStores } from '$lib/stores/__tests__/helpers';
@@ -24,7 +24,7 @@ function seedUser(roomId: string, sender: string, displayName: string) {
         type: 'TimelinePushBack',
         data: [roomId, {
             sender: { display_name: displayName, avatar_url: null },
-            kind: { Message: { id: `$${sender}`, sender, body: 'hi', html_body: null, media: null, timestamp: Date.now(), reactions: {} } },
+            kind: { Message: { id: `$${sender}`, sender, body: 'hi', html_body: null, media: null, timestamp: Date.now(), edited: false, reactions: {} } },
         }],
     } as any);
 }
@@ -132,6 +132,7 @@ describe('MessageInput', () => {
             html_body: null,
             media: null,
             timestamp: Date.now(),
+            edited: false,
             reactions: {},
         };
         setReply(msg);
@@ -151,6 +152,7 @@ describe('MessageInput', () => {
             html_body: null,
             media: null,
             timestamp: Date.now(),
+            edited: false,
             reactions: {},
         };
         setReply(msg);
@@ -400,6 +402,86 @@ describe('MessageInput', () => {
                 expect(screen.getByText('document.pdf')).toBeInTheDocument();
             });
             expect(container.querySelector('.compress-option')).not.toBeInTheDocument();
+        });
+    });
+
+    describe('edit mode', () => {
+        const editMsg: ChatMessage = {
+            id: '$edit1',
+            sender: '@alice:etch.gg',
+            body: 'original text',
+            html_body: null,
+            media: null,
+            timestamp: Date.now(),
+            edited: false,
+            reactions: {},
+        };
+
+        it('entering edit mode populates textarea with message body', async () => {
+            render(MessageInput);
+            setEditing(editMsg);
+            await tick();
+
+            const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+            expect(textarea.value).toBe('original text');
+        });
+
+        it('shows editing preview banner', async () => {
+            setEditing(editMsg);
+            render(MessageInput);
+            await tick();
+
+            expect(screen.getByText('Editing')).toBeInTheDocument();
+        });
+
+        it('Escape cancels edit mode and clears textarea', async () => {
+            render(MessageInput);
+            setEditing(editMsg);
+            await tick();
+
+            const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+            expect(textarea.value).toBe('original text');
+
+            await fireEvent.keyDown(textarea, { key: 'Escape' });
+            await tick();
+
+            expect(textarea.value).toBe('');
+            expect(screen.queryByText('Editing')).not.toBeInTheDocument();
+        });
+
+        it('submitting in edit mode sends EditMessage command', async () => {
+            render(MessageInput);
+            setEditing(editMsg);
+            await tick();
+
+            const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+            // Replace body with new text
+            await fireEvent.input(textarea, { target: { value: 'updated text' } });
+            await fireEvent.keyDown(textarea, { key: 'Enter' });
+
+            expect(invoke).toHaveBeenCalledWith('core_command', {
+                command: {
+                    type: 'Matrix',
+                    data: {
+                        type: 'EditMessage',
+                        data: { room_id: ROOM, event_id: '$edit1', text: 'updated text', html_body: null },
+                    },
+                },
+            });
+        });
+
+        it('edit mode clears after submit', async () => {
+            render(MessageInput);
+            setEditing(editMsg);
+            await tick();
+
+            const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+            await fireEvent.input(textarea, { target: { value: 'updated text' } });
+            await fireEvent.keyDown(textarea, { key: 'Enter' });
+            await tick();
+
+            expect(textarea.value).toBe('');
+            expect(screen.queryByText('Editing')).not.toBeInTheDocument();
         });
     });
 });

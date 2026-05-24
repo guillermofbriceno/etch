@@ -4,13 +4,13 @@ import { initChannels } from './channels';
 export { appFocused } from './eventRouter';
 
 export { activeChannelId } from './activeChannel';
-export { activeWindow, setActiveChannel, loadOlder, sendMessage, createDirectMessage, toggleReaction } from './messages';
+export { activeWindow, setActiveChannel, loadOlder, sendMessage, editMessage, redactMessage, createDirectMessage, toggleReaction } from './messages';
 export { channels, activeChannel, hideDm, dmLastActivity } from './channels';
 export { currentUser } from './user';
 export { isMuted, isDeafened, toggleMute, toggleDeafen } from './audio';
 export { activeOverlay, overlayImageUrl, settingsTab, showRoomIds, openSettings, openImage, openConnect, closeOverlay } from './overlay';
 export { serverBookmarks, selectedBookmarkId, connectingBookmark, passwordRequested, matrixConnecting, mediaBaseUrl, loadSettings, addBookmark, updateBookmark, removeBookmark, connectToServer } from './servers';
-export { replyingTo, setReply, clearReply } from './compose';
+export { replyingTo, setReply, clearReply, editingMessage, setEditing, clearEditing } from './compose';
 export { voiceChannels, voiceUsers, voiceConnected, mumbleStatus, usersByChannel, talkingUsers, certChangeRequest } from './voiceState';
 export type { VoiceChannel, VoiceUser, MumbleStatus } from './voiceState';
 export { errorLog, toastError, showToast } from './errors';

@@ -113,6 +113,7 @@ function msg(
                 html_body: opts.html ?? null,
                 media: opts.media ?? null,
                 timestamp,
+                edited: false,
                 reactions: opts.reactions ?? {},
             },
         },

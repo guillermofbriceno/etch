@@ -24,6 +24,7 @@ export const icons = {
     plus_circle: `<path fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="M12 2C6.48 2 2 6.48 2 12C2 17.52 6.48 22 12 22C17.52 22 22 17.52 22 12C22 6.48 17.52 2 12 2ZM13 11H16V13H13V16H11V13H8V11H11V8H13V11Z"/>`,
     send: `<path fill="currentColor" d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>`,
     download: `<path fill="currentColor" d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>`,
+    trash: `<path fill="currentColor" d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>`,
 
     // --- Indicators ---
     emoji: `<path fill="currentColor" fill-rule="evenodd" clip-rule="evenodd" d="M12 2C6.486 2 2 6.486 2 12C2 17.515 6.486 22 12 22C17.514 22 22 17.515 22 12C22 6.486 17.514 2 12 2ZM8.5 8C9.328 8 10 8.671 10 9.5C10 10.329 9.328 11 8.5 11C7.672 11 7 10.329 7 9.5C7 8.671 7.672 8 8.5 8ZM12 17.5C9.666 17.5 7.655 15.967 6.88 13.84L8.766 13.19C9.255 14.536 10.536 15.5 12 15.5C13.464 15.5 14.745 14.536 15.234 13.19L17.12 13.84C16.345 15.967 14.334 17.5 12 17.5ZM15.5 11C14.672 11 14 10.329 14 9.5C14 8.671 14.672 8 15.5 8C16.328 8 17 8.671 17 9.5C17 10.329 16.328 11 15.5 11Z"/>`,

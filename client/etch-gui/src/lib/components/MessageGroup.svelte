@@ -16,6 +16,7 @@
     export let msg: ChatMessage;
     export let sender: SenderProfile | null;
     export let continuation: boolean;
+    export let roomId: string;
 
     const COLLAPSE_THRESHOLD = 300;
     let bodyEl: HTMLElement;
@@ -153,7 +154,7 @@
         {#if !continuation}
             <div class="message-meta">
                 <span class="sender" style="color: {usernameColor(msg.sender)}">{sender?.display_name ?? msg.sender.split(':')[0]}</span>
-                <span class="timestamp">{formatTimestamp(msg.timestamp)}</span>
+                <span class="timestamp">{formatTimestamp(msg.timestamp)}{#if msg.edited}*{/if}</span>
             </div>
         {/if}
 
@@ -204,7 +205,7 @@
         {/if}
     </div>
 
-    <EmojiPicker message={msg} />
+    <EmojiPicker message={msg} {roomId} />
 </div>
 
 <style>

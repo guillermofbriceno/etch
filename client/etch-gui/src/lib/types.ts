@@ -22,6 +22,7 @@ export type ChatMessage = {
     html_body: string | null;
     media: MediaInfo | null;
     timestamp: number;
+    edited: boolean;
     // Maps emoji key → list of sender user IDs who reacted.
     reactions: Record<string, string[]>;
 };

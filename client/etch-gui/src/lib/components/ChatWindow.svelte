@@ -1,6 +1,6 @@
 <script lang="ts">
     import { beforeUpdate, afterUpdate, onMount } from 'svelte';
-    import { activeWindow, loadOlder, activeChannel, openImage, showRoomIds } from '$lib/stores';
+    import { activeWindow, loadOlder, activeChannel, activeChannelId, openImage, showRoomIds } from '$lib/stores';
     import type { ChatMessage, TimelineEntry, TimelineEntryKind, StateEventKind } from '$lib/types';
     import MessageGroup from './MessageGroup.svelte';
     import Icon from './Icon.svelte';
@@ -220,7 +220,8 @@
         const currMsg = curr.kind.Message;
         const prevMsg = prev.kind.Message;
         return currMsg.sender === prevMsg.sender
-            && (currMsg.timestamp - prevMsg.timestamp) < GROUP_THRESHOLD_MS;
+            && (currMsg.timestamp - prevMsg.timestamp) < GROUP_THRESHOLD_MS
+            && !currMsg.edited;
     }
 
     function entryKey(entry: TimelineEntry, index: number): string {
@@ -261,6 +262,7 @@
                         msg={entry.kind.Message}
                         sender={entry.sender}
                         continuation={isContinuation($activeWindow.entries, i)}
+                        roomId={$activeChannelId ?? ''}
                     />
                 {:else if isDayDivider(entry.kind)}
                     <div class="day-divider">

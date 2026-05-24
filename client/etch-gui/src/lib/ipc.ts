@@ -50,6 +50,8 @@ export type CoreEvent =
 
 export type MatrixCommand =
     | { type: 'SendMessage'; data: { room_id: string; text: string; html_body: string | null; attachment_path: string | null } }
+    | { type: 'EditMessage'; data: { room_id: string; event_id: string; text: string; html_body: string | null } }
+    | { type: 'RedactMessage'; data: { room_id: string; event_id: string } }
     | { type: 'ToggleReaction'; data: { room_id: string; event_id: string; key: string } }
     | { type: 'CreateDirectMessage'; data: { target_user_id: string } }
     | { type: 'SetDisplayName'; data: string }

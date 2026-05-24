@@ -31,6 +31,7 @@ function makeEntry(id: string, body: string): TimelineEntry {
                 html_body: null,
                 media: null,
                 timestamp: Date.now(),
+                edited: false,
                 reactions: {},
             },
         },
@@ -422,7 +423,7 @@ describe('notification sounds', () => {
             type: 'TimelinePushBack',
             data: [roomId, {
                 sender: { display_name: 'User', avatar_url: null },
-                kind: { Message: { id: `$${body}`, sender: senderId, body, html_body: null, media: null, timestamp: Date.now(), reactions: {} } },
+                kind: { Message: { id: `$${body}`, sender: senderId, body, html_body: null, media: null, timestamp: Date.now(), edited: false, reactions: {} } },
             }],
         } as any);
     }

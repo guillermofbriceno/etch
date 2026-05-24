@@ -87,6 +87,20 @@ export async function createDirectMessage(targetUserId: string): Promise<void> {
     });
 }
 
+export async function editMessage(roomId: string, eventId: string, text: string, htmlBody: string | null): Promise<void> {
+    await sendCoreCommand({
+        type: 'Matrix',
+        data: { type: 'EditMessage', data: { room_id: roomId, event_id: eventId, text, html_body: htmlBody } },
+    });
+}
+
+export async function redactMessage(roomId: string, eventId: string): Promise<void> {
+    await sendCoreCommand({
+        type: 'Matrix',
+        data: { type: 'RedactMessage', data: { room_id: roomId, event_id: eventId } },
+    });
+}
+
 export async function toggleReaction(eventId: string, key: string): Promise<void> {
     const roomId = get(activeChannelId);
     if (!roomId) return;

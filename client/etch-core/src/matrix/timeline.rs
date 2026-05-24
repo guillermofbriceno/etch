@@ -233,20 +233,55 @@ impl TimelineManager {
         true
     }
 
-    pub async fn toggle_reaction(&self, room_id: &str, event_id: &str, key: &str) {
+    /// Resolve a (room_id, event_id) pair into a timeline handle and item identifier.
+    /// Returns None and logs on any parsing or lookup failure.
+    fn resolve_timeline_item(&self, room_id: &str, event_id: &str, op: &str)
+        -> Option<(Arc<Timeline>, TimelineEventItemId)>
+    {
         let Ok(room_id) = OwnedRoomId::try_from(room_id) else {
-            log::error!("Invalid room_id for toggle_reaction: {}", room_id);
-            return;
+            log::error!("[{}] Invalid room_id: {}", op, room_id);
+            return None;
         };
         let Some(timeline) = self.timelines.get(&room_id) else {
-            log::error!("No timeline subscription for room: {}", room_id);
-            return;
+            log::error!("[{}] No timeline subscription for room: {}", op, room_id);
+            return None;
         };
         let Ok(event_id) = matrix_sdk::ruma::OwnedEventId::try_from(event_id) else {
-            log::error!("Invalid event_id for toggle_reaction: {}", event_id);
+            log::error!("[{}] Invalid event_id: {}", op, event_id);
+            return None;
+        };
+        Some((Arc::clone(timeline), TimelineEventItemId::EventId(event_id)))
+    }
+
+    pub async fn edit_message(&self, room_id: &str, event_id: &str, text: &str, html_body: Option<&str>) {
+        let Some((timeline, item_id)) = self.resolve_timeline_item(room_id, event_id, "edit_message") else {
             return;
         };
-        let item_id = TimelineEventItemId::EventId(event_id);
+        use matrix_sdk::ruma::events::room::message::{RoomMessageEventContent, RoomMessageEventContentWithoutRelation};
+        use matrix_sdk::room::edit::EditedContent;
+        let content = match html_body {
+            Some(html) => RoomMessageEventContent::text_html(text, html),
+            None => RoomMessageEventContent::text_plain(text),
+        };
+        let without_relation: RoomMessageEventContentWithoutRelation = content.into();
+        if let Err(e) = timeline.edit(&item_id, EditedContent::RoomMessage(without_relation)).await {
+            log::error!("Failed to edit message: {:?}", e);
+        }
+    }
+
+    pub async fn redact_message(&self, room_id: &str, event_id: &str) {
+        let Some((timeline, item_id)) = self.resolve_timeline_item(room_id, event_id, "redact_message") else {
+            return;
+        };
+        if let Err(e) = timeline.redact(&item_id, None).await {
+            log::error!("Failed to redact message: {:?}", e);
+        }
+    }
+
+    pub async fn toggle_reaction(&self, room_id: &str, event_id: &str, key: &str) {
+        let Some((timeline, item_id)) = self.resolve_timeline_item(room_id, event_id, "toggle_reaction") else {
+            return;
+        };
         if let Err(e) = timeline.toggle_reaction(&item_id, key).await {
             log::error!("Failed to toggle reaction: {:?}", e);
         }
@@ -444,6 +479,7 @@ fn event_item_to_entry(
                         html_body,
                         media,
                         timestamp: ts as u128,
+                        edited: message.is_edited(),
                         reactions,
                     }))
                 }

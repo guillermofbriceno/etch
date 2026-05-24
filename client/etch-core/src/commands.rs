@@ -19,6 +19,8 @@ pub enum CoreCommand {
 #[serde(tag = "type", content = "data")]
 pub enum MatrixCommand {
     SendMessage(ChatMessageSend),
+    EditMessage { room_id: String, event_id: String, text: String, html_body: Option<String> },
+    RedactMessage { room_id: String, event_id: String },
     ToggleReaction { room_id: String, event_id: String, key: String },
     CreateDirectMessage { target_user_id: String },
     SetDisplayName(String),
