@@ -4,6 +4,7 @@
     import type { ChatMessage, TimelineEntry, TimelineEntryKind, StateEventKind } from '$lib/types';
     import MessageGroup from './MessageGroup.svelte';
     import Icon from './Icon.svelte';
+    import { customScrollbar } from '$lib/scrollbar';
 
     let scrollerElement: HTMLDivElement;
     let contentElement: HTMLDivElement;
@@ -250,7 +251,7 @@
         {/if}
     </header>
 
-    <div class="messages-scroller" bind:this={scrollerElement} use:clickDelegate on:scroll={onScroll}>
+    <div class="messages-scroller" bind:this={scrollerElement} use:clickDelegate use:customScrollbar on:scroll={onScroll}>
         {#if $activeWindow.loading}
             <div class="loading-indicator">Loading...</div>
         {/if}
@@ -324,7 +325,7 @@
 
     .messages-scroller {
         flex-grow: 1;
-        overflow-y: scroll;
+        overflow-y: auto;
         overflow-x: hidden;
         overflow-anchor: none;
         padding: 16px 0;
@@ -340,10 +341,6 @@
         -webkit-user-select: text;
         user-select: text;
     }
-
-    .messages-scroller::-webkit-scrollbar { width: 8px; }
-    .messages-scroller::-webkit-scrollbar-track { background: var(--scrollbar-track); border-radius: 4px; margin-right: 4px; }
-    .messages-scroller::-webkit-scrollbar-thumb { background-color: var(--scrollbar-thumb); border-radius: 4px; }
 
     .loading-indicator {
         text-align: center;

@@ -1,6 +1,7 @@
 <script lang="ts">
     import { closeOverlay } from '$lib/stores';
     import Icon from './Icon.svelte';
+    import { customScrollbar } from '$lib/scrollbar';
 </script>
 
 <div class="modal-layout">
@@ -10,7 +11,7 @@
         </div>
     </div>
 
-    <div class="modal-content">
+    <div class="modal-content" use:customScrollbar>
         <div class="content-container">
             <slot />
         </div>
@@ -52,10 +53,6 @@
         padding-left: 40px;
         overflow-y: auto;
     }
-
-    .modal-content::-webkit-scrollbar { width: 6px; }
-    .modal-content::-webkit-scrollbar-track { background: transparent; }
-    .modal-content::-webkit-scrollbar-thumb { background-color: var(--scrollbar-thumb); border-radius: 3px; }
 
     .content-container { width: 100%; max-width: 740px; padding-bottom: 60px; }
 

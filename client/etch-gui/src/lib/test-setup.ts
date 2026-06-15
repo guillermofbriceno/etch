@@ -1,6 +1,17 @@
 import { vi } from 'vitest';
 import '@testing-library/jest-dom/vitest';
 
+// jsdom does not implement ResizeObserver, which the customScrollbar action
+// (used by several components) constructs on mount. Provide an inert stub so
+// component tests can render scrollable elements without a real layout engine.
+if (typeof globalThis.ResizeObserver === 'undefined') {
+    globalThis.ResizeObserver = class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+    };
+}
+
 // Mock all Tauri API modules so tests run in jsdom without a real Tauri runtime.
 // vi.mock() calls are hoisted by Vitest and apply before any test module imports.
 

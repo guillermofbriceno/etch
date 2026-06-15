@@ -7,6 +7,7 @@
     import AvatarFallback from './AvatarFallback.svelte';
     import UserContextMenu from './UserContextMenu.svelte';
     import Icon from './Icon.svelte';
+    import { customScrollbar } from '$lib/scrollbar';
     import { onMount, onDestroy } from 'svelte';
 
     let dropdownOpen = false;
@@ -116,7 +117,7 @@
         {/if}
     </header>
 
-    <div class="scroller">
+    <div class="scroller" use:customScrollbar={{ width: 4 }}>
         {#if $matrixConnecting && $channels.length === 0}
             <div class="connecting-indicator">
                 <div class="spinner"></div>
@@ -311,14 +312,10 @@
 
     .scroller {
         flex-grow: 1;
-        overflow-y: scroll;
+        overflow-y: auto;
         overflow-x: hidden;
         padding: 16px 8px 16px 16px;
     }
-
-    .scroller::-webkit-scrollbar { width: 4px; }
-    .scroller::-webkit-scrollbar-track { background: transparent; }
-    .scroller::-webkit-scrollbar-thumb { background-color: var(--scrollbar-thumb); border-radius: 4px; }
 
     .category { margin-bottom: 20px; }
 
@@ -460,7 +457,6 @@
             pointer-events: none;
         }
         .scroller { padding: 16px 0; overflow-y: auto; scrollbar-width: none; }
-        .scroller::-webkit-scrollbar { display: none; }
         .category + .category { border-top: 1px solid rgba(255, 255, 255, 0.06); }
         .channel-btn { justify-content: center; padding: 6px 0; }
         .channel-btn :global(.channel-icon) { margin-right: 4px; }

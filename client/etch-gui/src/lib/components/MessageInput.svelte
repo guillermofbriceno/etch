@@ -7,6 +7,7 @@
     import { sendMessage, editMessage, activeChannelId, activeChannel, activeWindow, replyingTo, clearReply, editingMessage, clearEditing } from '$lib/stores';
     import { composeHtml, insertMentionLinks } from '$lib/markdown';
     import Icon from './Icon.svelte';
+    import { customScrollbar } from '$lib/scrollbar';
 
     let messageText = '';
     let showEmojiPicker = false;
@@ -458,7 +459,7 @@
     {/if}
 
     {#if showMentionPopup && mentionMatches.length > 0}
-        <div class="mention-popup">
+        <div class="mention-popup" style="--scrollbar-thumb: var(--border-input)" use:customScrollbar={{ width: 6, minThumbHeight: 20 }}>
             {#each mentionMatches as user, i}
                 <button
                     class="mention-option"
@@ -524,7 +525,7 @@
                                 >{cat.emojis[0]}</button>
                             {/each}
                         </div>
-                        <div class="emoji-grid">
+                        <div class="emoji-grid" use:customScrollbar={{ width: 6, minThumbHeight: 20 }}>
                             {#each EMOJI_CATEGORIES as cat}
                                 {#if activeCategory === cat.label}
                                     {#each cat.emojis as emoji}
@@ -776,9 +777,6 @@
         flex: 1;
     }
 
-    .emoji-grid::-webkit-scrollbar { width: 6px; }
-    .emoji-grid::-webkit-scrollbar-track { background: transparent; }
-    .emoji-grid::-webkit-scrollbar-thumb { background-color: var(--scrollbar-thumb); border-radius: 3px; }
 
     .emoji-cell {
         width: 36px;
@@ -798,9 +796,6 @@
 
     .message-box::placeholder { color: var(--text-muted); }
 
-    .message-box::-webkit-scrollbar { width: 4px; }
-    .message-box::-webkit-scrollbar-track { background: transparent; }
-    .message-box::-webkit-scrollbar-thumb { background-color: var(--scrollbar-thumb); border-radius: 4px; }
 
     .mention-popup {
         position: absolute;
@@ -817,9 +812,6 @@
         box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.3);
     }
 
-    .mention-popup::-webkit-scrollbar { width: 6px; }
-    .mention-popup::-webkit-scrollbar-track { background: transparent; }
-    .mention-popup::-webkit-scrollbar-thumb { background-color: var(--border-input); border-radius: 3px; }
 
     .mention-option {
         display: flex;

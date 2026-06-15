@@ -244,12 +244,14 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
                                 self.voice.send_command(MumbleCommand::SetVoiceHold(value)).await;
                             }
                         }
-                        // Restore mute/deafen from previous session.
-                        // Deafen implies mute in Mumble, so only send one.
+                        // Restore mute/deafen from the previous session. Send each flag
+                        // independently rather than leaning on deafen's implicit mute: an
+                        // explicitly muted user must stay muted after they later undeafen.
+                        if self.voice_session.muted {
+                            self.voice.send_command(MumbleCommand::MuteSelf(true)).await;
+                        }
                         if self.voice_session.deafened {
                             self.voice.send_command(MumbleCommand::DeafenSelf(true)).await;
-                        } else if self.voice_session.muted {
-                            self.voice.send_command(MumbleCommand::MuteSelf(true)).await;
                         }
                     }
                     InternalMumbleEvent::LocalChannelChanged { channel_path } => {

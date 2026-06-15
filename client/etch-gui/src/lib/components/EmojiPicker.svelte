@@ -68,8 +68,8 @@
 <style>
     .message-actions {
         position: absolute;
-        top: -12px;
-        right: 16px;
+        bottom: calc(100% - 8px);
+        right: 26px;
         display: flex;
         background-color: #2f3136;
         border: 1px solid var(--border-subtle);
