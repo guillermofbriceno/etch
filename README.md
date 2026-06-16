@@ -61,21 +61,22 @@ cargo tauri build
 
 ## Testing
 
+Before pushing, run the checks CI gates on:
+
 ```bash
-# Rust unit tests (no external services needed)
-cargo test -p etch-core
-
-# Rust integration tests (full run: starts containers, provisions, tests, tears down)
-bash tests/integration/run.sh
-
-# Rust integration tests (against already-running containers, for faster iteration)
-cargo test -p etch-core --features integration-tests -- --test-threads=1
-
-# Frontend tests + typecheck
+# Frontend: tests + typecheck
 cd client/etch-gui && pnpm test && pnpm check
+
+# Rust: unit tests + coverage floor (CI fails the PR if coverage drops below it)
+cargo llvm-cov -p etch-core --fail-under-lines 67
+
+# Rust: integration tests (starts containers, provisions, runs, tears down)
+bash tests/integration/run.sh
 ```
 
-The integration test orchestrator (`run.sh`) starts ephemeral Continuwuity and Mumble containers, provisions test users and rooms, runs the test suite, and tears everything down. When iterating on tests, you can leave the containers running and use the `cargo test` command directly to skip the setup/teardown cycle.
+For faster iteration against already-running containers, skip the orchestrator and run `cargo test -p etch-core --features integration-tests -- --test-threads=1` directly.
+
+The integration test orchestrator (`run.sh`) starts ephemeral Continuwuity and Mumble containers, provisions test users and rooms, runs the test suite, and tears everything down.
 
 Note: the integration tests share a set of test users against the same server instance. Tests that mutate server state (setting display names, creating DMs) leave behind artifacts that can cause spurious failures on subsequent runs against the same containers. If you hit unexpected assertion failures while iterating, restart the containers with a fresh provision.
 

@@ -189,10 +189,52 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: '1.93'
+          components: llvm-tools-preview
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Run integration tests
-        run: bash tests/integration/run.sh
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+
+      # Coverage is collected across two instrumented passes — the unit suite
+      # and the Docker-backed integration suite — then merged into one report.
+      # The `integration-tests` feature only adds a test module (lib.rs), so the
+      # instrumented library object is identical across passes and the profile
+      # data aggregates cleanly. This MERGED number is informational only; the
+      # hard coverage gate remains the unit-only `rust-coverage` job.
+      - name: Coverage — unit pass
+        run: |
+          cargo llvm-cov clean --workspace
+          cargo llvm-cov --no-report -p etch-core
         env:
           RUST_BACKTRACE: 1
+
+      - name: Coverage — integration pass (Docker)
+        run: bash tests/integration/run.sh
+        env:
+          # Run the integration suite under llvm-cov so its coverage accumulates
+          # with the unit pass above (same target dir, no clean in between).
+          TEST_CMD: cargo llvm-cov --no-report -p etch-core --features integration-tests -- --test-threads=1
+          RUST_BACKTRACE: 1
+
+      - name: Merged coverage report (informational)
+        if: always()
+        run: |
+          cargo llvm-cov report --html \
+            --ignore-filename-regex 'integration_tests\.rs|test_mocks\.rs'
+          {
+            echo '## Merged coverage — unit + integration (informational, not gated)'
+            echo '```'
+            cargo llvm-cov report --summary-only \
+              --ignore-filename-regex 'integration_tests\.rs|test_mocks\.rs'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload merged HTML coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-merged-html
+          path: target/llvm-cov/html/
+          if-no-files-found: error

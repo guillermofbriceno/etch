@@ -32,6 +32,8 @@ python3 "$SCRIPT_DIR/provision.py" "$PROJECT_NAME"
 
 echo "[*] Running integration tests..."
 cd "$REPO_ROOT"
-cargo test -p etch-core --features integration-tests -- --test-threads=1
+# The test runner can be overridden (e.g. to run under `cargo llvm-cov` for
+# coverage collection). Defaults to a plain test run.
+${TEST_CMD:-cargo test -p etch-core --features integration-tests -- --test-threads=1}
 
 echo "[*] All integration tests passed."
