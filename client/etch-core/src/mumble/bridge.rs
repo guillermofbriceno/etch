@@ -352,23 +352,8 @@ impl BridgeState {
 /// Percent-encode a single URL path segment, preserving unreserved characters
 /// per RFC 3986 (alphanumeric, `-`, `.`, `_`, `~`).
 fn encode_path_segment(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for byte in s.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                out.push(byte as char);
-            }
-            _ => {
-                out.push('%');
-                out.push(char::from(HEX[(byte >> 4) as usize]));
-                out.push(char::from(HEX[(byte & 0x0f) as usize]));
-            }
-        }
-    }
-    out
+    super::percent_encode_unreserved(s)
 }
-
-const HEX: [u8; 16] = *b"0123456789ABCDEF";
 
 #[cfg(test)]
 mod tests {

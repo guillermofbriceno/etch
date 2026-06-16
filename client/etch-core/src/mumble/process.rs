@@ -148,9 +148,13 @@ fn build_mumble_url(
     password: Option<&str>,
     channel_path: Option<&str>,
 ) -> String {
+    // Username and password are percent-encoded so reserved characters (notably
+    // '@' and ':') cannot be mistaken for URL structure or used to redirect the
+    // authority. `channel_path` arrives already encoded (see bridge.rs).
+    let user = super::percent_encode_unreserved(username);
     let mut url = match password {
-        Some(pw) => format!("mumble://{}:{}@{}:{}", username, pw, host, port),
-        None => format!("mumble://{}@{}:{}", username, host, port),
+        Some(pw) => format!("mumble://{}:{}@{}:{}", user, super::percent_encode_unreserved(pw), host, port),
+        None => format!("mumble://{}@{}:{}", user, host, port),
     };
     if let Some(path) = channel_path
         && !path.is_empty()
@@ -433,6 +437,23 @@ mod tests {
     fn url_ignores_empty_channel_path() {
         let url = build_mumble_url("h", 1, "u", None, Some(""));
         assert_eq!(url, "mumble://u@h:1");
+    }
+
+    #[test]
+    fn url_percent_encodes_reserved_chars_in_password() {
+        // '@', ':' and '/' in a password must be encoded so they cannot be
+        // mistaken for URL structure.
+        let url = build_mumble_url("h", 64738, "alice", Some("p@ss:1/x"), None);
+        assert_eq!(url, "mumble://alice:p%40ss%3A1%2Fx@h:64738");
+    }
+
+    #[test]
+    fn url_percent_encodes_at_sign_in_username() {
+        // A username containing '@' must not be able to move the authority:
+        // the encoded %40 cannot act as the userinfo delimiter, so the host
+        // stays 'realhost', not 'evil.com'.
+        let url = build_mumble_url("realhost", 64738, "alice@evil.com", Some("pw"), None);
+        assert_eq!(url, "mumble://alice%40evil.com:pw@realhost:64738");
     }
 
     // ---- patch_config_json ----
