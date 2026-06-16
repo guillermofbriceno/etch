@@ -682,4 +682,186 @@ mod tests {
 
         assert!(mgr.timeline_arcs().is_empty(), "timeline handles should be cleared");
     }
+
+    #[test]
+    fn duplicate_insert_does_not_refresh_eviction_order() {
+        // Eviction is by insertion order, and a duplicate insert is a no-op, so
+        // re-inserting an existing key must NOT move it to the back of the queue.
+        let mut cache = BoundedMediaSources::new(3);
+        cache.insert("a".into(), plain_source("mxc://a"));
+        cache.insert("b".into(), plain_source("mxc://b"));
+        cache.insert("c".into(), plain_source("mxc://c"));
+        cache.insert("a".into(), plain_source("mxc://a-again")); // no-op
+        cache.insert("d".into(), plain_source("mxc://d"));       // evicts oldest
+
+        assert!(cache.get("a").is_none(), "a was oldest and must be evicted, not refreshed");
+        assert!(cache.get("b").is_some());
+        assert!(cache.get("c").is_some());
+        assert!(cache.get("d").is_some());
+    }
+}
+
+// Tests for the diff-to-event mapper and the new-message script trigger. These
+// cover the pure decision logic; the SDK-driven paths (event_item_to_entry,
+// subscribe/spawn) are exercised by the Docker integration suite instead.
+#[cfg(test)]
+mod diff_dispatch_tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn sources() -> MediaSourceMap {
+        Arc::new(RwLock::new(BoundedMediaSources::new(4)))
+    }
+
+    #[test]
+    fn map_diff_remove_carries_index() {
+        match map_diff(VectorDiff::Remove { index: 3 }, "!r:x", &sources()) {
+            Some(CoreEvent::Matrix(MatrixEvent::TimelineRemove(rid, idx))) => {
+                assert_eq!(rid, "!r:x");
+                assert_eq!(idx, 3);
+            }
+            other => panic!("expected TimelineRemove, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_diff_clear_maps_to_cleared() {
+        match map_diff(VectorDiff::Clear, "!r:x", &sources()) {
+            Some(CoreEvent::Matrix(MatrixEvent::TimelineCleared(rid))) => assert_eq!(rid, "!r:x"),
+            other => panic!("expected TimelineCleared, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_diff_unhandled_variants_are_dropped() {
+        // PopFront/PopBack/Truncate have no CoreEvent equivalent and must be
+        // ignored rather than mis-mapped.
+        assert!(map_diff(VectorDiff::PopBack, "!r:x", &sources()).is_none());
+        assert!(map_diff(VectorDiff::PopFront, "!r:x", &sources()).is_none());
+        assert!(map_diff(VectorDiff::Truncate { length: 0 }, "!r:x", &sources()).is_none());
+    }
+
+    fn message_pushback(rid: &str, sender: &str, body: &str, display: Option<&str>) -> CoreEvent {
+        let entry = TimelineEntry {
+            sender: display.map(|d| SenderProfile {
+                display_name: Some(d.to_string()),
+                avatar_url: None,
+            }),
+            kind: TimelineEntryKind::Message(Box::new(ChatMessageReceive {
+                id: "$evt:x".into(),
+                sender: sender.into(),
+                body: body.into(),
+                html_body: None,
+                media: None,
+                timestamp: 0,
+                edited: false,
+                reactions: HashMap::new(),
+            })),
+        };
+        CoreEvent::Matrix(MatrixEvent::TimelinePushBack(rid.to_string(), entry))
+    }
+
+    fn dispatcher_writing(out: &std::path::Path) -> ScriptDispatcher {
+        let script = format!(
+            "echo -n \"$ETCH_USER|$ETCH_MESSAGE|$ETCH_ROOM\" > {}",
+            out.display()
+        );
+        ScriptDispatcher::with_scripts(
+            [("new_message".to_string(), script)].into_iter().collect(),
+            Duration::from_millis(500),
+        )
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn fires_for_remote_message_with_display_name_and_vars() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("out");
+        let d = dispatcher_writing(&out);
+
+        let event = message_pushback("!room:x", "@bob:x", "hello there", Some("Bob"));
+        maybe_fire_new_message(&event, "!room:x", &d, Some("@me:x"));
+
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let content = std::fs::read_to_string(&out).unwrap();
+        assert_eq!(content, "Bob|hello there|!room:x");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn falls_back_to_sender_id_without_display_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("out");
+        let d = dispatcher_writing(&out);
+
+        let event = message_pushback("!room:x", "@bob:x", "hi", None);
+        maybe_fire_new_message(&event, "!room:x", &d, None);
+
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let content = std::fs::read_to_string(&out).unwrap();
+        assert_eq!(content, "@bob:x|hi|!room:x");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn does_not_fire_for_own_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("out");
+        let d = dispatcher_writing(&out);
+
+        let event = message_pushback("!room:x", "@me:x", "my own message", None);
+        maybe_fire_new_message(&event, "!room:x", &d, Some("@me:x"));
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!out.exists(), "the local user's own message must not fire new_message");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn does_not_fire_for_non_message_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("out");
+        let d = dispatcher_writing(&out);
+
+        let entry = TimelineEntry {
+            sender: None,
+            kind: TimelineEntryKind::StateEvent(StateEventKind::MemberJoined {
+                user_id: "@bob:x".into(),
+            }),
+        };
+        let event = CoreEvent::Matrix(MatrixEvent::TimelinePushBack("!room:x".into(), entry));
+        maybe_fire_new_message(&event, "!room:x", &d, None);
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!out.exists(), "a membership state event must not fire new_message");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn does_not_fire_for_backfilled_pushfront() {
+        // Backfilled history arrives as PushFront; only live PushBack should
+        // trigger the new-message script.
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("out");
+        let d = dispatcher_writing(&out);
+
+        let entry = TimelineEntry {
+            sender: None,
+            kind: TimelineEntryKind::Message(Box::new(ChatMessageReceive {
+                id: "$old:x".into(),
+                sender: "@bob:x".into(),
+                body: "old history".into(),
+                html_body: None,
+                media: None,
+                timestamp: 0,
+                edited: false,
+                reactions: HashMap::new(),
+            })),
+        };
+        let event = CoreEvent::Matrix(MatrixEvent::TimelinePushFront("!room:x".into(), entry));
+        maybe_fire_new_message(&event, "!room:x", &d, None);
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!out.exists(), "backfilled PushFront history must not fire new_message");
+    }
 }

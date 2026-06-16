@@ -317,13 +317,18 @@ impl BridgeState {
                 let _ = tx.send(mumble(MumbleEvent::ChannelRemoved(id as u32))).await;
             }
             BridgeEvent::ChannelRenamed { id, name } => {
+                // The rename event from the plugin carries no parent, but the
+                // ChannelState we emit fully replaces the channel on the consumer
+                // side. Re-use the parent we already track so a rename does not
+                // reparent the channel to root.
+                let parent = self.channel_tree.get(&(id as u32)).map_or(0, |info| info.parent_id);
                 if let Some(info) = self.channel_tree.get_mut(&(id as u32)) {
                     info.name = name.clone();
                 }
                 let _ = tx.send(mumble(MumbleEvent::ChannelState {
                     id: id as u32,
                     name,
-                    parent: 0,
+                    parent,
                 })).await;
             }
             BridgeEvent::TransmissionModeChanged { mode } => {
@@ -411,5 +416,256 @@ mod tests {
         // Should terminate instead of looping forever
         let path = state.channel_path(3);
         assert!(!path.is_empty());
+    }
+}
+
+// Behavioral tests for the BridgeEvent -> CoreEvent/InternalEvent translation
+// layer. Each test drives `translate` with a single bridge event and asserts on
+// both the emitted events and the resulting BridgeState, exercising the real
+// state machine rather than mocked stand-ins.
+#[cfg(test)]
+mod translate_tests {
+    use super::*;
+    use bridge_types::{Channel, User};
+
+    fn new_state() -> BridgeState {
+        BridgeState::new(Arc::new(crate::scripting::ScriptDispatcher::new(
+            std::path::Path::new("/tmp"),
+        )))
+    }
+
+    fn drain<T>(rx: &mut mpsc::Receiver<T>) -> Vec<T> {
+        let mut out = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            out.push(ev);
+        }
+        out
+    }
+
+    /// Drive a single event through `translate`, returning everything it emitted
+    /// on the public (core) and internal channels.
+    async fn feed(state: &mut BridgeState, event: BridgeEvent) -> (Vec<CoreEvent>, Vec<InternalEvent>) {
+        let (tx, mut rx) = mpsc::channel(128);
+        let (itx, mut irx) = mpsc::channel(128);
+        state.translate(&tx, &itx, event).await;
+        (drain(&mut rx), drain(&mut irx))
+    }
+
+    fn channel_states(evs: &[CoreEvent]) -> Vec<(u32, String, u32)> {
+        evs.iter()
+            .filter_map(|e| match e {
+                CoreEvent::Mumble(MumbleEvent::ChannelState { id, name, parent }) => {
+                    Some((*id, name.clone(), *parent))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn user(session: u32, channel_id: i32, mute_state: u32, deaf_state: u32) -> User {
+        User {
+            session,
+            name: format!("user{session}"),
+            channel_id,
+            mute_state,
+            deaf_state,
+            volume_adjustment: 1.0,
+        }
+    }
+
+    #[tokio::test]
+    async fn server_sync_populates_state_and_announces_connected() {
+        let mut state = new_state();
+        let event = BridgeEvent::ServerSync {
+            local_session: 7,
+            channels: vec![
+                Channel { id: 0, name: "Root".into(), parent: 0 },
+                Channel { id: 1, name: "Voice".into(), parent: 0 },
+                Channel { id: 2, name: "General".into(), parent: 1 },
+            ],
+            users: vec![user(7, 2, 0x02, 0x00)],
+        };
+        let (core, internal) = feed(&mut state, event).await;
+
+        // State is recorded for later channel-path / membership logic.
+        assert_eq!(state.local_session, Some(7));
+        assert_eq!(state.session_channels.get(&7), Some(&2));
+        assert_eq!(state.session_names.get(&7).map(String::as_str), Some("user7"));
+        assert_eq!(state.channel_tree.get(&2).map(|c| c.parent_id), Some(1));
+
+        // Every channel is forwarded with its real parent intact.
+        let chans = channel_states(&core);
+        assert!(chans.contains(&(1, "Voice".to_string(), 0)));
+        assert!(chans.contains(&(2, "General".to_string(), 1)));
+
+        // The local user's self-mute bit (0x02) is decoded; deaf bit is clear.
+        let user_state = core.iter().find_map(|e| match e {
+            CoreEvent::Mumble(MumbleEvent::UserState { session_id, self_mute, self_deaf, .. }) if *session_id == 7 => {
+                Some((*self_mute, *self_deaf))
+            }
+            _ => None,
+        });
+        assert_eq!(user_state, Some((Some(true), Some(false))));
+
+        // Sync is bracketed by a Connected transition on both channels.
+        assert!(core.iter().any(|e| matches!(
+            e,
+            CoreEvent::Mumble(MumbleEvent::ConnectionState(ConnectionState::Connected))
+        )));
+        assert!(internal
+            .iter()
+            .any(|e| matches!(e, InternalEvent::Mumble(InternalMumbleEvent::Connected))));
+        assert!(internal.iter().any(|e| matches!(
+            e,
+            InternalEvent::Mumble(InternalMumbleEvent::UserJoined { session_id: 7, .. })
+        )));
+    }
+
+    #[tokio::test]
+    async fn channel_rename_preserves_existing_parent() {
+        let mut state = new_state();
+        // A channel nested under parent 1.
+        feed(
+            &mut state,
+            BridgeEvent::ChannelAdded {
+                channel: Channel { id: 2, name: "General".into(), parent: 1 },
+            },
+        )
+        .await;
+
+        let (core, _) = feed(
+            &mut state,
+            BridgeEvent::ChannelRenamed { id: 2, name: "Lounge".into() },
+        )
+        .await;
+
+        // The rename must not move the channel: parent stays 1, not 0.
+        let chans = channel_states(&core);
+        assert_eq!(
+            chans,
+            vec![(2, "Lounge".to_string(), 1)],
+            "rename emitted the wrong parent (a 0 here reparents the channel to root in the UI)"
+        );
+        // Internal tree keeps the correct parent too.
+        assert_eq!(state.channel_tree.get(&2).map(|c| c.parent_id), Some(1));
+    }
+
+    #[tokio::test]
+    async fn channel_removed_drops_from_tree() {
+        let mut state = new_state();
+        feed(
+            &mut state,
+            BridgeEvent::ChannelAdded {
+                channel: Channel { id: 5, name: "Temp".into(), parent: 0 },
+            },
+        )
+        .await;
+        assert!(state.channel_tree.contains_key(&5));
+
+        let (core, _) = feed(&mut state, BridgeEvent::ChannelRemoved { id: 5 }).await;
+
+        assert!(!state.channel_tree.contains_key(&5));
+        assert!(core
+            .iter()
+            .any(|e| matches!(e, CoreEvent::Mumble(MumbleEvent::ChannelRemoved(5)))));
+    }
+
+    #[tokio::test]
+    async fn mute_state_decodes_self_bit_only() {
+        // 0x02 is MUMBLE_MS_SELF_MUTED; 0x01 is a different (server) bit and must
+        // not be read as a self-mute.
+        for (raw, expected) in [(0x00u32, false), (0x02, true), (0x01, false), (0x03, true)] {
+            let mut state = new_state();
+            state.local_session = Some(9);
+            let (core, internal) =
+                feed(&mut state, BridgeEvent::UserMuteStateChanged { session: 9, mute_state: raw }).await;
+
+            let emitted = core.iter().find_map(|e| match e {
+                CoreEvent::Mumble(MumbleEvent::UserState { self_mute, .. }) => Some(*self_mute),
+                _ => None,
+            });
+            assert_eq!(emitted, Some(Some(expected)), "mute_state={raw:#04x}");
+
+            // Local session changes are mirrored on the internal channel.
+            let internal_mute = internal.iter().find_map(|e| match e {
+                InternalEvent::Mumble(InternalMumbleEvent::LocalMuteChanged(v)) => Some(*v),
+                _ => None,
+            });
+            assert_eq!(internal_mute, Some(expected), "mute_state={raw:#04x}");
+        }
+    }
+
+    #[tokio::test]
+    async fn remote_user_mute_change_does_not_emit_local_event() {
+        let mut state = new_state();
+        state.local_session = Some(1);
+        let (_, internal) =
+            feed(&mut state, BridgeEvent::UserMuteStateChanged { session: 2, mute_state: 0x02 }).await;
+        assert!(
+            !internal
+                .iter()
+                .any(|e| matches!(e, InternalEvent::Mumble(InternalMumbleEvent::LocalMuteChanged(_)))),
+            "a remote user's mute change must not be reported as the local mute state"
+        );
+    }
+
+    #[tokio::test]
+    async fn local_user_move_reports_encoded_channel_path() {
+        let mut state = new_state();
+        state.local_session = Some(4);
+        state.channel_tree.insert(0, ChannelInfo { name: "Root".into(), parent_id: 0 });
+        state.channel_tree.insert(1, ChannelInfo { name: "Voice Chat".into(), parent_id: 0 });
+        state.channel_tree.insert(2, ChannelInfo { name: "General".into(), parent_id: 1 });
+
+        let (_, internal) =
+            feed(&mut state, BridgeEvent::UserMoved { session: 4, channel_id: 2 }).await;
+
+        assert_eq!(state.session_channels.get(&4), Some(&2));
+        let path = internal.iter().find_map(|e| match e {
+            InternalEvent::Mumble(InternalMumbleEvent::LocalChannelChanged { channel_path }) => {
+                Some(channel_path.clone())
+            }
+            _ => None,
+        });
+        // Space is percent-encoded; root is omitted from the path.
+        assert_eq!(path, Some("Voice%20Chat/General".to_string()));
+    }
+
+    #[tokio::test]
+    async fn talking_state_passive_is_not_talking() {
+        for (state_in, expected) in [
+            (TalkingState::Passive, false),
+            (TalkingState::Talking, true),
+            (TalkingState::Whispering, true),
+            (TalkingState::Shouting, true),
+            (TalkingState::TalkingMuted, true),
+        ] {
+            let mut state = new_state();
+            let (core, _) =
+                feed(&mut state, BridgeEvent::UserTalking { session: 3, state: state_in }).await;
+            let talking = core.iter().find_map(|e| match e {
+                CoreEvent::Mumble(MumbleEvent::UserTalking { talking, .. }) => Some(*talking),
+                _ => None,
+            });
+            assert_eq!(talking, Some(expected), "state={state_in:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn transmission_mode_maps_to_expected_string() {
+        for (mode, expected) in [
+            (TransmissionMode::VoiceActivation, "voice_activation"),
+            (TransmissionMode::Continuous, "continuous"),
+            (TransmissionMode::PushToTalk, "push_to_talk"),
+        ] {
+            let mut state = new_state();
+            let (core, _) =
+                feed(&mut state, BridgeEvent::TransmissionModeChanged { mode }).await;
+            let s = core.iter().find_map(|e| match e {
+                CoreEvent::Mumble(MumbleEvent::TransmissionModeChanged(s)) => Some(s.clone()),
+                _ => None,
+            });
+            assert_eq!(s.as_deref(), Some(expected));
+        }
     }
 }
