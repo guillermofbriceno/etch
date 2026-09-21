@@ -30,10 +30,16 @@ pub struct MockMatrixState {
 pub struct MockMatrix {
     pub state: Arc<MockMatrixState>,
     pub connect_result: ConnectOutcome,
+    /// Keep returning `connect_result` instead of failing after the first call.
+    /// Needed by tests that drive more than one successful connection.
+    pub repeat_connect_result: bool,
     pub profile_response: (Option<String>, Option<String>),
     pub media_response: Result<Vec<u8>, String>,
     /// Events sent through `internal_tx` during `connect()`.
     pub internal_events: Vec<InternalEvent>,
+    /// When set, `connect()` waits on this before returning. Lets a test hold a
+    /// connection in flight and observe whether the engine stays responsive.
+    pub connect_gate: Option<oneshot::Receiver<()>>,
 }
 
 impl MockMatrix {
@@ -45,14 +51,23 @@ impl MockMatrix {
                 call_log: Mutex::new(Vec::new()),
             }),
             connect_result: ConnectOutcome::Connected(None),
+            repeat_connect_result: false,
             profile_response: (None, None),
             media_response: Ok(vec![0xDE, 0xAD]),
             internal_events: Vec::new(),
+            connect_gate: None,
         }
     }
 
     pub fn with_connect_result(mut self, outcome: ConnectOutcome) -> Self {
         self.connect_result = outcome;
+        self
+    }
+
+    /// Return `outcome` from every `connect()` call, not just the first.
+    pub fn with_repeating_connect_result(mut self, outcome: ConnectOutcome) -> Self {
+        self.connect_result = outcome;
+        self.repeat_connect_result = true;
         self
     }
 
@@ -65,6 +80,11 @@ impl MockMatrix {
         self.internal_events = events;
         self
     }
+
+    pub fn with_connect_gate(mut self, gate: oneshot::Receiver<()>) -> Self {
+        self.connect_gate = Some(gate);
+        self
+    }
 }
 
 impl MatrixBackend for MockMatrix {
@@ -74,8 +94,14 @@ impl MatrixBackend for MockMatrix {
         internal_tx: mpsc::Sender<InternalEvent>,
     ) -> ConnectOutcome {
         self.state.call_log.lock().unwrap().push(MockCall::Connect);
+        if let Some(gate) = self.connect_gate.take() {
+            let _ = gate.await;
+        }
         for event in self.internal_events.drain(..) {
             let _ = internal_tx.send(event).await;
+        }
+        if self.repeat_connect_result {
+            return self.connect_result.clone();
         }
         std::mem::replace(&mut self.connect_result, ConnectOutcome::Failed)
     }
@@ -124,6 +150,10 @@ pub struct MockVoice {
     pub state: Arc<MockVoiceState>,
     /// Event batches sent through `internal_tx` during successive `launch()` calls.
     launch_event_batches: VecDeque<Vec<InternalEvent>>,
+    /// 1-based index of the `launch()` call that should fail, if any.
+    failing_launch: Option<u32>,
+    /// `launch()` calls made so far, counted whether they failed or not.
+    launch_calls: u32,
 }
 
 impl MockVoice {
@@ -137,6 +167,8 @@ impl MockVoice {
                 launch_error: Mutex::new(false),
             }),
             launch_event_batches: VecDeque::new(),
+            failing_launch: None,
+            launch_calls: 0,
         }
     }
 
@@ -144,6 +176,14 @@ impl MockVoice {
     /// Call multiple times to queue events for successive launches.
     pub fn with_internal_events(mut self, events: Vec<InternalEvent>) -> Self {
         self.launch_event_batches.push_back(events);
+        self
+    }
+
+    /// Fail the `nth` `launch()` call (1-based) and no other. Lets a test put
+    /// a launch failure in the middle of a run without racing the engine task
+    /// for the `launch_error` flag.
+    pub fn with_failing_launch(mut self, nth: u32) -> Self {
+        self.failing_launch = Some(nth);
         self
     }
 }
@@ -157,7 +197,10 @@ impl VoiceService for MockVoice {
         _extra_args: &str,
         channel_path: Option<&str>,
     ) -> Result<(), CoreError> {
-        if *self.state.launch_error.lock().unwrap() {
+        self.launch_calls += 1;
+        if self.failing_launch == Some(self.launch_calls)
+            || *self.state.launch_error.lock().unwrap()
+        {
             return Err(CoreError::InvalidConfig { message: "mock launch failure".into() });
         }
         self.state.launched_with.lock().unwrap().push(creds);

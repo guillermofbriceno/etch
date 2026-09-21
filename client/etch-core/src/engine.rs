@@ -20,19 +20,65 @@ pub(crate) struct VoiceSessionState {
     pub deafened: bool,
 }
 
+/// Where the voice session actually is. One value so "what we asked for" and
+/// "what is up" cannot disagree.
+#[derive(Debug)]
+pub(crate) enum VoiceSession {
+    /// No voice server known yet.
+    Idle,
+    /// Creds known, Mumble not up. Covers never-launched, launch-failed, and
+    /// the session having dropped.
+    Down { creds: VoiceServerConfig },
+    /// Launch issued, waiting for Mumble to report Connected.
+    Launching { creds: VoiceServerConfig },
+    /// Waiting on the user to accept a changed server certificate.
+    AwaitingCert {
+        creds: VoiceServerConfig,
+        show_gui: bool,
+        extra_args: String,
+        internal_tx: mpsc::Sender<InternalEvent>,
+    },
+    /// Mumble is joined to `creds`.
+    Up { creds: VoiceServerConfig },
+}
+
+impl VoiceSession {
+    /// The voice server this session is about, for every arm that knows one.
+    pub(crate) fn creds(&self) -> Option<&VoiceServerConfig> {
+        match self {
+            VoiceSession::Idle => None,
+            VoiceSession::Down { creds }
+            | VoiceSession::Launching { creds }
+            | VoiceSession::AwaitingCert { creds, .. }
+            | VoiceSession::Up { creds } => Some(creds),
+        }
+    }
+
+    /// The arm's name, for log lines. Spelled out rather than `Debug`-printed
+    /// because the credentials carry a password.
+    pub(crate) fn state_name(&self) -> &'static str {
+        match self {
+            VoiceSession::Idle => "Idle",
+            VoiceSession::Down { .. } => "Down",
+            VoiceSession::Launching { .. } => "Launching",
+            VoiceSession::AwaitingCert { .. } => "AwaitingCert",
+            VoiceSession::Up { .. } => "Up",
+        }
+    }
+}
+
 pub struct CoreEngine<M, V> {
     pub(crate) cmd_rx: mpsc::Receiver<CoreCommand>,
     pub(crate) event_tx: mpsc::Sender<CoreEvent>,
 
     matrix: M,
-    voice: V,
+    voice_service: V,
     conn: MatrixConnection,
-    mumble_credentials: Option<VoiceServerConfig>,
     pub(crate) data_dir: PathBuf,
-    /// Stashed launch params while waiting for user to accept a changed cert.
-    pending_cert_launch: Option<(VoiceServerConfig, bool, String, mpsc::Sender<InternalEvent>)>,
     /// Voice state persisted across Mumble client restarts.
     pub(crate) voice_session: VoiceSessionState,
+    /// Where the one voice session stands right now.
+    pub(crate) voice: VoiceSession,
 }
 
 pub struct CoreHandle {
@@ -52,12 +98,11 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
             cmd_rx,
             event_tx,
             matrix,
-            voice,
+            voice_service: voice,
             conn: MatrixConnection::new(),
-            mumble_credentials: None,
             data_dir,
-            pending_cert_launch: None,
             voice_session: VoiceSessionState::default(),
+            voice: VoiceSession::Idle,
         }
     }
 
@@ -98,7 +143,7 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
 
                 _ = &mut retry_timer, if self.conn.state.is_failed() => {
                     if let Some(form) = self.conn.form.clone() {
-                        log::info!("Retrying Matrix connection (attempt {})", self.conn.state.retries() + 1);
+                        log::info!("Retrying Matrix connection (attempt {})", self.conn.retries + 1);
                         self.connect_to_server(&form, &mut retry_timer, internal_tx.clone()).await;
                     }
                 }
@@ -121,8 +166,8 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
     ) {
         match cmd {
             SystemCommand::ConnectToServer(form) => {
-                self.voice_session = VoiceSessionState::default();
                 self.conn.form = Some(form.clone());
+                self.conn.retries = 0;
                 self.connect_to_server(&form, retry_timer, internal_tx).await;
             }
             SystemCommand::LoadSettings => {
@@ -145,19 +190,19 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
                 )).await;
             }
             SystemCommand::MuteMic(muted) => {
-                self.voice.send_command(MumbleCommand::MuteSelf(muted)).await;
+                self.voice_service.send_command(MumbleCommand::MuteSelf(muted)).await;
             }
             SystemCommand::Deafen(deafened) => {
-                self.voice.send_command(MumbleCommand::DeafenSelf(deafened)).await;
+                self.voice_service.send_command(MumbleCommand::DeafenSelf(deafened)).await;
             }
             SystemCommand::OpenMumbleGui(extra_args) => {
-                if let Some(ref creds) = self.mumble_credentials {
-                    self.launch_voice(creds.clone(), true, &extra_args, internal_tx).await;
+                if let Some(creds) = self.voice.creds().cloned() {
+                    self.launch_voice(creds, true, &extra_args, internal_tx).await;
                 }
             }
             SystemCommand::RestartMumble(extra_args) => {
-                if let Some(ref creds) = self.mumble_credentials {
-                    self.launch_voice(creds.clone(), false, &extra_args, internal_tx).await;
+                if let Some(creds) = self.voice.creds().cloned() {
+                    self.launch_voice(creds, false, &extra_args, internal_tx).await;
                 }
             }
             SystemCommand::SetLogLevel(level) => {
@@ -182,11 +227,23 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
                     return;
                 }
                 log::info!("User accepted new cert for {}:{}", host, port);
-                // Resume the stashed voice launch
-                if let Some((creds, show_gui, extra_args, itx)) = self.pending_cert_launch.take()
-                    && let Err(e) = self.voice.launch(creds, itx, show_gui, &extra_args, self.voice_session.channel_path.as_deref()).await
-                {
-                    log::error!("Failed to launch voice after cert accept: {:?}", e);
+                // Resume the stashed voice launch. Anything else stays as it
+                // was: there is nothing to resume.
+                match std::mem::replace(&mut self.voice, VoiceSession::Idle) {
+                    VoiceSession::AwaitingCert { creds, show_gui, extra_args, internal_tx } => {
+                        let launched = self.voice_service.launch(
+                            creds.clone(), internal_tx, show_gui, &extra_args,
+                            self.voice_session.channel_path.as_deref(),
+                        ).await;
+                        self.voice = match launched {
+                            Ok(()) => VoiceSession::Launching { creds },
+                            Err(e) => {
+                                log::error!("Failed to launch voice after cert accept: {:?}", e);
+                                VoiceSession::Down { creds }
+                            }
+                        };
+                    }
+                    other => self.voice = other,
                 }
             }
         }
@@ -231,27 +288,56 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
                             volume_db,
                         })).await;
                     }
+                    InternalMumbleEvent::ConnectionLost { reason } => {
+                        log::info!("Voice connection lost: {}", reason);
+                        self.voice = match self.voice.creds().cloned() {
+                            Some(creds) => VoiceSession::Down { creds },
+                            None => VoiceSession::Idle,
+                        };
+                    }
                     InternalMumbleEvent::Connected => {
+                        // Only a launch we issued can complete. In any other
+                        // arm this is some other Mumble -- most likely the one
+                        // still joined to the previous server, reconnecting on
+                        // its own -- and crediting it to the credentials we
+                        // last asked for would record a live session on a
+                        // server Mumble has never reached.
+                        let launched = match &self.voice {
+                            VoiceSession::Launching { creds } => Some(creds.clone()),
+                            other => {
+                                log::warn!(
+                                    "Voice reported Connected with no launch outstanding (session is {})",
+                                    other.state_name(),
+                                );
+                                None
+                            }
+                        };
+                        if let Some(creds) = launched {
+                            self.voice = VoiceSession::Up { creds };
+                        }
+                        // The settings and mute/deafen restoration below are
+                        // about the Mumble process that just came up, so they
+                        // run either way.
                         let s = settings::load(&self.data_dir);
                         if s.use_mumble_settings != Some(true) {
                             if let Some(mode) = s.transmission_mode {
-                                self.voice.send_command(MumbleCommand::SetTransmissionMode(mode)).await;
+                                self.voice_service.send_command(MumbleCommand::SetTransmissionMode(mode)).await;
                             }
                             if let Some(value) = s.vad_threshold {
-                                self.voice.send_command(MumbleCommand::SetVadThreshold(value)).await;
+                                self.voice_service.send_command(MumbleCommand::SetVadThreshold(value)).await;
                             }
                             if let Some(value) = s.voice_hold {
-                                self.voice.send_command(MumbleCommand::SetVoiceHold(value)).await;
+                                self.voice_service.send_command(MumbleCommand::SetVoiceHold(value)).await;
                             }
                         }
                         // Restore mute/deafen from the previous session. Send each flag
                         // independently rather than leaning on deafen's implicit mute: an
                         // explicitly muted user must stay muted after they later undeafen.
                         if self.voice_session.muted {
-                            self.voice.send_command(MumbleCommand::MuteSelf(true)).await;
+                            self.voice_service.send_command(MumbleCommand::MuteSelf(true)).await;
                         }
                         if self.voice_session.deafened {
-                            self.voice.send_command(MumbleCommand::DeafenSelf(true)).await;
+                            self.voice_service.send_command(MumbleCommand::DeafenSelf(true)).await;
                         }
                     }
                     InternalMumbleEvent::LocalChannelChanged { channel_path } => {
@@ -262,9 +348,6 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
                     }
                     InternalMumbleEvent::LocalDeafChanged(deafened) => {
                         self.voice_session.deafened = deafened;
-                    }
-                    _ => {
-                        log::debug!("Internal Mumble event: {:?}", evt);
                     }
                 }
             }
@@ -287,7 +370,7 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
             _ => {}
         }
 
-        self.voice.send_command(cmd).await;
+        self.voice_service.send_command(cmd).await;
     }
 
     async fn connect_to_server(
@@ -345,9 +428,29 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
         extra_args: &str,
         internal_tx: mpsc::Sender<InternalEvent>,
     ) {
-        let creds = Self::resolve_mumble_credentials(form, voice_server);
-        self.mumble_credentials = Some(creds.clone());
-        self.launch_voice(creds, show_gui, extra_args, internal_tx).await;
+        let new_creds = Self::resolve_mumble_credentials(form, voice_server);
+
+        // A live Mumble session on the same server needs nothing done to it.
+        // This is the common case on a Matrix reconnect: the voice server has
+        // not moved, and relaunching would drop the user out of voice for
+        // several seconds over an unrelated sync hiccup. Only `Up` is a live
+        // session: every other arm means Mumble is not joined to `new_creds`,
+        // whatever credentials we last asked for.
+        if matches!(self.voice, VoiceSession::Up { ref creds } if creds == &new_creds) {
+            log::debug!(
+                "Voice already connected to {}:{}, keeping the session",
+                new_creds.host, new_creds.port,
+            );
+            return;
+        }
+
+        // A different voice server means nothing about the old session carries
+        // over: channel, mute and deafen are all specific to where we were.
+        if self.voice.creds() != Some(&new_creds) {
+            self.voice_session = VoiceSessionState::default();
+        }
+
+        self.launch_voice(new_creds, show_gui, extra_args, internal_tx).await;
     }
 
     async fn launch_voice(&mut self, creds: VoiceServerConfig, show_gui: bool, extra_args: &str, internal_tx: mpsc::Sender<InternalEvent>) {
@@ -375,8 +478,16 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
                             port: creds.port,
                             new_fingerprint: fingerprint,
                         })).await;
-                        // Stash credentials so AcceptMumbleCert can resume the launch
-                        self.pending_cert_launch = Some((creds, show_gui, extra_args.to_string(), internal_tx));
+                        // Stash credentials so AcceptMumbleCert can resume the
+                        // launch. Mumble is not on this server, and until the
+                        // user decides it will not be, so a later reconnect has
+                        // to re-attempt rather than assume voice is fine.
+                        self.voice = VoiceSession::AwaitingCert {
+                            creds,
+                            show_gui,
+                            extra_args: extra_args.to_string(),
+                            internal_tx,
+                        };
                         return;
                     }
                 }
@@ -387,9 +498,19 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
             }
         }
 
-        if let Err(e) = self.voice.launch(creds, internal_tx, show_gui, extra_args, self.voice_session.channel_path.as_deref()).await {
-            log::error!("Failed to launch voice: {:?}", e);
-        }
+        // `launch` kills any running Mumble before spawning the new one, so a
+        // failure here leaves voice down, not where it was.
+        let launched = self.voice_service.launch(
+            creds.clone(), internal_tx, show_gui, extra_args,
+            self.voice_session.channel_path.as_deref(),
+        ).await;
+        self.voice = match launched {
+            Ok(()) => VoiceSession::Launching { creds },
+            Err(e) => {
+                log::error!("Failed to launch voice: {:?}", e);
+                VoiceSession::Down { creds }
+            }
+        };
     }
 }
 
@@ -1144,6 +1265,212 @@ mod tests {
         assert!(launches.is_empty(), "OpenMumbleGui without prior connect should not launch voice");
     }
 
+    // --- Voice relaunch on reconnect ---
+
+    /// A Matrix sync hiccup says nothing about the voice server. Relaunching
+    /// Mumble anyway drops the user out of voice for several seconds, which in
+    /// one five-day session happened 28 times without a single voice-side
+    /// failure to justify it.
+    #[tokio::test]
+    async fn reconnect_keeps_a_live_voice_session_on_the_same_server() {
+        let tmp = tempfile::tempdir().unwrap();
+        let matrix = MockMatrix::new().with_repeating_connect_result(ConnectOutcome::Connected(None));
+        // The first launch reports the voice session as established.
+        let voice = MockVoice::new().with_internal_events(vec![
+            InternalEvent::Mumble(InternalMumbleEvent::Connected),
+        ]);
+
+        let (_events, _, voice_state) = run_commands(
+            matrix, voice, tmp.path(),
+            vec![
+                CoreCommand::System(SystemCommand::ConnectToServer(connect_form())),
+                CoreCommand::System(SystemCommand::ConnectToServer(connect_form())),
+            ],
+        ).await;
+
+        let launches = voice_state.launched_with.lock().unwrap();
+        assert_eq!(
+            launches.len(), 1,
+            "a reconnect to the same voice server should not relaunch Mumble, got {:?}",
+            launches,
+        );
+    }
+
+    /// Voice that is down must still be brought back by a reconnect.
+    #[tokio::test]
+    async fn reconnect_relaunches_voice_when_it_is_not_connected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let matrix = MockMatrix::new().with_repeating_connect_result(ConnectOutcome::Connected(None));
+        // No Connected event, so voice never comes up.
+        let voice = MockVoice::new();
+
+        let (_events, _, voice_state) = run_commands(
+            matrix, voice, tmp.path(),
+            vec![
+                CoreCommand::System(SystemCommand::ConnectToServer(connect_form())),
+                CoreCommand::System(SystemCommand::ConnectToServer(connect_form())),
+            ],
+        ).await;
+
+        let launches = voice_state.launched_with.lock().unwrap();
+        assert_eq!(launches.len(), 2, "voice that is down should be relaunched");
+    }
+
+    /// Losing the voice connection re-arms the relaunch.
+    #[tokio::test]
+    async fn reconnect_relaunches_after_the_voice_connection_drops() {
+        let tmp = tempfile::tempdir().unwrap();
+        let matrix = MockMatrix::new().with_repeating_connect_result(ConnectOutcome::Connected(None));
+        let voice = MockVoice::new()
+            .with_internal_events(vec![
+                InternalEvent::Mumble(InternalMumbleEvent::Connected),
+                InternalEvent::Mumble(InternalMumbleEvent::ConnectionLost {
+                    reason: "voice server went away".into(),
+                }),
+            ]);
+
+        let (_events, _, voice_state) = run_commands(
+            matrix, voice, tmp.path(),
+            vec![
+                CoreCommand::System(SystemCommand::ConnectToServer(connect_form())),
+                CoreCommand::System(SystemCommand::ConnectToServer(connect_form())),
+            ],
+        ).await;
+
+        let launches = voice_state.launched_with.lock().unwrap();
+        assert_eq!(launches.len(), 2, "a dropped voice session should be relaunched");
+    }
+
+    /// A different voice server is a different session: relaunch, and do not
+    /// carry the old channel/mute/deafen state over to it.
+    #[tokio::test]
+    async fn connecting_to_a_different_voice_server_relaunches() {
+        let tmp = tempfile::tempdir().unwrap();
+        let matrix = MockMatrix::new().with_repeating_connect_result(ConnectOutcome::Connected(None));
+        let voice = MockVoice::new().with_internal_events(vec![
+            InternalEvent::Mumble(InternalMumbleEvent::Connected),
+        ]);
+
+        let mut second = connect_form();
+        second.mumble_host = Some("other.example.com".into());
+
+        let (_events, _, voice_state) = run_commands(
+            matrix, voice, tmp.path(),
+            vec![
+                CoreCommand::System(SystemCommand::ConnectToServer(connect_form())),
+                CoreCommand::System(SystemCommand::ConnectToServer(second)),
+            ],
+        ).await;
+
+        let launches = voice_state.launched_with.lock().unwrap();
+        assert_eq!(launches.len(), 2, "a different voice server should relaunch");
+        assert_eq!(launches[1].host, "other.example.com");
+    }
+
+    /// A launch kills the running Mumble before it spawns the new one, so a
+    /// launch that fails leaves voice down, not where it was. Recording the
+    /// requested credentials as a live session hides that: the next reconnect
+    /// takes the skip branch and voice stays dead until the app restarts.
+    #[tokio::test]
+    async fn a_failed_launch_is_retried_on_the_next_reconnect() {
+        let tmp = tempfile::tempdir().unwrap();
+        let matrix = MockMatrix::new().with_repeating_connect_result(ConnectOutcome::Connected(None));
+        // Launch 1 brings voice up on the first server. Launch 2, onto the
+        // second server, fails to spawn. Launch 3 must still be attempted.
+        let voice = MockVoice::new()
+            .with_internal_events(vec![
+                InternalEvent::Mumble(InternalMumbleEvent::Connected),
+            ])
+            .with_failing_launch(2);
+
+        let mut second = connect_form();
+        second.mumble_host = Some("other.example.com".into());
+
+        let (_events, _, voice_state) = run_commands(
+            matrix, voice, tmp.path(),
+            vec![
+                CoreCommand::System(SystemCommand::ConnectToServer(connect_form())),
+                CoreCommand::System(SystemCommand::ConnectToServer(second.clone())),
+                CoreCommand::System(SystemCommand::ConnectToServer(second)),
+            ],
+        ).await;
+
+        // The failed launch records nothing, so a recovered session shows up
+        // as the second recorded launch.
+        let launches = voice_state.launched_with.lock().unwrap();
+        assert_eq!(
+            launches.len(), 2,
+            "a reconnect after a failed launch should try again, got {:?}",
+            launches,
+        );
+        assert_eq!(launches[1].host, "other.example.com");
+    }
+
+    // --- Event loop responsiveness ---
+
+    /// A connection attempt makes several network round trips. It must not be
+    /// awaited inline on the select loop: while the loop is parked, nothing
+    /// drains `cmd_rx`, so the bounded channel from the Tauri layer fills and
+    /// every subsequent `invoke` hangs, which the user sees as a frozen UI.
+    ///
+    /// Still outstanding. Fixing it means moving `MatrixBackend::connect` and
+    /// `VoiceService::launch` to `&self` with internal mutability so the engine
+    /// can spawn a connection and take the result back as an `InternalEvent`.
+    /// Skipping the needless voice relaunch cut the window that this leaves
+    /// exposed from a measured 8s median to the Matrix connect alone.
+    #[ignore = "requires moving connect off the engine's select loop; see doc comment"]
+    #[tokio::test]
+    async fn engine_keeps_serving_commands_while_a_connect_is_in_flight() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (gate_tx, gate_rx) = tokio::sync::oneshot::channel();
+        let matrix = MockMatrix::new().with_connect_gate(gate_rx);
+
+        let (cmd_tx, cmd_rx) = mpsc::channel(32);
+        let (event_tx, mut event_rx) = mpsc::channel(100);
+        let engine = CoreEngine::new(
+            cmd_rx, event_tx, matrix, MockVoice::new(), tmp.path().to_path_buf(),
+        );
+        let engine_handle = tokio::spawn(async move { engine.run().await });
+
+        // Start a connect that will not complete until the gate is released.
+        cmd_tx.send(CoreCommand::System(SystemCommand::ConnectToServer(connect_form())))
+            .await.unwrap();
+
+        // Wait until the engine is genuinely inside the connect.
+        let saw_connecting = timeout(Duration::from_secs(2), async {
+            while let Some(event) = event_rx.recv().await {
+                if matches!(
+                    event,
+                    CoreEvent::Matrix(MatrixEvent::ConnectionState(ConnectionState::Connecting))
+                ) {
+                    return true;
+                }
+            }
+            false
+        }).await.expect("engine never reported Connecting");
+        assert!(saw_connecting);
+
+        // An unrelated command issued now must still be served.
+        cmd_tx.send(CoreCommand::System(SystemCommand::LoadSettings)).await.unwrap();
+        let served = timeout(Duration::from_secs(2), async {
+            while let Some(event) = event_rx.recv().await {
+                if matches!(event, CoreEvent::System(SystemEvent::SettingsLoaded(_))) {
+                    return true;
+                }
+            }
+            false
+        }).await;
+
+        let _ = gate_tx.send(());
+        drop(cmd_tx);
+        let _ = timeout(Duration::from_secs(2), engine_handle).await;
+
+        assert!(
+            matches!(served, Ok(true)),
+            "engine stopped serving commands while a connect was in flight",
+        );
+    }
+
     // --- Certificate check tests ---
 
     /// Helper: start a local TLS server on a random port using a self-signed cert.
@@ -1362,6 +1689,153 @@ mod tests {
         // Voice launched normally
         let launches = voice_state.launched_with.lock().unwrap();
         assert_eq!(launches.len(), 1);
+    }
+
+    /// A cert prompt blocks the launch, so Mumble is still sitting on the
+    /// server it was already joined to, not the one whose cert changed.
+    /// Counting that as a live session on the new server strands the user on
+    /// the old one: the next reconnect skips, and the prompt never fires
+    /// again, so there is nothing left to accept.
+    #[tokio::test]
+    async fn a_pending_cert_prompt_does_not_count_as_a_live_session() {
+        let (first_port, first_fp) = start_tls_server().await;
+        let (second_port, _second_fp) = start_tls_server().await;
+        let tmp = tempfile::tempdir().unwrap();
+        // The first server's cert is the one we have stored; the second's is not.
+        seed_cert_db(tmp.path(), "127.0.0.1", first_port, &first_fp);
+        seed_cert_db(tmp.path(), "127.0.0.1", second_port, "wrong_fingerprint");
+
+        let voice_form = |port: u16| ServerConnectionForm {
+            username: "alice".into(),
+            hostname: "matrix.example.com".into(),
+            port: "8448".into(),
+            password: None,
+            mumble_host: Some("127.0.0.1".into()),
+            mumble_port: Some(port),
+            mumble_username: None,
+            mumble_password: None,
+            homeserver_url: None,
+        };
+
+        let matrix = MockMatrix::new().with_repeating_connect_result(ConnectOutcome::Connected(None));
+        // The only launch that gets through is the first one, and it brings
+        // voice up on the first server.
+        let voice = MockVoice::new().with_internal_events(vec![
+            InternalEvent::Mumble(InternalMumbleEvent::Connected),
+        ]);
+
+        let (events, _, voice_state) = run_commands(
+            matrix, voice, tmp.path(),
+            vec![
+                CoreCommand::System(SystemCommand::ConnectToServer(voice_form(first_port))),
+                CoreCommand::System(SystemCommand::ConnectToServer(voice_form(second_port))),
+                CoreCommand::System(SystemCommand::ConnectToServer(voice_form(second_port))),
+            ],
+        ).await;
+
+        let prompts = events.iter().filter(|e| matches!(e,
+            CoreEvent::Mumble(MumbleEvent::CertificateChanged { .. })
+        )).count();
+        assert_eq!(
+            prompts, 2,
+            "the reconnect should re-attempt the blocked launch and prompt again",
+        );
+
+        let launches = voice_state.launched_with.lock().unwrap();
+        assert_eq!(
+            launches.len(), 1,
+            "voice must not launch onto a server whose cert was never accepted, got {:?}",
+            launches,
+        );
+        assert_eq!(launches[0].port, first_port, "the only launch is the first server's");
+    }
+
+    /// While a cert prompt is up we deliberately did not launch, so the Mumble
+    /// that is still running is joined to the *old* server. If that process
+    /// re-joins on its own -- the old server bounces, Mumble reconnects -- the
+    /// bridge reports Connected. Crediting that to the credentials we asked
+    /// for records a live session on a server Mumble has never reached, and
+    /// the next reconnect skips the blocked launch all over again.
+    #[tokio::test]
+    async fn a_voice_connect_while_awaiting_a_cert_does_not_mark_the_session_live() {
+        let (first_port, first_fp) = start_tls_server().await;
+        let (second_port, _second_fp) = start_tls_server().await;
+        let tmp = tempfile::tempdir().unwrap();
+        seed_cert_db(tmp.path(), "127.0.0.1", first_port, &first_fp);
+        seed_cert_db(tmp.path(), "127.0.0.1", second_port, "wrong_fingerprint");
+
+        let voice_form = |port: u16| ServerConnectionForm {
+            username: "alice".into(),
+            hostname: "matrix.example.com".into(),
+            port: "8448".into(),
+            password: None,
+            mumble_host: Some("127.0.0.1".into()),
+            mumble_port: Some(port),
+            mumble_username: None,
+            mumble_password: None,
+            homeserver_url: None,
+        };
+
+        let voice = MockVoice::new();
+        let voice_state = voice.state.clone();
+        let matrix = MockMatrix::new().with_repeating_connect_result(ConnectOutcome::Connected(None));
+        let (_cmd_tx, cmd_rx) = mpsc::channel(32);
+        let (event_tx, mut event_rx) = mpsc::channel(100);
+        let mut engine = CoreEngine::new(cmd_rx, event_tx, matrix, voice, tmp.path().to_path_buf());
+
+        // Driven command by command rather than through `run_commands`: the
+        // Connected has to land while the prompt is up, which is after a
+        // launch that never happened.
+        let mut retry_timer = Box::pin(sleep(Duration::from_secs(3600)));
+        let (itx, _itx_rx) = mpsc::channel(32);
+
+        // Voice comes up on the first server.
+        engine.handle_system_command(
+            SystemCommand::ConnectToServer(voice_form(first_port)),
+            &mut retry_timer, itx.clone(),
+        ).await;
+        engine.handle_internal_event(
+            InternalEvent::Mumble(InternalMumbleEvent::Connected), &mut retry_timer,
+        ).await;
+
+        // The second server's cert has changed, so its launch is blocked on
+        // the user. Mumble is untouched, still on the first server.
+        engine.handle_system_command(
+            SystemCommand::ConnectToServer(voice_form(second_port)),
+            &mut retry_timer, itx.clone(),
+        ).await;
+
+        // That still-running Mumble re-joins the first server by itself.
+        engine.handle_internal_event(
+            InternalEvent::Mumble(InternalMumbleEvent::Connected), &mut retry_timer,
+        ).await;
+
+        // The reconnect must still re-attempt the launch the user never approved.
+        engine.handle_system_command(
+            SystemCommand::ConnectToServer(voice_form(second_port)),
+            &mut retry_timer, itx,
+        ).await;
+
+        let mut events = Vec::new();
+        while let Ok(event) = event_rx.try_recv() {
+            events.push(event);
+        }
+
+        let prompts = events.iter().filter(|e| matches!(e,
+            CoreEvent::Mumble(MumbleEvent::CertificateChanged { .. })
+        )).count();
+        assert_eq!(
+            prompts, 2,
+            "a Connected with no launch outstanding must not pass for the blocked one",
+        );
+
+        let launches = voice_state.launched_with.lock().unwrap();
+        assert_eq!(
+            launches.len(), 1,
+            "voice must not launch onto a server whose cert was never accepted, got {:?}",
+            launches,
+        );
+        assert_eq!(launches[0].port, first_port, "the only launch is the first server's");
     }
 
     // --- Voice state restoration tests ---
