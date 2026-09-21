@@ -10,6 +10,7 @@ mod connection;
 mod matrix;
 mod mumble;
 mod logger;
+mod task;
 pub mod settings;
 pub(crate) mod scripting;
 

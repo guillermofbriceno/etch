@@ -4,6 +4,7 @@ use bridge_types::{MumbleCommand as BridgeCommand, MumbleEvent as BridgeEvent, T
 use crate::events::{CoreEvent, InternalEvent, InternalMumbleEvent, MumbleEvent};
 use crate::models::ConnectionState;
 use crate::scripting::ScriptDispatcher;
+use crate::task::AbortOnDrop;
 use interprocess::local_socket::{
     prelude::*,
     traits::tokio::{Listener as ListenerExt, Stream as StreamExt},
@@ -14,15 +15,28 @@ use interprocess::local_socket::{
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 
+/// Each listener gets its own name. Reusing one name per process means a
+/// listener that outlives its launch blocks every later launch from binding.
+fn next_socket_name() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static GENERATION: AtomicU64 = AtomicU64::new(0);
+
+    format!(
+        "etch-bridge-{}-{}",
+        std::process::id(),
+        GENERATION.fetch_add(1, Ordering::Relaxed),
+    )
+}
+
 /// Start a local socket listener. Returns the socket name (for passing to the
 /// Mumble process via ETCH_BRIDGE_SOCK), a command sender for writing to the
-/// plugin, and a task handle.
+/// plugin, and the listener task.
 pub fn start(
     event_tx: mpsc::Sender<CoreEvent>,
     internal_tx: mpsc::Sender<InternalEvent>,
     dispatcher: Arc<ScriptDispatcher>,
-) -> std::io::Result<(String, mpsc::Sender<BridgeCommand>, tokio::task::JoinHandle<()>)> {
-    let sock_name = format!("etch-bridge-{}", std::process::id());
+) -> std::io::Result<(String, mpsc::Sender<BridgeCommand>, AbortOnDrop)> {
+    let sock_name = next_socket_name();
     let name = sock_name.clone().to_ns_name::<GenericNamespaced>()?;
     let listener = ListenerOptions::new()
         .name(name)
@@ -32,13 +46,15 @@ pub fn start(
 
     let (cmd_tx, cmd_rx) = mpsc::channel::<BridgeCommand>(64);
 
-    let handle = tokio::spawn(async move {
+    // Held by the caller: an early return there tears the listener down rather
+    // than stranding the accept task on its socket for the life of the process.
+    let task = AbortOnDrop::new(tokio::spawn(async move {
         if let Err(e) = accept_loop(listener, event_tx, internal_tx, cmd_rx, dispatcher).await {
             log::error!("Bridge listener error: {}", e);
         }
-    });
+    }));
 
-    Ok((sock_name, cmd_tx, handle))
+    Ok((sock_name, cmd_tx, task))
 }
 
 async fn accept_loop(
@@ -89,6 +105,9 @@ async fn accept_loop(
     log::info!("Bridge plugin disconnected");
     writer_handle.abort();
     let _ = event_tx.send(mumble(MumbleEvent::ConnectionState(ConnectionState::Disconnected))).await;
+    let _ = internal_tx.send(internal_mumble(InternalMumbleEvent::ConnectionLost {
+        reason: "Bridge plugin disconnected".into(),
+    })).await;
     Ok(())
 }
 
@@ -192,6 +211,9 @@ impl BridgeState {
             }
             BridgeEvent::ServerDisconnected => {
                 let _ = tx.send(mumble(MumbleEvent::ConnectionState(ConnectionState::Disconnected))).await;
+                let _ = itx.send(internal_mumble(InternalMumbleEvent::ConnectionLost {
+                    reason: "Voice server disconnected".into(),
+                })).await;
             }
             BridgeEvent::UserConnected { user } => {
                 let volume_db = 20.0 * user.volume_adjustment.log10();
@@ -358,6 +380,53 @@ fn encode_path_segment(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- Listener lifecycle ---
+
+    fn start_listener() -> std::io::Result<(String, mpsc::Sender<BridgeCommand>, AbortOnDrop)> {
+        let (event_tx, _event_rx) = mpsc::channel(16);
+        let (internal_tx, _internal_rx) = mpsc::channel(16);
+        start(event_tx, internal_tx, Arc::new(ScriptDispatcher::empty()))
+    }
+
+    /// Every launch needs its own socket. Naming the socket after the process
+    /// alone means a listener that outlives its launch keeps the name, and no
+    /// later launch in that process can bind.
+    #[tokio::test]
+    async fn consecutive_listeners_get_distinct_names() {
+        let (first_name, _first_tx, _first_task) = start_listener()
+            .expect("first listener should bind");
+        let (second_name, _second_tx, _second_task) = start_listener()
+            .expect("a second listener should bind while the first is still live");
+
+        assert_ne!(first_name, second_name);
+    }
+
+    /// Dropping the listener must release its socket. A bare `JoinHandle`
+    /// detaches instead of aborting, which would leave the accept task parked
+    /// on the socket for the life of the process.
+    #[tokio::test]
+    async fn dropping_the_listener_releases_its_socket() {
+        let (name, _cmd_tx, task) = start_listener().expect("listener should bind");
+        drop(task);
+
+        // Cancellation lands the next time the runtime polls the task.
+        let mut rebound = None;
+        for _ in 0..100 {
+            tokio::task::yield_now().await;
+            let ns = name.clone().to_ns_name::<GenericNamespaced>().unwrap();
+            if let Ok(listener) = ListenerOptions::new().name(ns).create_tokio() {
+                rebound = Some(listener);
+                break;
+            }
+        }
+
+        assert!(
+            rebound.is_some(),
+            "socket {} was still bound after its listener task was dropped",
+            name,
+        );
+    }
 
     #[test]
     fn encode_unreserved_passthrough() {

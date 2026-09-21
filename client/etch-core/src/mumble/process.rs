@@ -14,7 +14,7 @@ pub struct MumbleProcess {
     child: Child,
     pub sock_name: String,
     pub cmd_tx: mpsc::Sender<BridgeCommand>,
-    _bridge_handle: tokio::task::JoinHandle<()>,
+    _bridge_task: crate::task::AbortOnDrop,
     /// On Windows, holds the Job Object that kills Mumble when etch exits.
     /// Must stay alive for the duration of the process.
     #[cfg(target_os = "windows")]
@@ -50,7 +50,9 @@ impl MumbleProcess {
         init_mumble_config(&mumble_config_dir, resource_dir)?;
 
         // 3. Start bridge listener
-        let (sock_name, cmd_tx, bridge_handle) = crate::mumble::bridge::start(event_tx, internal_tx, dispatcher)
+        // Held across the fallible steps below: if any of them returns early the
+        // listener is torn down with it rather than stranded on its socket.
+        let (sock_name, cmd_tx, bridge_task) = crate::mumble::bridge::start(event_tx, internal_tx, dispatcher)
             .context(BridgeStartSnafu)?;
 
         // 4. Parse extra args
@@ -119,7 +121,7 @@ impl MumbleProcess {
             child,
             sock_name,
             cmd_tx,
-            _bridge_handle: bridge_handle,
+            _bridge_task: bridge_task,
             #[cfg(target_os = "windows")]
             _job,
         })
@@ -127,7 +129,8 @@ impl MumbleProcess {
 
     pub async fn kill(&mut self) {
         let _ = self.child.kill().await;
-        self._bridge_handle.abort();
+        // Explicit because `kill` stops the session without dropping `self`.
+        self._bridge_task.abort();
         log::info!("Mumble process killed");
     }
 }
@@ -135,7 +138,7 @@ impl MumbleProcess {
 impl Drop for MumbleProcess {
     fn drop(&mut self) {
         let _ = self.child.start_kill();
-        self._bridge_handle.abort();
+        // `_bridge_task` aborts itself as it drops.
     }
 }
 

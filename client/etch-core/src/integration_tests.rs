@@ -913,3 +913,115 @@ async fn redact_message_removes_from_timeline() {
 
     h.shutdown().await;
 }
+
+// ---------------------------------------------------------------------------
+// Resource lifecycle
+// ---------------------------------------------------------------------------
+
+/// Count the file descriptors this process currently holds open.
+#[cfg(target_os = "linux")]
+fn open_fd_count() -> usize {
+    std::fs::read_dir("/proc/self/fd")
+        .expect("failed to read /proc/self/fd")
+        .count()
+}
+
+/// Every reconnect builds a fresh `matrix_sdk::Client`, and with it a fresh
+/// sqlite pool per store plus a fresh HTTP connection pool. Releasing the
+/// service's handle only frees those if nothing else still holds a clone of
+/// the client, so any background task left running from the previous
+/// connection pins the whole set. Left unchecked the process walks into
+/// EMFILE, after which sqlite cannot be opened at all and the client is
+/// unrecoverable without a restart.
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+async fn repeated_reconnects_do_not_leak_file_descriptors() {
+    const WARMUP_CYCLES: usize = 2;
+    const MEASURED_CYCLES: usize = 6;
+    /// Generous allowance for pool jitter and lazily opened shared files.
+    const MAX_FDS_PER_CYCLE: usize = 3;
+
+    // Let background work from a connect settle before sampling.
+    async fn settle() {
+        tokio::time::sleep(Duration::from_secs(3)).await;
+    }
+
+    let mut h = TestHarness::new();
+
+    for _ in 0..WARMUP_CYCLES {
+        h.connect().await;
+    }
+    settle().await;
+    let baseline = open_fd_count();
+
+    let mut samples = Vec::new();
+    for _ in 0..MEASURED_CYCLES {
+        h.connect().await;
+        settle().await;
+        samples.push(open_fd_count());
+    }
+
+    let final_count = *samples.last().unwrap();
+    let growth = final_count.saturating_sub(baseline);
+    let budget = MAX_FDS_PER_CYCLE * MEASURED_CYCLES;
+
+    println!(
+        "fd baseline after {} warmup cycles: {}\nper-cycle samples: {:?}\ngrowth over {} cycles: {} (budget {})",
+        WARMUP_CYCLES, baseline, samples, MEASURED_CYCLES, growth, budget,
+    );
+    h.shutdown().await;
+
+    assert!(
+        growth <= budget,
+        "file descriptors grew by {} over {} reconnects (~{:.1}/cycle); \
+         expected no sustained growth. baseline={}, samples={:?}",
+        growth, MEASURED_CYCLES, growth as f64 / MEASURED_CYCLES as f64, baseline, samples,
+    );
+}
+
+
+/// Reconnecting resubscribes every room's timeline. The previous subscription
+/// has to go with it: the client survives a reconnect now, so any diff task
+/// left running is still fed by it, and a single message gets delivered once
+/// per reconnect that ever happened.
+///
+/// Calibrates against the same room before any reconnect, so the local and
+/// remote echo a normal send produces are counted rather than assumed.
+#[tokio::test(flavor = "multi_thread")]
+async fn reconnecting_does_not_duplicate_timeline_events() {
+    const RECONNECTS: usize = 2;
+
+    /// Send one message and count how many timeline entries carry it.
+    async fn deliveries(h: &mut TestHarness, room_id: &str, prefix: &str) -> usize {
+        let body = h.send_unique_message(room_id, prefix).await;
+        h.expect_timeline_message(room_id, &body).await;
+
+        // Duplicates arrive alongside the first copy, so a short settle catches them.
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let mut bodies = Vec::new();
+        h.drain_timeline_messages(room_id, &mut bodies);
+
+        // The copy consumed by expect_timeline_message above counts too.
+        1 + bodies.iter().filter(|b| b.contains(&body)).count()
+    }
+
+    let mut h = TestHarness::new();
+    let rooms = h.connect().await;
+    let room_id = TestHarness::find_room(&rooms, "Test Text").id.clone();
+
+    let baseline = deliveries(&mut h, &room_id, "baseline").await;
+
+    for _ in 0..RECONNECTS {
+        h.connect().await;
+    }
+    let after_reconnects = deliveries(&mut h, &room_id, "reconnected").await;
+
+    h.shutdown().await;
+
+    assert_eq!(
+        after_reconnects, baseline,
+        "a message was delivered {} times after {} reconnects but {} times before; \
+         each reconnect left its predecessor's timeline subscription running",
+        after_reconnects, RECONNECTS, baseline,
+    );
+}
