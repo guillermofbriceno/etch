@@ -14,7 +14,7 @@ use crate::events::{InternalEvent, InternalMatrixEvent, CoreEvent, MatrixEvent, 
 use crate::commands::ServerConnectionForm;
 use crate::matrix;
 use crate::models::{RoomInfo, RoomType};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use matrix_sdk::attachment::AttachmentConfig;
 // TODO: enable once keyring backend is configured
 // use keyring::Entry;
@@ -87,6 +87,21 @@ pub enum ConnectionResult {
 //     Ok(())
 // }
 
+/// Where everything belonging to one account on one server is kept.
+fn server_dir(data_dir: &Path, form: &ServerConnectionForm) -> PathBuf {
+    data_dir.join("servers").join(format!("{}@{}", form.username, form.hostname))
+}
+
+/// The saved login session for an account.
+///
+/// Shared with `MatrixService`, which deletes this file when the server
+/// rejects the access token inside it. `restore_session` never checks a saved
+/// session against the server, so as long as the file parses it is restored
+/// and reused; removing it is the only way to force the login path below.
+pub(crate) fn session_path(data_dir: &Path, form: &ServerConnectionForm) -> PathBuf {
+    server_dir(data_dir, form).join("session.json")
+}
+
 async fn build_matrix_client(
     form: &ServerConnectionForm,
     store_path: impl AsRef<Path>,
@@ -103,13 +118,13 @@ async fn build_matrix_client(
 pub async fn start_matrix_client(tx: mpsc::Sender<InternalEvent>, event_tx: mpsc::Sender<CoreEvent>, conn_form: ServerConnectionForm, data_dir: &Path) -> anyhow::Result<ConnectionResult> {
     let user_id = UserId::parse(format!("@{}:{}", conn_form.username, conn_form.hostname))?;
 
-    let server_dir = data_dir.join("servers").join(format!("{}@{}", conn_form.username, conn_form.hostname));
+    let server_dir = server_dir(data_dir, &conn_form);
     std::fs::create_dir_all(&server_dir)?;
 
     // TODO: use get_or_create_passphrase() once keyring backend is configured
     let client = build_matrix_client(&conn_form, server_dir.join("matrix_store")).await?;
 
-    let session_path = server_dir.join("session.json");
+    let session_path = session_path(data_dir, &conn_form);
     let mut need_fresh_login = true;
 
     if session_path.exists() {
