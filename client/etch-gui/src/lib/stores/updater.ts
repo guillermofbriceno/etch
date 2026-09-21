@@ -5,6 +5,8 @@ import { relaunch } from '@tauri-apps/plugin-process';
 
 export type UpdateStatus = 'idle' | 'checking' | 'available' | 'ready' | 'up_to_date' | 'error';
 
+// Device-scoped. These track the Etch app's own update check, which has
+// nothing to do with which server is connected.
 export const updateStatus = writable<UpdateStatus>('idle');
 export const updateVersion = writable<string | null>(null);
 export const updateError = writable<string | null>(null);

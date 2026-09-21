@@ -82,7 +82,6 @@ describe('ServerReset clears session state', () => {
         const { currentUser } = await import('../user');
         const { mediaBaseUrl, passwordRequested } = await import('../servers');
         const { replyingTo } = await import('../compose');
-        const { userVolumes } = await import('../userVolumes');
 
         // Populate session state as if connected to server A
         fireMatrixEvent({ type: 'ChannelList', data: [makeRoom('!r1:a', 'General')] });
@@ -96,11 +95,9 @@ describe('ServerReset clears session state', () => {
         });
         fireMatrixEvent({ type: 'HomeserverResolved', data: 'https://a.example.com' });
 
-        // Set some compose and volume state
+        // Set some compose state
         const { setReply } = await import('../compose');
         setReply({ id: '$e1', sender: '@alice:a', body: 'hello', html_body: null, media: null, timestamp: Date.now(), edited: false, reactions: {} });
-        const { setUserVolume } = await import('../userVolumes');
-        setUserVolume('alice', 1, -3.5);
 
         // Sanity: state is populated
         expect(get(channels).length).toBeGreaterThan(0);
@@ -108,7 +105,6 @@ describe('ServerReset clears session state', () => {
         expect(get(currentUser).username).toBe('alice');
         expect(get(mediaBaseUrl)).toBe('https://a.example.com');
         expect(get(replyingTo)).not.toBeNull();
-        expect(get(userVolumes)).toHaveProperty('alice');
 
         // Fire ServerReset
         fireServerReset();
@@ -121,7 +117,31 @@ describe('ServerReset clears session state', () => {
         expect(get(mediaBaseUrl)).toBeNull();
         expect(get(passwordRequested)).toBe(false);
         expect(get(replyingTo)).toBeNull();
-        expect(get(userVolumes)).toEqual({});
+        // userVolumes is not here any more: it belongs to the voice session, which
+        // survives a Matrix reconnect. session.test.ts covers it on both sides.
+    });
+
+    it('clears a pending certificate prompt', async () => {
+        const { certChangeRequest } = await import('../voiceState');
+
+        // Server A's voice server presents a fingerprint we do not have stored.
+        routeCoreEvent({
+            payload: {
+                type: 'Mumble',
+                data: {
+                    type: 'CertificateChanged',
+                    data: { host: 'voice.example.com', port: 64738, new_fingerprint: 'abc123' },
+                },
+            } satisfies CoreEvent,
+        });
+        expect(get(certChangeRequest)).not.toBeNull();
+
+        // The user switches servers before answering the prompt. Accepting it
+        // afterwards would store a fingerprint for, and resume a launch onto,
+        // a server they have left.
+        fireServerReset();
+
+        expect(get(certChangeRequest)).toBeNull();
     });
 });
 

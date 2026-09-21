@@ -1,5 +1,6 @@
 import { writable, get } from 'svelte/store';
 import type { MatrixEvent, SystemEvent } from '$lib/ipc';
+import { registerSessionStore } from './session';
 
 export type UserInfo = {
     username: string;
@@ -8,6 +9,8 @@ export type UserInfo = {
     avatarUrl: string | null;
 };
 
+// Matrix session. Identifies who we are logged in as on the connected
+// homeserver, so it means nothing once that connection is gone.
 export const currentUser = writable<UserInfo>({
     username: '',
     matrixId: '',
@@ -18,6 +21,8 @@ export const currentUser = writable<UserInfo>({
 export function resetUser(): void {
     currentUser.set({ username: '', matrixId: '', displayName: null, avatarUrl: null });
 }
+
+registerSessionStore('matrix', 'currentUser', resetUser);
 
 export function handleMatrixEvent(me: MatrixEvent): void {
     if (me.type === 'CurrentUser') {

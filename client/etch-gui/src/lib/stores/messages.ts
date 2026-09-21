@@ -6,6 +6,7 @@ import { currentUser } from './user';
 import { playSfx } from './sfx';
 import { appFocused } from './eventRouter';
 import { activeChannelId, emitUnreadMessage } from './activeChannel';
+import { registerSessionStore } from './session';
 
 let lastNotifTime = 0;
 const NOTIF_COOLDOWN_MS = 20_000;
@@ -18,9 +19,12 @@ type ChannelWindow = {
 
 const EMPTY_WINDOW: ChannelWindow = { entries: [], hasMore: true, loading: false };
 
+// Matrix session. Timelines keyed by room ID, all of them from the connected
+// homeserver. Registered under the name "messageWindows" because the store
+// itself is private to this module.
 const windows = writable<Record<string, ChannelWindow>>({});
 
-// Active channel's window — what components subscribe to
+// Derived. Active channel's window — what components subscribe to
 export const activeWindow = derived(
     [windows, activeChannelId],
     ([$windows, $id]) => ($id ? $windows[$id] : null) ?? EMPTY_WINDOW
@@ -113,6 +117,8 @@ export async function toggleReaction(eventId: string, key: string): Promise<void
 export function resetMessages(): void {
     windows.set({});
 }
+
+registerSessionStore('matrix', 'messageWindows', resetMessages);
 
 // --- Handler called by eventRouter for Matrix timeline events ---
 
