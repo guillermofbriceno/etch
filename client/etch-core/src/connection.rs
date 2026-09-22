@@ -54,6 +54,43 @@ impl MatrixConnection {
         let _ = event_tx.send(matrix_conn_event(ConnectionState::Connecting)).await;
     }
 
+    /// The live session's sync loop is failing and retrying in place.
+    ///
+    /// Reported as `Connecting` because that is the vocabulary the frontend
+    /// already has for "working on it, nothing to see yet", and because the
+    /// alternative -- a new `ConnectionState` variant -- would change a
+    /// contract the UI has no need to learn. Nothing else about the session
+    /// moves: the retry machinery is untouched, because there is nothing here
+    /// to retry from. The sync loop is doing the retrying.
+    ///
+    /// Only a `Connected` session can degrade. A report arriving against any
+    /// other state belongs to a session that has already been superseded, and
+    /// applying it would be actively harmful: `Failed` is what arms the retry
+    /// timer, and overwriting it with `Connecting` would disarm it for good.
+    pub async fn degraded(&mut self, event_tx: &mpsc::Sender<CoreEvent>) {
+        if !matches!(self.state, ConnectionState::Connected) {
+            log::debug!("Ignoring a sync degradation reported against {:?}", self.state);
+            return;
+        }
+        self.state = ConnectionState::Connecting;
+        let _ = event_tx.send(matrix_conn_event(ConnectionState::Connecting)).await;
+    }
+
+    /// The live session's sync loop is working again, without a reconnect.
+    ///
+    /// The counterpart of `degraded`, and guarded the same way: only a session
+    /// that reads as `Connecting` has anything to recover from. The retry
+    /// count is deliberately left alone -- no connection attempt failed, so
+    /// there is no accumulated backoff for this to clear.
+    pub async fn recovered(&mut self, event_tx: &mpsc::Sender<CoreEvent>) {
+        if !matches!(self.state, ConnectionState::Connecting) {
+            log::debug!("Ignoring a sync recovery reported against {:?}", self.state);
+            return;
+        }
+        self.state = ConnectionState::Connected;
+        let _ = event_tx.send(matrix_conn_event(ConnectionState::Connected)).await;
+    }
+
     /// An attempt has come back. Returns the voice server it discovered, if it
     /// got far enough to discover one.
     pub async fn settle(
@@ -142,6 +179,78 @@ mod tests {
             matches!(conn.state, ConnectionState::Failed { retries: 1, retry_in_secs: 2, .. }),
             "backoff should restart after a successful connection, got {:?}",
             conn.state,
+        );
+    }
+
+    /// A degraded sync loop is reported with the vocabulary the frontend
+    /// already has, and recovering from it costs no reconnect. The retry count
+    /// must survive both: no connection attempt failed, so there is no
+    /// accumulated backoff for either to touch.
+    #[tokio::test]
+    async fn degrading_and_recovering_move_between_connected_and_connecting() {
+        let (event_tx, mut event_rx) = mpsc::channel(100);
+        let mut timer: Pin<Box<Sleep>> = Box::pin(sleep(Duration::from_secs(3600)));
+        let mut conn = MatrixConnection::new();
+
+        conn.begin(&event_tx).await;
+        conn.settle(ConnectOutcome::Failed, &mut timer, &event_tx).await;
+        conn.begin(&event_tx).await;
+        conn.settle(ConnectOutcome::Connected(None), &mut timer, &event_tx).await;
+        while event_rx.try_recv().is_ok() {}
+
+        conn.degraded(&event_tx).await;
+        assert!(matches!(conn.state, ConnectionState::Connecting), "got {:?}", conn.state);
+
+        conn.recovered(&event_tx).await;
+        assert!(matches!(conn.state, ConnectionState::Connected), "got {:?}", conn.state);
+
+        let mut announced = Vec::new();
+        while let Ok(CoreEvent::Matrix(MatrixEvent::ConnectionState(s))) = event_rx.try_recv() {
+            announced.push(s);
+        }
+        assert!(
+            matches!(
+                announced.as_slice(),
+                [ConnectionState::Connecting, ConnectionState::Connected],
+            ),
+            "the frontend should see the degradation and the recovery, got {announced:?}",
+        );
+    }
+
+    /// A sync report from a session a newer connect has already replaced must
+    /// not move the connection state. The sync task is aborted when the actor
+    /// resets, but its last event can already be sitting in the engine's
+    /// queue -- and `Failed` is what arms the retry timer, so letting a dead
+    /// session overwrite it with `Connecting` would disarm the retry for good
+    /// and leave the app permanently unable to reconnect.
+    #[tokio::test]
+    async fn a_stale_sync_report_cannot_disarm_the_retry() {
+        let (event_tx, mut event_rx) = mpsc::channel(100);
+        let mut timer: Pin<Box<Sleep>> = Box::pin(sleep(Duration::from_secs(3600)));
+        let mut conn = MatrixConnection::new();
+
+        conn.begin(&event_tx).await;
+        conn.settle(ConnectOutcome::Failed, &mut timer, &event_tx).await;
+        assert!(conn.state.is_failed(), "the retry timer is armed off this state");
+        while event_rx.try_recv().is_ok() {}
+
+        conn.degraded(&event_tx).await;
+        assert!(
+            conn.state.is_failed(),
+            "a stale degradation must not disarm the retry, got {:?}",
+            conn.state,
+        );
+
+        conn.recovered(&event_tx).await;
+        assert!(
+            conn.state.is_failed(),
+            "nor may a stale recovery claim the connection is up, got {:?}",
+            conn.state,
+        );
+
+        assert!(
+            event_rx.try_recv().is_err(),
+            "an ignored report must not reach the frontend either",
         );
     }
 

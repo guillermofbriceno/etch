@@ -66,10 +66,50 @@ pub enum InternalEvent {
     System(InternalSystemEvent),
 }
 
+/// Why the Matrix sync loop stopped.
+///
+/// This used to be a bare `String` on `Disconnected`, which made a revoked
+/// access token and a single dropped long poll the same event. They are not
+/// the same thing: one ends the session, the other ends one HTTP request.
+/// Conflating them is what turned every network blip into a full teardown --
+/// the engine could only read "disconnected" and had to assume the worst.
+///
+/// The loop now retries transient failures in place (see
+/// `crate::matrix::retry`), so by the time one of these is sent the question
+/// has already been settled: either the server disowned us, or retrying was
+/// given a fair run and did not work.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SyncEnd {
+    /// The homeserver rejected our credentials. The session is over: the next
+    /// attempt has to log in again, not merely re-sync.
+    SessionInvalidated { reason: String },
+    /// Retrying through transient failures ran out the policy's ceiling.
+    /// Nothing here says the session is invalid -- the network was out for
+    /// longer than the loop is willing to wait -- so the cold reconnect path
+    /// takes over as the backstop.
+    RetriesExhausted { reason: String },
+}
+
+impl SyncEnd {
+    /// The text shown to the user beneath a failed connection.
+    pub fn reason(&self) -> &str {
+        match self {
+            Self::SessionInvalidated { reason } | Self::RetriesExhausted { reason } => reason,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum InternalMatrixEvent {
     Connected,
-    Disconnected(String),
+    /// The sync loop hit a failure it is retrying through. Nothing has been
+    /// torn down: the client, its timelines and its subscriptions are all
+    /// still live, and a later `SyncRecovered` may be all that follows.
+    SyncDegraded { reason: String },
+    /// Sync is working again after a `SyncDegraded`, without a reconnect.
+    SyncRecovered,
+    /// The sync loop has stopped for good. See `SyncEnd`.
+    Disconnected(SyncEnd),
     SubscribeToRoom(matrix_sdk::ruma::OwnedRoomId),
     /// How a connect the engine dispatched to the Matrix actor ended.
     ///

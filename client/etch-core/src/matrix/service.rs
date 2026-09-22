@@ -4,7 +4,6 @@ use std::time::Duration;
 use matrix_sdk::Client;
 use matrix_sdk::config::SyncSettings;
 use matrix_sdk::media::{MediaRequestParameters, MediaFormat};
-use matrix_sdk::ruma::api::client::error::ErrorKind;
 use matrix_sdk::ruma::api::client::room::create_room::v3::{Request as CreateRoomRequest, RoomPreset};
 use matrix_sdk::ruma::api::client::{account::change_password, uiaa};
 use matrix_sdk::ruma::events::room::MediaSource;
@@ -12,6 +11,7 @@ use matrix_sdk::ruma::UserId;
 use crate::commands::{MatrixCommand, ServerConnectionForm};
 use crate::events::{CoreEvent, MatrixEvent, InternalEvent, InternalMatrixEvent};
 use crate::matrix::client::{session_path, start_matrix_client, ConnectionResult};
+use crate::matrix::retry::credentials_rejected;
 use crate::matrix::timeline::TimelineManager;
 use crate::models::{ConnectOutcome, RoomInfo, RoomType};
 use crate::scripting::ScriptDispatcher;
@@ -20,6 +20,9 @@ use crate::traits::MatrixBackend;
 use crate::matrix;
 
 use std::path::PathBuf;
+
+/// How long a sync long-poll is left open before the server answers it empty.
+const SYNC_POLL_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Compare homeserver URLs without tripping over a trailing slash: the SDK
 /// reports `http://host/` for a client built from `http://host`.
@@ -196,20 +199,6 @@ impl MatrixSession {
     fn invalidate(&mut self) {
         *self = Self::None;
     }
-}
-
-/// Did the server reject the access token we presented, as opposed to failing
-/// for a reason a retry could fix?
-///
-/// These three `errcode`s all say the saved session is dead: the token is not
-/// recognised, no token was accepted, or the account is gone. Everything else —
-/// network trouble, 5xx, rate limiting — is transient and must not cost us the
-/// cached client.
-fn credentials_rejected(kind: Option<&ErrorKind>) -> bool {
-    matches!(
-        kind,
-        Some(ErrorKind::UnknownToken { .. } | ErrorKind::MissingToken | ErrorKind::UserDeactivated),
-    )
 }
 
 /// Dropping a `MatrixService` needs no `Drop` of its own: every task it owns is
@@ -498,12 +487,12 @@ impl MatrixBackend for MatrixService {
         let sync_client = client.clone();
         let itx = internal_tx.clone();
         let sync = AbortOnDrop::new(tokio::spawn(async move {
-            let reason = match matrix::sync_loop(sync_client, Duration::from_secs(30)).await {
-                Ok(()) => "Sync ended".to_string(),
-                Err(e) => format!("Sync error: {}", e),
-            };
+            // Returns only once retrying in place has been ruled out; see
+            // `matrix::sync_loop`. Until then this task reports degradation
+            // and recovery on the same channel and the session stays up.
+            let end = matrix::sync_loop(sync_client, SYNC_POLL_TIMEOUT, itx.clone()).await;
             let _ = itx.send(InternalEvent::Matrix(
-                InternalMatrixEvent::Disconnected(reason),
+                InternalMatrixEvent::Disconnected(end),
             )).await;
         }));
 
@@ -954,23 +943,6 @@ mod tests {
             key.could_serve(&ServerConnectionForm { homeserver_url: None, ..form.clone() }),
             "without an explicit URL the MXID's hostname is what pins the server",
         );
-    }
-
-    /// Only an errcode that means "this session is dead" may cost us the cached
-    /// client. Treating a timeout or a 5xx as a credential failure would throw
-    /// the client away on every hiccup, which is the leak the cache exists to
-    /// prevent.
-    #[test]
-    fn only_credential_errcodes_invalidate_the_session() {
-        assert!(credentials_rejected(Some(&ErrorKind::UnknownToken { soft_logout: false })));
-        assert!(credentials_rejected(Some(&ErrorKind::UnknownToken { soft_logout: true })));
-        assert!(credentials_rejected(Some(&ErrorKind::MissingToken)));
-        assert!(credentials_rejected(Some(&ErrorKind::UserDeactivated)));
-
-        assert!(!credentials_rejected(None), "a transport error is not a rejection");
-        assert!(!credentials_rejected(Some(&ErrorKind::NotFound)));
-        assert!(!credentials_rejected(Some(&ErrorKind::Unrecognized)));
-        assert!(!credentials_rejected(Some(&ErrorKind::forbidden())));
     }
 
     /// A revoked access token has to cost us both the cached client and the

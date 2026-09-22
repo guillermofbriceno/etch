@@ -2,7 +2,7 @@ use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration, Instant, Sleep};
 use crate::actor::{LaunchRequest, MatrixHandle, MatrixRequest, VoiceHandle, VoiceRequest};
 use crate::connection::MatrixConnection;
-use crate::events::{CoreEvent, InternalEvent, InternalMatrixEvent, InternalMumbleEvent, InternalSystemEvent, LaunchOutcome, MumbleEvent, SystemEvent};
+use crate::events::{CoreEvent, InternalEvent, InternalMatrixEvent, InternalMumbleEvent, InternalSystemEvent, LaunchOutcome, MumbleEvent, SyncEnd, SystemEvent};
 use crate::commands::{CoreCommand, MediaRequest, MumbleCommand, ServerConnectionForm, SystemCommand};
 use crate::models::{ConnectOutcome, ConnectionState, VoiceServerConfig};
 use crate::settings::{Settings, SettingsStore};
@@ -435,9 +435,46 @@ impl CoreEngine {
                     InternalMatrixEvent::SubscribeToRoom(room_id) => {
                         let _ = self.matrix.send(MatrixRequest::Subscribe(room_id.to_string())).await;
                     }
-                    InternalMatrixEvent::Disconnected(reason) => {
-                        log::warn!("Matrix disconnected: {}", reason);
-                        self.conn.schedule_retry(retry_timer, reason, &self.event_tx).await;
+                    // A sync failure the loop is riding out. Nothing has been
+                    // torn down and nothing is being reconnected, so no
+                    // `ServerReset` is emitted and no connect is dispatched:
+                    // the UI keeps every timeline it is showing and is only
+                    // told the connection is working on something.
+                    InternalMatrixEvent::SyncDegraded { reason } => {
+                        log::warn!(
+                            "Matrix sync degraded ({reason}); retrying in place, session untouched",
+                        );
+                        if self.sync_health_is_current() {
+                            self.conn.degraded(&self.event_tx).await;
+                        }
+                    }
+                    InternalMatrixEvent::SyncRecovered => {
+                        log::info!("Matrix sync recovered without a reconnect");
+                        if self.sync_health_is_current() {
+                            self.conn.recovered(&self.event_tx).await;
+                        }
+                    }
+                    // The loop is over. `SyncEnd` is what tells the two kinds
+                    // of over apart -- a session the server disowned, and a
+                    // session that simply could not reach it -- which a bare
+                    // string never could.
+                    InternalMatrixEvent::Disconnected(end) => {
+                        match &end {
+                            SyncEnd::SessionInvalidated { reason } => log::error!(
+                                "Matrix session invalidated by the server: {reason}",
+                            ),
+                            SyncEnd::RetriesExhausted { reason } => log::warn!(
+                                "Matrix sync stopped after retrying: {reason}",
+                            ),
+                        }
+                        // Both end at the same place for now -- the cold
+                        // reconnect is the backstop for either -- but they no
+                        // longer arrive here as the same event, which is what
+                        // the reason the user reads, the log severity above,
+                        // and any later resume path all need.
+                        self.conn.schedule_retry(
+                            retry_timer, end.reason().to_string(), &self.event_tx,
+                        ).await;
                     }
                     InternalMatrixEvent::ConnectFinished { generation, outcome } => {
                         self.finish_connect(generation, outcome, retry_timer).await;
@@ -664,6 +701,23 @@ impl CoreEngine {
         if form.mumble_host.is_some() {
             self.resolve_and_launch_voice(form, None, false, "").await;
         }
+    }
+
+    /// May a report from a sync loop about the health of its session move the
+    /// connection state?
+    ///
+    /// Only when no connect is in flight. A connect owns the connection state
+    /// for as long as it runs, and the report may well come from the sync task
+    /// of the very session that connect is replacing -- the event can already
+    /// be queued when the actor aborts the task. Letting a superseded session
+    /// speak would put the connection state behind the truth at exactly the
+    /// moment it matters most.
+    fn sync_health_is_current(&self) -> bool {
+        if self.pending_connect.is_some() {
+            log::debug!("Ignoring a sync health report: a connect is already in flight");
+            return false;
+        }
+        true
     }
 
     async fn finish_connect(
@@ -1640,7 +1694,9 @@ mod tests {
     async fn matrix_disconnect_triggers_retry() {
         let tmp = tempfile::tempdir().unwrap();
         let matrix = MockMatrix::new().with_internal_events(vec![
-            InternalEvent::Matrix(InternalMatrixEvent::Disconnected("test disconnect".into())),
+            InternalEvent::Matrix(InternalMatrixEvent::Disconnected(
+                SyncEnd::RetriesExhausted { reason: "test disconnect".into() },
+            )),
         ]);
 
         let (events, _, _) = run_commands(
@@ -1731,6 +1787,180 @@ mod tests {
         assert!(
             reset_pos.unwrap() < connecting_pos.unwrap(),
             "ServerReset event must precede Connecting state"
+        );
+    }
+
+    // --- Sync health: degrade in place, tear down only when it is over ---
+
+    /// Everything the engine emitted, in order, for a test that needs to reason
+    /// about what came after what.
+    fn conn_states(events: &[CoreEvent]) -> Vec<&ConnectionState> {
+        events.iter().filter_map(|e| match e {
+            CoreEvent::Matrix(MatrixEvent::ConnectionState(s)) => Some(s),
+            _ => None,
+        }).collect()
+    }
+
+    /// Connect, then hand the engine `events` the way the sync task would, let
+    /// it sit for `linger`, and return everything it emitted throughout.
+    ///
+    /// `linger` is what makes "nothing was torn down" a claim about the future
+    /// rather than about the instant after the injection. The engine schedules
+    /// a teardown on a timer, so a test that shuts down immediately would pass
+    /// against code that had scheduled one; waiting past the shortest backoff
+    /// (`backoff_secs(1)`, two seconds) is what makes the absence real.
+    async fn connect_then_inject(
+        data_dir: &std::path::Path,
+        events: Vec<InternalEvent>,
+        linger: Duration,
+    ) -> (Vec<CoreEvent>, Arc<MockMatrixState>) {
+        let matrix = MockMatrix::new().with_repeating_connect_result(
+            ConnectOutcome::Connected(None),
+        );
+        let matrix_state = matrix.state.clone();
+        let (engine, cmd_tx, event_rx) = build_engine(matrix, MockVoice::new(), data_dir);
+        let driver = EngineDriver::start(engine, cmd_tx, event_rx);
+
+        driver.step(CoreCommand::System(SystemCommand::ConnectToServer(connect_form()))).await;
+        for event in events {
+            driver.inject(event).await;
+            driver.settle().await;
+        }
+        if !linger.is_zero() {
+            tokio::time::sleep(linger).await;
+            driver.settle().await;
+        }
+
+        (driver.finish().await, matrix_state)
+    }
+
+    /// Long enough for the shortest retry backoff to have fired if one had
+    /// been scheduled.
+    const PAST_THE_FIRST_BACKOFF: Duration = Duration::from_millis(2_500);
+
+    /// The bug, at the level of the engine. A sync request that failed and is
+    /// being retried must cost the user nothing: no `ServerReset`, so the
+    /// frontend keeps its stores, and no second `reset()` on the backend, so
+    /// the timelines and subscriptions behind them stay subscribed. The only
+    /// thing that may happen is the UI being told the connection is working
+    /// on something.
+    #[tokio::test]
+    async fn a_transient_sync_failure_does_not_tear_the_session_down() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (events, matrix_state) = connect_then_inject(tmp.path(), vec![
+            InternalEvent::Matrix(InternalMatrixEvent::SyncDegraded {
+                reason: "Sync error: error sending request".into(),
+            }),
+        ], PAST_THE_FIRST_BACKOFF).await;
+
+        use crate::test_mocks::MockCall;
+        assert_eq!(
+            matrix_state.call_log.lock().unwrap().as_slice(),
+            &[MockCall::Reset, MockCall::Connect],
+            "a retried sync failure must not reset the backend or reconnect it",
+        );
+
+        let resets = events.iter().filter(|e| matches!(
+            e, CoreEvent::System(SystemEvent::ServerReset)
+        )).count();
+        assert_eq!(
+            resets, 1,
+            "only the connect itself may emit ServerReset; the degradation must not",
+        );
+
+        assert!(
+            matches!(conn_states(&events).last(), Some(ConnectionState::Connecting)),
+            "the UI should be told the connection is degraded, got {:?}",
+            conn_states(&events),
+        );
+        assert!(
+            !events.iter().any(|e| matches!(
+                e, CoreEvent::Matrix(MatrixEvent::ConnectionState(ConnectionState::Failed { .. }))
+            )),
+            "a failure being retried is not a failed connection",
+        );
+    }
+
+    /// And when the retry works, the session comes back where it was: still
+    /// the same connection, still the same timelines, reported as `Connected`
+    /// again without a reconnect in between.
+    #[tokio::test]
+    async fn a_recovered_sync_returns_to_connected_without_reconnecting() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (events, matrix_state) = connect_then_inject(tmp.path(), vec![
+            InternalEvent::Matrix(InternalMatrixEvent::SyncDegraded { reason: "blip".into() }),
+            InternalEvent::Matrix(InternalMatrixEvent::SyncRecovered),
+        ], PAST_THE_FIRST_BACKOFF).await;
+
+        use crate::test_mocks::MockCall;
+        assert_eq!(
+            matrix_state.call_log.lock().unwrap().as_slice(),
+            &[MockCall::Reset, MockCall::Connect],
+            "recovering from a blip must not have cost a reconnect",
+        );
+
+        let states = conn_states(&events);
+        assert!(
+            matches!(
+                states.as_slice(),
+                [ConnectionState::Connecting, ConnectionState::Connected,
+                 ConnectionState::Connecting, ConnectionState::Connected],
+            ),
+            "expected connect, degrade, recover -- got {states:?}",
+        );
+    }
+
+    /// The backstop. Once the sync loop has exhausted its retries the session
+    /// really is over, and the engine has to go back to the path it always
+    /// had: schedule a retry and report the failure with the reason the sync
+    /// loop gave.
+    #[tokio::test]
+    async fn a_sync_loop_that_gave_up_falls_back_to_the_reconnect_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (events, _) = connect_then_inject(tmp.path(), vec![
+            InternalEvent::Matrix(InternalMatrixEvent::Disconnected(
+                SyncEnd::RetriesExhausted { reason: "out of retries".into() },
+            )),
+        ], Duration::ZERO).await;
+
+        assert!(
+            matches!(
+                conn_states(&events).last(),
+                Some(ConnectionState::Failed { reason, retries: 1, .. }) if reason == "out of retries",
+            ),
+            "giving up must schedule a retry and carry its reason, got {:?}",
+            conn_states(&events),
+        );
+    }
+
+    /// A session the server disowned takes the same path -- but it arrives as
+    /// a different value, which is the whole point of typing the signal. A
+    /// bare string could not tell the engine whether the token was rejected or
+    /// the network merely blinked, and so it had to assume the worst about
+    /// both.
+    #[tokio::test]
+    async fn an_invalidated_session_is_distinguishable_from_exhausted_retries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (events, _) = connect_then_inject(tmp.path(), vec![
+            InternalEvent::Matrix(InternalMatrixEvent::Disconnected(
+                SyncEnd::SessionInvalidated { reason: "M_UNKNOWN_TOKEN".into() },
+            )),
+        ], Duration::ZERO).await;
+
+        assert!(
+            matches!(
+                conn_states(&events).last(),
+                Some(ConnectionState::Failed { reason, retries: 1, .. }) if reason == "M_UNKNOWN_TOKEN",
+            ),
+            "a rejected session must still drive the disconnect-and-retry path, got {:?}",
+            conn_states(&events),
+        );
+
+        // The two ends are separate variants carrying separate reasons, so the
+        // engine can act on the difference; today it reports it.
+        assert_ne!(
+            SyncEnd::SessionInvalidated { reason: "x".into() },
+            SyncEnd::RetriesExhausted { reason: "x".into() },
         );
     }
 
