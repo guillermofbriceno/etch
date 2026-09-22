@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { get } from 'svelte/store';
+import { invoke } from '@tauri-apps/api/core';
 import {
     voiceChannels, voiceUsers, talkingUsers, mumbleStatus, voiceConnected,
     usersByChannel, handleMumbleEvent, handleSystemEvent, certChangeRequest,
@@ -16,6 +17,7 @@ vi.mock('../sfx', () => ({
 
 beforeEach(() => {
     resetStores();
+    vi.mocked(invoke).mockClear();
 });
 
 function addUser(session_id: number, name: string, channel_id: number) {
@@ -311,6 +313,51 @@ describe('handleMumbleEvent', () => {
             handleMumbleEvent({ type: 'UserVolume', data: { session_id: 42, volume_db: 0.0 } } as any);
 
             // Our stored preference is kept, not overwritten
+            expect(get(userVolumes)['alice']).toBe(-5.0);
+        });
+
+        it('re-applies the stored adjustment to the new session on rejoin', () => {
+            // This is the load-bearing half of persistence: keeping the value in
+            // the store is not enough -- the adjustment must be re-sent to the
+            // backend for the *new* session id, or the audio reverts to unity
+            // even though the UI slider still shows the old value.
+            addUser(10, 'alice', 1);
+            handleMumbleEvent({ type: 'UserVolume', data: { session_id: 10, volume_db: -5.0 } } as any);
+            vi.mocked(invoke).mockClear();
+
+            // Alice leaves and rejoins with a new session id.
+            handleMumbleEvent({ type: 'UserRemoved', data: 10 } as any);
+            addUser(42, 'alice', 1);
+            // Backend reports the Mumble default (0.0) for the new session.
+            handleMumbleEvent({ type: 'UserVolume', data: { session_id: 42, volume_db: 0.0 } } as any);
+
+            // The stored preference must be pushed to the backend for session 42.
+            expect(invoke).toHaveBeenCalledWith('core_command', {
+                command: {
+                    type: 'Mumble',
+                    data: { type: 'SetUserVolume', data: { session_id: 42, volume_db: -5.0 } },
+                },
+            });
+        });
+
+        it('drops the re-apply when the volume event precedes the user state on rejoin', () => {
+            // Guards against an event-ordering regression: if UserVolume is handled
+            // before the rejoining user is known, the preference is silently neither
+            // re-applied nor cleared -- the store keeps the stale value while the
+            // backend never receives it. This is exactly the reported symptom
+            // (slider still shows the adjustment, but the user is loud again).
+            addUser(10, 'alice', 1);
+            handleMumbleEvent({ type: 'UserVolume', data: { session_id: 10, volume_db: -5.0 } } as any);
+            vi.mocked(invoke).mockClear();
+
+            handleMumbleEvent({ type: 'UserRemoved', data: 10 } as any);
+            // UserVolume arrives for the new session *before* the UserState that
+            // would register session 42 in voiceUsers.
+            handleMumbleEvent({ type: 'UserVolume', data: { session_id: 42, volume_db: 0.0 } } as any);
+
+            // Documents current behaviour: nothing is re-applied to the backend...
+            expect(invoke).not.toHaveBeenCalled();
+            // ...yet the store still advertises the now-unenforced preference.
             expect(get(userVolumes)['alice']).toBe(-5.0);
         });
 

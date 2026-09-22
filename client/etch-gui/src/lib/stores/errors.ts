@@ -7,6 +7,10 @@ export type ErrorEntry = {
     timestamp: Date;
 };
 
+// Device-scoped, both of them, even though the entries come from a server
+// session. The errors worth reading are the ones that explain why the last
+// session ended, and they are logged just before the reconnect that would
+// clear them. The toast expires on its own timer a few seconds later.
 export const errorLog = writable<ErrorEntry[]>([]);
 export const toastError = writable<string | null>(null);
 

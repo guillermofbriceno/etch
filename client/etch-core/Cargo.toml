@@ -36,6 +36,10 @@ integration-tests = []
 conduwuit-reaction-echo-fixed = []
 
 [dev-dependencies]
+# `test-util` is the only addition here: it is what lets a test drive the sync
+# loop's 122-second retry ceiling on a paused clock instead of waiting it out.
+# Dev-only, so nothing about the shipped build changes.
+tokio = { version = "1.50", features = ["full", "test-util"] }
 tempfile = "3"
 rcgen = "0.13"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }

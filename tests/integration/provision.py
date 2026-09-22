@@ -133,7 +133,8 @@ def invite_user(token, room_id, user_id):
 def join_room(token, room_id):
     url = f"{BASE_URL}/_matrix/client/v3/join/{room_id}"
     headers = {"Authorization": f"Bearer {token}"}
-    r = requests.post(url, headers=headers)
+    # The endpoint takes a JSON body; the homeserver rejects an empty one.
+    r = requests.post(url, json={}, headers=headers)
     r.raise_for_status()
 
 

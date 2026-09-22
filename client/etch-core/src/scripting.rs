@@ -1,14 +1,13 @@
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use crate::settings;
+use crate::settings::Settings;
 
 /// Dispatches event scripts configured in settings.
 ///
-/// Caches the `event_scripts` map at construction time (avoids per-event disk I/O)
-/// and enforces a per-event-type debounce window to prevent process storms.
+/// Holds the `event_scripts` map (no per-event disk I/O) and enforces a
+/// per-event-type debounce window to prevent process storms.
 pub struct ScriptDispatcher {
     scripts: HashMap<String, String>,
     last_fired: Mutex<HashMap<String, Instant>>,
@@ -16,11 +15,17 @@ pub struct ScriptDispatcher {
 }
 
 impl ScriptDispatcher {
-    /// Load event scripts from settings on disk. Call once at startup.
-    pub fn new(data_dir: &Path) -> Self {
-        let settings = settings::load(data_dir);
+    /// Take the event scripts from the settings the app loaded at startup.
+    ///
+    /// This is a snapshot, and deliberately so: `event_scripts` has no setter
+    /// anywhere in the app. Like `custom_css` and `sfx_paths` it is a field
+    /// you hand-edit in `settings.json`, and all three take effect on the next
+    /// start. What has gone is the second read of the file that used to happen
+    /// here -- the settings owner reads it once and hands the map over, so
+    /// there is one copy of the truth rather than two that could disagree.
+    pub fn from_settings(settings: &Settings) -> Self {
         Self {
-            scripts: settings.event_scripts,
+            scripts: settings.event_scripts.clone(),
             last_fired: Mutex::new(HashMap::new()),
             debounce: Duration::from_millis(500),
         }
@@ -137,9 +142,8 @@ mod tests {
     }
 
     #[test]
-    fn new_loads_scripts_from_settings() {
-        let tmp = tempfile::tempdir().unwrap();
-        let settings = crate::settings::Settings {
+    fn from_settings_takes_the_configured_scripts() {
+        let settings = Settings {
             event_scripts: [
                 ("new_message".to_string(), "echo hello".to_string()),
                 ("user_join".to_string(), "echo joined".to_string()),
@@ -148,18 +152,19 @@ mod tests {
             .collect(),
             ..Default::default()
         };
-        crate::settings::save(tmp.path(), &settings);
 
-        let d = ScriptDispatcher::new(tmp.path());
+        let d = ScriptDispatcher::from_settings(&settings);
         assert_eq!(d.scripts.len(), 2);
         assert_eq!(d.scripts["new_message"], "echo hello");
         assert_eq!(d.scripts["user_join"], "echo joined");
     }
 
+    /// The dispatcher takes what the settings owner read; with no settings
+    /// file that is the default, which configures no scripts.
     #[test]
-    fn new_with_no_settings_file_yields_empty_scripts() {
+    fn from_settings_with_no_settings_file_yields_empty_scripts() {
         let tmp = tempfile::tempdir().unwrap();
-        let d = ScriptDispatcher::new(tmp.path());
+        let d = ScriptDispatcher::from_settings(&crate::settings::load(tmp.path()));
         assert!(d.scripts.is_empty());
     }
 

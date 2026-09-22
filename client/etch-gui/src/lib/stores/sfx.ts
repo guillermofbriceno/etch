@@ -13,7 +13,7 @@ export type SfxName =
     | 'user_leave'
     | 'new_notif';
 
-/** Volume from 0 to 100. Default 30. */
+/** Device-scoped. Volume from 0 to 100. Default 30. */
 export const sfxVolume = writable<number>(30);
 
 let deafened = false;

@@ -1,14 +1,34 @@
 use std::path::Path;
+use std::time::Duration;
 use sha1::{Sha1, Digest};
 use tokio::net::TcpStream;
 use crate::error::*;
 
+/// Ceiling on a whole probe: name resolution, TCP connect and TLS handshake.
+///
+/// Neither a TCP connect nor a TLS handshake bounds itself, so against a black
+/// hole this would otherwise wait out the kernel's SYN retries, or forever on a
+/// peer that connects and then goes quiet. The probe runs on the engine's event
+/// loop, so that wait stalls every queued frontend command.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// TLS-connect to host:port (accepting any cert), return SHA1 hex of the
 /// DER-encoded leaf certificate.
+///
+/// Gives up after `PROBE_TIMEOUT`. Callers treat that like any other probe
+/// failure: the fingerprint check is skipped and the connection proceeds.
 pub async fn probe_server_cert(host: &str, port: u16) -> Result<String, CoreError> {
     let addr = format!("{}:{}", host, port);
 
-    let tcp = TcpStream::connect(&addr).await
+    tokio::time::timeout(PROBE_TIMEOUT, probe(host, &addr))
+        .await
+        .map_err(|_| CertProbeSnafu {
+            message: format!("Timed out after {:?} probing {}", PROBE_TIMEOUT, addr),
+        }.build())?
+}
+
+async fn probe(host: &str, addr: &str) -> Result<String, CoreError> {
+    let tcp = TcpStream::connect(addr).await
         .map_err(|e| CertProbeSnafu { message: format!("TCP connect to {}: {}", addr, e) }.build())?;
 
     let tls_connector = native_tls::TlsConnector::builder()
@@ -113,6 +133,34 @@ mod tests {
         store_cert(db.path(), "example.com", 64739, "fp_other").unwrap();
         assert_eq!(get_stored_cert(db.path(), "example.com", 64738), Some("fp_default".to_string()));
         assert_eq!(get_stored_cert(db.path(), "example.com", 64739), Some("fp_other".to_string()));
+    }
+
+    /// A server that completes the TCP handshake but never speaks TLS must not
+    /// stall the probe forever. `probe_server_cert` runs on the engine's event
+    /// loop, so an unbounded hang there freezes every queued frontend command.
+    #[tokio::test]
+    async fn probe_gives_up_on_a_server_that_never_completes_the_handshake() {
+        // Accept connections and then do nothing, holding the socket open.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let _server = tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((stream, _)) = listener.accept().await {
+                held.push(stream);
+            }
+        });
+
+        let probe = probe_server_cert("127.0.0.1", port);
+        let outcome = tokio::time::timeout(PROBE_TIMEOUT * 2, probe).await;
+
+        assert!(
+            outcome.is_ok(),
+            "probe_server_cert must time out on its own rather than hang the caller",
+        );
+        assert!(
+            outcome.unwrap().is_err(),
+            "a stalled handshake should surface as a probe error",
+        );
     }
 
     #[test]

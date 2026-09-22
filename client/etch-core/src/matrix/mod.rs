@@ -1,4 +1,5 @@
 pub mod client;
+pub(crate) mod retry;
 pub mod service;
 pub mod sync;
 pub mod timeline;
