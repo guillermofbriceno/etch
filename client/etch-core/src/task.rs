@@ -21,6 +21,19 @@ impl AbortOnDrop {
     pub fn abort(&self) {
         self.0.abort();
     }
+
+    /// Wait for the task to end on its own, giving up after `grace`.
+    ///
+    /// For a clean shutdown, where the point is to let a task run out the work
+    /// already queued for it rather than cut that work off. The caller is
+    /// expected to have closed whatever feeds the task first, or there is
+    /// nothing to wait for. The abort on drop is still the backstop for a task
+    /// that does not finish inside the grace period.
+    pub async fn join_within(&mut self, grace: std::time::Duration) {
+        if tokio::time::timeout(grace, &mut self.0).await.is_err() {
+            log::warn!("A task did not finish within {grace:?} of shutdown; aborting it");
+        }
+    }
 }
 
 impl Drop for AbortOnDrop {

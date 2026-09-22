@@ -1,14 +1,29 @@
 use tokio::sync::mpsc;
-use tokio::time::{sleep, Duration, Sleep};
+use tokio::time::{sleep, Duration, Instant, Sleep};
+use crate::actor::{LaunchRequest, MatrixHandle, MatrixRequest, VoiceHandle, VoiceRequest};
 use crate::connection::MatrixConnection;
-use crate::events::{CoreEvent, InternalEvent, InternalMatrixEvent, InternalMumbleEvent, MumbleEvent, SystemEvent};
+use crate::events::{CoreEvent, InternalEvent, InternalMatrixEvent, InternalMumbleEvent, InternalSystemEvent, LaunchOutcome, MumbleEvent, SystemEvent};
 use crate::commands::{CoreCommand, MediaRequest, MumbleCommand, ServerConnectionForm, SystemCommand};
-use crate::models::{ConnectionState, VoiceServerConfig};
+use crate::models::{ConnectOutcome, ConnectionState, VoiceServerConfig};
 use crate::settings::{Settings, SettingsStore};
 use crate::traits::{MatrixBackend, VoiceService};
 
 use std::path::PathBuf;
 use std::pin::Pin;
+
+/// Depth of the engine's own internal event channel.
+const INTERNAL_QUEUE: usize = 100;
+
+/// How long a shutdown waits for work already dispatched.
+///
+/// Closing the command channel means "no more work is coming", not "drop what
+/// you are holding". A connect still running in the Matrix actor reports back
+/// here, and its voice launch is dispatched off that reply, so returning the
+/// moment the channel closes would cut the sequence in half. The bound is what
+/// keeps quit prompt regardless: in the ordinary case nothing is outstanding
+/// and shutdown is immediate, and a connect caught mid-flight cannot hold the
+/// app open longer than this.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
 /// Voice state tracked in memory for restoration after Mumble restarts.
 /// Reset when connecting to a new server; preserved across process restarts
@@ -36,7 +51,6 @@ pub(crate) enum VoiceSession {
         creds: VoiceServerConfig,
         show_gui: bool,
         extra_args: String,
-        internal_tx: mpsc::Sender<InternalEvent>,
     },
     /// Mumble is joined to `creds`.
     Up { creds: VoiceServerConfig },
@@ -67,17 +81,62 @@ impl VoiceSession {
     }
 }
 
-pub struct CoreEngine<M, V> {
+/// A connect the engine has dispatched and not yet had an answer for.
+///
+/// Its presence is the "one at a time" gate. The form is kept because the
+/// voice launch that follows a successful connect is resolved from it, and
+/// the answer arrives long after the command that carried it is gone.
+struct PendingConnect {
+    generation: u64,
+    form: ServerConnectionForm,
+    /// Fires to stop the attempt. Sent when a newer connect supersedes this
+    /// one, so the old attempt is dropped where it stands rather than left to
+    /// run to completion against a session that has been replaced.
+    cancel: tokio::sync::oneshot::Sender<()>,
+    started: Instant,
+    /// Deepest the control channel got while this attempt was in flight.
+    ///
+    /// The number this whole change is about. While the connect was awaited
+    /// on the loop, nothing drained `cmd_rx` for its duration, so whatever
+    /// the user did during it piled up here and, once the channel filled,
+    /// blocked their next `invoke` outright. With the connect in an actor the
+    /// loop keeps draining, so this should read zero.
+    peak_control_depth: usize,
+}
+
+/// A voice launch the engine has dispatched and not yet had an answer for.
+struct PendingLaunch {
+    generation: u64,
+    creds: VoiceServerConfig,
+    show_gui: bool,
+    extra_args: String,
+}
+
+/// Coordinates the subsystems; owns none of them.
+///
+/// Each service lives in a task of its own (see `crate::actor`), so the engine
+/// holds channels rather than the services themselves. That is what lets this
+/// loop keep serving the UI while a connect -- several network round trips and
+/// a TLS probe -- runs to completion elsewhere. What the engine does own is
+/// the state that says where each subsystem stands, and the sequencing between
+/// them: a Matrix connect landing is what dispatches the voice launch.
+pub struct CoreEngine {
     pub(crate) cmd_rx: mpsc::Receiver<CoreCommand>,
-    /// Media fetches, on their own channel with its own capacity. Servicing
-    /// one only spawns a task, so the loop is never held up by this arm; what
-    /// it buys is that a burst of image loads cannot eat the control
-    /// channel's slots.
+    /// Media fetches, on their own channel with its own capacity. Handing one
+    /// over never waits, so this arm cannot hold up the loop; what the split
+    /// buys is that a burst of image loads cannot eat the control channel's
+    /// slots.
     pub(crate) media_rx: mpsc::Receiver<MediaRequest>,
     pub(crate) event_tx: mpsc::Sender<CoreEvent>,
 
-    matrix: M,
-    voice_service: V,
+    /// Results from the actors, and reports from the processes they own.
+    /// Owned as a field rather than made in `run` so that everything the
+    /// engine dispatches has somewhere to answer from the moment it exists.
+    internal_tx: mpsc::Sender<InternalEvent>,
+    internal_rx: mpsc::Receiver<InternalEvent>,
+
+    matrix: MatrixHandle,
+    voice_service: VoiceHandle,
     conn: MatrixConnection,
     pub(crate) data_dir: PathBuf,
     /// The settings, owned here. Reads are from memory; writes go to memory
@@ -87,6 +146,16 @@ pub struct CoreEngine<M, V> {
     pub(crate) voice_session: VoiceSessionState,
     /// Where the one voice session stands right now.
     pub(crate) voice: VoiceSession,
+
+    pending_connect: Option<PendingConnect>,
+    pending_launch: Option<PendingLaunch>,
+    connect_generation: u64,
+    launch_generation: u64,
+
+    /// Barrier requests waiting on the engine to settle. See
+    /// `InternalSystemEvent::Barrier`.
+    #[cfg(test)]
+    pending_barriers: Vec<tokio::sync::oneshot::Sender<()>>,
 }
 
 pub struct CoreHandle {
@@ -94,8 +163,8 @@ pub struct CoreHandle {
     pub event_rx: mpsc::Receiver<CoreEvent>,
 }
 
-impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
-    pub fn new(
+impl CoreEngine {
+    pub fn new<M: MatrixBackend + 'static, V: VoiceService + 'static>(
         cmd_rx: mpsc::Receiver<CoreCommand>,
         media_rx: mpsc::Receiver<MediaRequest>,
         event_tx: mpsc::Sender<CoreEvent>,
@@ -104,76 +173,123 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
         data_dir: PathBuf,
         settings: Settings,
     ) -> Self {
+        let (internal_tx, internal_rx) = mpsc::channel(INTERNAL_QUEUE);
         Self {
             cmd_rx,
             media_rx,
+            matrix: MatrixHandle::spawn(matrix),
+            voice_service: VoiceHandle::spawn(voice, data_dir.clone(), event_tx.clone()),
             event_tx,
-            matrix,
-            voice_service: voice,
+            internal_tx,
+            internal_rx,
             conn: MatrixConnection::new(),
             settings: SettingsStore::from_loaded(data_dir.clone(), settings),
             data_dir,
             voice_session: VoiceSessionState::default(),
             voice: VoiceSession::Idle,
+            pending_connect: None,
+            pending_launch: None,
+            connect_generation: 0,
+            launch_generation: 0,
+            #[cfg(test)]
+            pending_barriers: Vec::new(),
         }
     }
 
     pub async fn run(mut self) {
-        let (internal_tx, mut internal_rx) = mpsc::channel::<InternalEvent>(100);
         let mut retry_timer: Pin<Box<Sleep>> = Box::pin(sleep(Duration::MAX));
 
         loop {
+            if let Some(pending) = &mut self.pending_connect {
+                pending.peak_control_depth = pending.peak_control_depth.max(self.cmd_rx.len());
+            }
+
             tokio::select! {
                 cmd = self.cmd_rx.recv() => {
                     let Some(cmd) = cmd else { break };
                     match cmd {
                         CoreCommand::Matrix(matrix_cmd) => {
-                            self.matrix.handle_command(matrix_cmd).await;
+                            let _ = self.matrix.send(MatrixRequest::Command(matrix_cmd)).await;
                         }
                         CoreCommand::Mumble(mumble_cmd) => {
                             self.dispatch_mumble_command(mumble_cmd).await;
                         }
                         CoreCommand::System(cmd) => {
-                            self.handle_system_command(cmd, &mut retry_timer, internal_tx.clone()).await;
+                            self.handle_system_command(cmd, &mut retry_timer).await;
                         }
                     }
                     // Drain internal events that arrived during command processing
                     // so they're handled before the next command.
-                    while let Ok(event) = internal_rx.try_recv() {
+                    while let Ok(event) = self.internal_rx.try_recv() {
                         self.handle_internal_event(event, &mut retry_timer).await;
                     }
+                    self.answer_barriers();
                 }
 
                 // --- Media data path ---
                 //
                 // Separate from the control channel above so that loading a
                 // timeline's worth of images cannot fill the queue the UI's
-                // commands arrive on. `spawn_media_fetch` only spawns, so this
-                // arm never parks the loop.
+                // commands arrive on. Handing a fetch to the Matrix actor never
+                // waits, so this arm never parks the loop.
                 Some(request) = self.media_rx.recv() => {
-                    self.matrix.spawn_media_fetch(request.mxc_url, request.respond);
+                    self.matrix.fetch_media(request.mxc_url, request.respond);
                 }
 
-                Some(internal_event) = internal_rx.recv() => {
+                Some(internal_event) = self.internal_rx.recv() => {
                     self.handle_internal_event(internal_event, &mut retry_timer).await;
+                    self.answer_barriers();
                 }
 
                 // --- Retry timer ---
-
-                _ = &mut retry_timer, if self.conn.state.is_failed() => {
+                //
+                // Gated on there being no attempt in flight. Without that, a
+                // connect slower than the backoff would keep superseding
+                // itself and never finish.
+                _ = &mut retry_timer, if self.conn.state.is_failed() && self.pending_connect.is_none() => {
                     if let Some(form) = self.conn.form.clone() {
                         log::info!("Retrying Matrix connection (attempt {})", self.conn.retries + 1);
-                        self.connect_to_server(&form, &mut retry_timer, internal_tx.clone()).await;
+                        self.connect_to_server(&form, &mut retry_timer).await;
                     }
                 }
             }
         }
 
-        // Drain any internal events that arrived during the last command.
-        // Without this, events queued by Matrix/Mumble services during
-        // command processing could be dropped on shutdown.
-        while let Ok(event) = internal_rx.try_recv() {
-            self.handle_internal_event(event, &mut retry_timer).await;
+        self.shut_down(&mut retry_timer).await;
+    }
+
+    /// Let go of the subsystems and flush what is only in memory.
+    ///
+    /// Work already dispatched is given until `SHUTDOWN_GRACE` to report back,
+    /// because a connect's voice launch is dispatched off the connect's own
+    /// reply and cutting the loop here would leave that half undone. Then each
+    /// actor is told no more requests are coming and given the rest of the
+    /// grace to run out the ones it has -- the Matrix commands the user issued
+    /// last are sitting in that queue.
+    async fn shut_down(mut self, retry_timer: &mut Pin<Box<Sleep>>) {
+        let deadline = Instant::now() + SHUTDOWN_GRACE;
+
+        while !self.settled() {
+            tokio::select! {
+                Some(event) = self.internal_rx.recv() => {
+                    self.handle_internal_event(event, retry_timer).await;
+                }
+                _ = tokio::time::sleep_until(deadline) => {
+                    log::warn!("Shutdown grace expired with dispatched work still outstanding");
+                    break;
+                }
+            }
+        }
+
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        self.matrix.finish(remaining).await;
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        self.voice_service.finish(remaining).await;
+
+        // Anything the actors emitted on their way out. Without this, events
+        // queued during that last stretch of work would be dropped.
+        while let Ok(event) = self.internal_rx.try_recv() {
+            self.handle_internal_event(event, retry_timer).await;
         }
 
         // Settings are written off this loop, so the last change may still be
@@ -182,17 +298,55 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
         self.settings.shutdown().await;
     }
 
+    /// Nothing the engine dispatched is still outstanding.
+    fn settled(&self) -> bool {
+        self.pending_connect.is_none() && self.pending_launch.is_none()
+    }
+
+    #[cfg(test)]
+    fn answer_barriers(&mut self) {
+        // A barrier means "everything I sent before this is done", so a
+        // command still queued ahead of it counts as outstanding too.
+        if !self.settled() || !self.cmd_rx.is_empty() {
+            return;
+        }
+        for reply in self.pending_barriers.drain(..) {
+            let _ = reply.send(());
+        }
+    }
+
+    #[cfg(not(test))]
+    fn answer_barriers(&self) {}
+
+    /// Kill a subsystem's actor the way a panic in it would. See
+    /// `MatrixHandle::kill_for_test`.
+    #[cfg(test)]
+    pub(crate) async fn kill_matrix_actor(&self) {
+        self.matrix.kill_for_test().await;
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn kill_voice_actor(&self) {
+        self.voice_service.kill_for_test().await;
+    }
+
+    /// A sender for the channel the actors report on. Lets a test stand in for
+    /// a subsystem and deliver an event the way the real one would.
+    #[cfg(test)]
+    pub(crate) fn internal_sender(&self) -> mpsc::Sender<InternalEvent> {
+        self.internal_tx.clone()
+    }
+
     async fn handle_system_command(
         &mut self,
         cmd: SystemCommand,
         retry_timer: &mut Pin<Box<Sleep>>,
-        internal_tx: mpsc::Sender<InternalEvent>,
     ) {
         match cmd {
             SystemCommand::ConnectToServer(form) => {
                 self.conn.form = Some(form.clone());
                 self.conn.retries = 0;
-                self.connect_to_server(&form, retry_timer, internal_tx).await;
+                self.connect_to_server(&form, retry_timer).await;
             }
             SystemCommand::LoadSettings => {
                 let s = self.settings.get().clone();
@@ -203,7 +357,7 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
                 if let Some(bm) = s.bookmarks.iter().find(|b| b.auto_connect) {
                     let form = ServerConnectionForm::from(bm);
                     self.conn.form = Some(form.clone());
-                    self.connect_to_server(&form, retry_timer, internal_tx).await;
+                    self.connect_to_server(&form, retry_timer).await;
                 }
             }
             SystemCommand::SaveBookmarks(bookmarks) => {
@@ -214,19 +368,19 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
                 )).await;
             }
             SystemCommand::MuteMic(muted) => {
-                self.voice_service.send_command(MumbleCommand::MuteSelf(muted)).await;
+                let _ = self.voice_service.send(VoiceRequest::Command(MumbleCommand::MuteSelf(muted))).await;
             }
             SystemCommand::Deafen(deafened) => {
-                self.voice_service.send_command(MumbleCommand::DeafenSelf(deafened)).await;
+                let _ = self.voice_service.send(VoiceRequest::Command(MumbleCommand::DeafenSelf(deafened))).await;
             }
             SystemCommand::OpenMumbleGui(extra_args) => {
                 if let Some(creds) = self.voice.creds().cloned() {
-                    self.launch_voice(creds, true, &extra_args, internal_tx).await;
+                    self.launch_voice(creds, true, &extra_args).await;
                 }
             }
             SystemCommand::RestartMumble(extra_args) => {
                 if let Some(creds) = self.voice.creds().cloned() {
-                    self.launch_voice(creds, false, &extra_args, internal_tx).await;
+                    self.launch_voice(creds, false, &extra_args).await;
                 }
             }
             SystemCommand::SetLogLevel(level) => {
@@ -254,18 +408,12 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
                 // Resume the stashed voice launch. Anything else stays as it
                 // was: there is nothing to resume.
                 match std::mem::replace(&mut self.voice, VoiceSession::Idle) {
-                    VoiceSession::AwaitingCert { creds, show_gui, extra_args, internal_tx } => {
-                        let launched = self.voice_service.launch(
-                            creds.clone(), internal_tx, show_gui, &extra_args,
-                            self.voice_session.channel_path.as_deref(),
-                        ).await;
-                        self.voice = match launched {
-                            Ok(()) => VoiceSession::Launching { creds },
-                            Err(e) => {
-                                log::error!("Failed to launch voice after cert accept: {:?}", e);
-                                VoiceSession::Down { creds }
-                            }
-                        };
+                    VoiceSession::AwaitingCert { creds, show_gui, extra_args } => {
+                        // The prompt is answered, so the session is no longer
+                        // waiting on it -- but Mumble is still not up until
+                        // the launch says so.
+                        self.voice = VoiceSession::Down { creds: creds.clone() };
+                        self.launch_voice(creds, show_gui, &extra_args).await;
                     }
                     other => self.voice = other,
                 }
@@ -285,18 +433,18 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
                         log::debug!("Internal: Matrix connected");
                     }
                     InternalMatrixEvent::SubscribeToRoom(room_id) => {
-                        self.matrix.subscribe_to_room(room_id.as_str()).await;
+                        let _ = self.matrix.send(MatrixRequest::Subscribe(room_id.to_string())).await;
                     }
                     InternalMatrixEvent::Disconnected(reason) => {
                         log::warn!("Matrix disconnected: {}", reason);
                         self.conn.schedule_retry(retry_timer, reason, &self.event_tx).await;
                     }
-                }
-            }
-            InternalEvent::Mumble(evt) => {
-                match evt {
-                    InternalMumbleEvent::UserJoined { session_id, name, volume_db } => {
-                        let (display_name, avatar_url) = self.matrix.resolve_user_profile(&name).await;
+                    InternalMatrixEvent::ConnectFinished { generation, outcome } => {
+                        self.finish_connect(generation, outcome, retry_timer).await;
+                    }
+                    InternalMatrixEvent::VoiceUserResolved {
+                        session_id, name, volume_db, display_name, avatar_url,
+                    } => {
                         let _ = self.event_tx.send(CoreEvent::Mumble(MumbleEvent::UserState {
                             session_id,
                             name: Some(name),
@@ -312,12 +460,39 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
                             volume_db,
                         })).await;
                     }
+                }
+            }
+            InternalEvent::Mumble(evt) => {
+                match evt {
+                    InternalMumbleEvent::UserJoined { session_id, name, volume_db } => {
+                        // Resolving the profile is a homeserver round trip, so
+                        // it goes to the actor and comes back as
+                        // `VoiceUserResolved` rather than being awaited here.
+                        let _ = self.matrix.send(MatrixRequest::ResolveVoiceUser {
+                            session_id,
+                            name,
+                            volume_db,
+                            internal_tx: self.internal_tx.clone(),
+                        }).await;
+                    }
                     InternalMumbleEvent::ConnectionLost { reason } => {
                         log::info!("Voice connection lost: {}", reason);
                         self.voice = match self.voice.creds().cloned() {
                             Some(creds) => VoiceSession::Down { creds },
                             None => VoiceSession::Idle,
                         };
+                    }
+                    InternalMumbleEvent::LaunchStarted { generation } => {
+                        // The Mumble process is being replaced right now, so
+                        // from here a Connected belongs to this launch.
+                        let Some(pending) = &self.pending_launch else { return };
+                        if pending.generation != generation {
+                            return;
+                        }
+                        self.voice = VoiceSession::Launching { creds: pending.creds.clone() };
+                    }
+                    InternalMumbleEvent::LaunchFinished { generation, outcome } => {
+                        self.finish_launch(generation, outcome).await;
                     }
                     InternalMumbleEvent::Connected => {
                         // Only a launch we issued can complete. In any other
@@ -348,23 +523,23 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
                         };
                         if use_mumble_settings != Some(true) {
                             if let Some(mode) = mode {
-                                self.voice_service.send_command(MumbleCommand::SetTransmissionMode(mode)).await;
+                                self.send_voice_command(MumbleCommand::SetTransmissionMode(mode)).await;
                             }
                             if let Some(value) = vad_threshold {
-                                self.voice_service.send_command(MumbleCommand::SetVadThreshold(value)).await;
+                                self.send_voice_command(MumbleCommand::SetVadThreshold(value)).await;
                             }
                             if let Some(value) = voice_hold {
-                                self.voice_service.send_command(MumbleCommand::SetVoiceHold(value)).await;
+                                self.send_voice_command(MumbleCommand::SetVoiceHold(value)).await;
                             }
                         }
                         // Restore mute/deafen from the previous session. Send each flag
                         // independently rather than leaning on deafen's implicit mute: an
                         // explicitly muted user must stay muted after they later undeafen.
                         if self.voice_session.muted {
-                            self.voice_service.send_command(MumbleCommand::MuteSelf(true)).await;
+                            self.send_voice_command(MumbleCommand::MuteSelf(true)).await;
                         }
                         if self.voice_session.deafened {
-                            self.voice_service.send_command(MumbleCommand::DeafenSelf(true)).await;
+                            self.send_voice_command(MumbleCommand::DeafenSelf(true)).await;
                         }
                     }
                     InternalMumbleEvent::LocalChannelChanged { channel_path } => {
@@ -378,10 +553,26 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
                     }
                 }
             }
-            InternalEvent::System(evt) => {
-                log::debug!("Internal System event: {:?}", evt);
-            }
+            InternalEvent::System(evt) => self.handle_internal_system_event(evt),
         }
+    }
+
+    #[cfg(test)]
+    fn handle_internal_system_event(&mut self, evt: InternalSystemEvent) {
+        match evt {
+            InternalSystemEvent::Barrier(reply) => self.pending_barriers.push(reply),
+        }
+    }
+
+    /// `InternalSystemEvent` is uninhabited outside tests: nothing can
+    /// construct one, so there is nothing to handle.
+    #[cfg(not(test))]
+    fn handle_internal_system_event(&mut self, evt: InternalSystemEvent) {
+        match evt {}
+    }
+
+    async fn send_voice_command(&self, cmd: MumbleCommand) {
+        let _ = self.voice_service.send(VoiceRequest::Command(cmd)).await;
     }
 
     async fn dispatch_mumble_command(&mut self, cmd: MumbleCommand) {
@@ -406,48 +597,139 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
             _ => {}
         }
 
-        self.voice_service.send_command(cmd).await;
+        self.send_voice_command(cmd).await;
     }
 
+    /// Start a connection attempt and return; the answer arrives as
+    /// `InternalMatrixEvent::ConnectFinished`.
+    ///
+    /// Only one attempt runs at a time. A request arriving while one is in
+    /// flight supersedes it rather than queueing behind it: the user asking
+    /// again, or picking a different server, means the attempt underway is
+    /// the wrong one, and finishing it first would connect them somewhere
+    /// they have already left. The old attempt is cancelled where it stands.
     async fn connect_to_server(
         &mut self,
         form: &ServerConnectionForm,
         retry_timer: &mut Pin<Box<Sleep>>,
-        internal_tx: mpsc::Sender<InternalEvent>,
     ) {
-        let started = std::time::Instant::now();
-        let _ = self.event_tx.send(CoreEvent::System(SystemEvent::ServerReset)).await;
-        self.matrix.reset().await;
-
-        if form.mumble_host.is_some() {
-            // Explicit Mumble config in bookmark: launch immediately, don't wait for Matrix
-            self.resolve_and_launch_voice(form, None, false, "", internal_tx.clone()).await;
-            self.conn.attempt_connect(
-                retry_timer, &mut self.matrix, form.clone(),
-                internal_tx, &self.event_tx,
-            ).await;
-        } else {
-            // No explicit Mumble config: wait for Matrix to discover voice server
-            let voice_server = self.conn.attempt_connect(
-                retry_timer, &mut self.matrix, form.clone(),
-                internal_tx.clone(), &self.event_tx,
-            ).await;
-            if matches!(self.conn.state, ConnectionState::Connected) {
-                self.resolve_and_launch_voice(form, voice_server, false, "", internal_tx).await;
-            }
+        if let Some(previous) = self.pending_connect.take() {
+            log::info!(
+                "Superseding Matrix connect #{} after {:?}",
+                previous.generation,
+                previous.started.elapsed(),
+            );
+            let _ = previous.cancel.send(());
         }
 
-        // The select loop is parked for the whole of the above, so nothing
-        // drains `cmd_rx` while a connect is in flight. The queue depth
-        // sampled here is what backed up behind it: the UI's `invoke` blocks
-        // once the channel fills. Both numbers are how the next step -- moving
-        // the connect off the loop -- gets verified, so they stay.
+        self.connect_generation += 1;
+        let generation = self.connect_generation;
+
+        // Ordered deliberately: the frontend clears its session stores on
+        // `ServerReset`, and everything the new session produces is emitted by
+        // the actor, which is only told to start below. Both travel on
+        // `event_tx`, so the reset cannot be overtaken by the data it exists
+        // to make room for.
+        let _ = self.event_tx.send(CoreEvent::System(SystemEvent::ServerReset)).await;
+        self.conn.begin(&self.event_tx).await;
+
+        let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+        self.pending_connect = Some(PendingConnect {
+            generation,
+            form: form.clone(),
+            cancel: cancel_tx,
+            started: Instant::now(),
+            peak_control_depth: 0,
+        });
+
+        let dispatched = self.matrix.send(MatrixRequest::Connect {
+            form: form.clone(),
+            internal_tx: self.internal_tx.clone(),
+            generation,
+            cancel: cancel_rx,
+        }).await;
+
+        // A request the actor never took is an attempt that will never
+        // answer, and `pending_connect` is what gates the retry timer. Take
+        // it through the same path a returned `Failed` would, so the state
+        // reaches the frontend and the retry re-arms instead of the app
+        // going quietly unable to connect.
+        if !dispatched {
+            log::error!("Matrix actor is not accepting requests; failing connect #{generation}");
+            self.finish_connect(generation, ConnectOutcome::Failed, retry_timer).await;
+        }
+
+        // Explicit Mumble config in the bookmark: the voice server is already
+        // known, so the launch does not have to wait for Matrix to discover it.
+        if form.mumble_host.is_some() {
+            self.resolve_and_launch_voice(form, None, false, "").await;
+        }
+    }
+
+    async fn finish_connect(
+        &mut self,
+        generation: u64,
+        outcome: ConnectOutcome,
+        retry_timer: &mut Pin<Box<Sleep>>,
+    ) {
+        let Some(pending) = self.pending_connect.take() else {
+            log::debug!("Discarding connect #{generation}: nothing was outstanding");
+            return;
+        };
+        if pending.generation != generation {
+            log::info!("Discarding superseded connect #{generation}");
+            // The attempt we are actually waiting on is still running.
+            self.pending_connect = Some(pending);
+            return;
+        }
+
         log::info!(
-            "connect_to_server took {:?}; queue depth after it: control={}, media={}",
-            started.elapsed(),
+            "Matrix connect #{generation} took {:?}; peak control queue depth during it: {}; \
+             queue depth after it: control={}, media={}",
+            pending.started.elapsed(),
+            pending.peak_control_depth,
             self.cmd_rx.len(),
             self.media_rx.len(),
         );
+
+        let voice_server = self.conn.settle(outcome, retry_timer, &self.event_tx).await;
+
+        // A bookmark with an explicit Mumble host already launched at dispatch.
+        if matches!(self.conn.state, ConnectionState::Connected) && pending.form.mumble_host.is_none() {
+            self.resolve_and_launch_voice(&pending.form, voice_server, false, "").await;
+        }
+    }
+
+    async fn finish_launch(&mut self, generation: u64, outcome: LaunchOutcome) {
+        let Some(pending) = self.pending_launch.take() else {
+            log::debug!("Discarding voice launch #{generation}: nothing was outstanding");
+            return;
+        };
+        if pending.generation != generation {
+            log::info!("Discarding superseded voice launch #{generation}");
+            self.pending_launch = Some(pending);
+            return;
+        }
+
+        match outcome {
+            // `LaunchStarted` already moved the session to `Launching`, and a
+            // `Connected` may have moved it on to `Up` since. Either is more
+            // current than anything this could say.
+            LaunchOutcome::Launched => {}
+            LaunchOutcome::Failed => {
+                self.voice = VoiceSession::Down { creds: pending.creds };
+            }
+            LaunchOutcome::CertChanged => {
+                // Mumble was left alone, so it is not on this server and until
+                // the user decides it will not be. A later reconnect has to
+                // re-attempt rather than assume voice is fine.
+                self.voice = VoiceSession::AwaitingCert {
+                    creds: pending.creds,
+                    show_gui: pending.show_gui,
+                    extra_args: pending.extra_args,
+                };
+            }
+        }
     }
 
     pub(crate) fn resolve_mumble_credentials(
@@ -475,7 +757,6 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
         voice_server: Option<VoiceServerConfig>,
         show_gui: bool,
         extra_args: &str,
-        internal_tx: mpsc::Sender<InternalEvent>,
     ) {
         let new_creds = Self::resolve_mumble_credentials(form, voice_server);
 
@@ -499,67 +780,47 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
             self.voice_session = VoiceSessionState::default();
         }
 
-        self.launch_voice(new_creds, show_gui, extra_args, internal_tx).await;
+        self.launch_voice(new_creds, show_gui, extra_args).await;
     }
 
-    async fn launch_voice(&mut self, creds: VoiceServerConfig, show_gui: bool, extra_args: &str, internal_tx: mpsc::Sender<InternalEvent>) {
-        // Pre-check: probe the server certificate and compare against stored value
-        let db_path = self.data_dir.join("mumble/mumble.sqlite");
-        match crate::mumble::cert::probe_server_cert(&creds.host, creds.port).await {
-            Ok(fingerprint) => {
-                let stored = crate::mumble::cert::get_stored_cert(&db_path, &creds.host, creds.port);
-                match stored {
-                    None => {
-                        // TOFU: first time seeing this server, store and proceed
-                        log::info!("First connection to {}:{}, storing cert fingerprint", creds.host, creds.port);
-                        if let Err(e) = crate::mumble::cert::store_cert(&db_path, &creds.host, creds.port, &fingerprint) {
-                            log::warn!("Failed to store cert: {:?}", e);
-                        }
-                    }
-                    Some(ref stored_fp) if stored_fp == &fingerprint => {
-                        log::debug!("Cert fingerprint matches for {}:{}", creds.host, creds.port);
-                    }
-                    Some(_) => {
-                        // Certificate has changed -- prompt the user
-                        log::warn!("Certificate changed for {}:{}, awaiting user approval", creds.host, creds.port);
-                        let _ = self.event_tx.send(CoreEvent::Mumble(MumbleEvent::CertificateChanged {
-                            host: creds.host.clone(),
-                            port: creds.port,
-                            new_fingerprint: fingerprint,
-                        })).await;
-                        // Stash credentials so AcceptMumbleCert can resume the
-                        // launch. Mumble is not on this server, and until the
-                        // user decides it will not be, so a later reconnect has
-                        // to re-attempt rather than assume voice is fine.
-                        self.voice = VoiceSession::AwaitingCert {
-                            creds,
-                            show_gui,
-                            extra_args: extra_args.to_string(),
-                            internal_tx,
-                        };
-                        return;
-                    }
-                }
-            }
-            Err(e) => {
-                // Probe failed (network issue, etc.) -- log and proceed anyway
-                log::warn!("Cert probe failed for {}:{}: {:?}", creds.host, creds.port, e);
-            }
+    /// Dispatch a voice launch and return; the answer arrives as
+    /// `InternalMumbleEvent::LaunchFinished`.
+    ///
+    /// `self.voice` is deliberately left alone here. The launch begins with a
+    /// TLS probe of the server's certificate, during which Mumble has not been
+    /// touched and is still joined to wherever it was; claiming otherwise
+    /// would let a `Connected` from that older process be credited to a server
+    /// it has never reached. The actor says when the replacement actually
+    /// starts.
+    async fn launch_voice(&mut self, creds: VoiceServerConfig, show_gui: bool, extra_args: &str) {
+        self.launch_generation += 1;
+        let generation = self.launch_generation;
+        if let Some(previous) = self.pending_launch.replace(PendingLaunch {
+            generation,
+            creds: creds.clone(),
+            show_gui,
+            extra_args: extra_args.to_string(),
+        }) {
+            log::info!("Voice launch #{} superseded by #{generation}", previous.generation);
         }
 
-        // `launch` kills any running Mumble before spawning the new one, so a
-        // failure here leaves voice down, not where it was.
-        let launched = self.voice_service.launch(
-            creds.clone(), internal_tx, show_gui, extra_args,
-            self.voice_session.channel_path.as_deref(),
-        ).await;
-        self.voice = match launched {
-            Ok(()) => VoiceSession::Launching { creds },
-            Err(e) => {
-                log::error!("Failed to launch voice: {:?}", e);
-                VoiceSession::Down { creds }
-            }
-        };
+        let dispatched = self.voice_service.send(VoiceRequest::Launch(LaunchRequest {
+            creds,
+            show_gui,
+            extra_args: extra_args.to_string(),
+            channel_path: self.voice_session.channel_path.clone(),
+            internal_tx: self.internal_tx.clone(),
+            generation,
+        })).await;
+
+        // As for a connect: an unserved request would leave `pending_launch`
+        // outstanding forever. This is the same path the actor reporting a
+        // failed launch takes, so the session lands on `Down` with its
+        // credentials kept and the next reconnect tries again.
+        if !dispatched {
+            log::error!("Voice actor is not accepting requests; failing launch #{generation}");
+            self.finish_launch(generation, LaunchOutcome::Failed).await;
+        }
     }
 }
 
@@ -576,12 +837,99 @@ mod tests {
     use tokio::time::timeout;
     use std::time::Duration;
 
-    /// Send commands to the engine, wait for it to process them all, then
-    /// collect emitted events.
+    /// Drives a running engine one command at a time.
     ///
-    /// Dropping the command sender causes `run()` to break out of the select
-    /// loop after processing all buffered commands, making this fully
-    /// deterministic with no sleeps.
+    /// A connect no longer completes before `run()` takes the next command off
+    /// the channel, so "send a burst and look at the result" no longer says
+    /// what a test means by it: a command that depends on a connect having
+    /// landed has to be sent after it lands, not merely after it starts.
+    /// `step` is that -- it sends a command and waits for the engine to settle
+    /// -- and it is exact rather than timed, because every piece of work the
+    /// engine dispatches reports back to it.
+    struct EngineDriver {
+        cmd_tx: mpsc::Sender<CoreCommand>,
+        internal_tx: mpsc::Sender<InternalEvent>,
+        event_rx: mpsc::Receiver<CoreEvent>,
+        engine: tokio::task::JoinHandle<()>,
+    }
+
+    impl EngineDriver {
+        fn start(engine: CoreEngine, cmd_tx: mpsc::Sender<CoreCommand>, event_rx: mpsc::Receiver<CoreEvent>) -> Self {
+            let internal_tx = engine.internal_sender();
+            Self {
+                cmd_tx,
+                internal_tx,
+                event_rx,
+                engine: tokio::spawn(async move { engine.run().await }),
+            }
+        }
+
+        async fn send(&self, cmd: CoreCommand) {
+            self.cmd_tx.send(cmd).await.expect("engine already stopped");
+        }
+
+        /// Deliver an internal event the way a subsystem would.
+        async fn inject(&self, event: InternalEvent) {
+            self.internal_tx.send(event).await.expect("engine already stopped");
+        }
+
+        /// Wait until the engine has drained every command sent so far and has
+        /// nothing it dispatched still outstanding.
+        async fn settle(&self) {
+            let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+            self.internal_tx
+                .send(InternalEvent::System(InternalSystemEvent::Barrier(reply_tx)))
+                .await
+                .expect("engine already stopped");
+            timeout(Duration::from_secs(5), reply_rx)
+                .await
+                .expect("engine did not settle within 5s")
+                .expect("engine dropped the barrier");
+        }
+
+        async fn step(&self, cmd: CoreCommand) {
+            self.send(cmd).await;
+            self.settle().await;
+        }
+
+        /// Close the command channel, let the engine shut down, and collect
+        /// everything it emitted.
+        async fn finish(mut self) -> Vec<CoreEvent> {
+            drop(self.cmd_tx);
+            timeout(Duration::from_secs(5), self.engine)
+                .await
+                .expect("engine did not shut down within 5s")
+                .expect("engine task panicked");
+
+            let mut events = Vec::new();
+            while let Ok(event) = self.event_rx.try_recv() {
+                events.push(event);
+            }
+            events
+        }
+    }
+
+    fn build_engine(
+        matrix: MockMatrix,
+        voice: MockVoice,
+        data_dir: &std::path::Path,
+    ) -> (CoreEngine, mpsc::Sender<CoreCommand>, mpsc::Receiver<CoreEvent>) {
+        let (cmd_tx, cmd_rx) = mpsc::channel(32);
+        let (_media_tx, media_rx) = mpsc::channel(32);
+        let (event_tx, event_rx) = mpsc::channel(100);
+        let engine = CoreEngine::new(
+            cmd_rx, media_rx, event_tx, matrix, voice,
+            data_dir.to_path_buf(), settings::load(data_dir),
+        );
+        (engine, cmd_tx, event_rx)
+    }
+
+    /// Send commands to the engine, letting each one settle before the next,
+    /// then shut it down and collect emitted events.
+    ///
+    /// Settling between commands is what the loop used to do for free by
+    /// running everything to completion inline. It is not a sleep: the engine
+    /// answers the barrier once it has no dispatched work left.
     async fn run_commands(
         matrix: MockMatrix,
         voice: MockVoice,
@@ -591,32 +939,14 @@ mod tests {
         let matrix_state = matrix.state.clone();
         let voice_state = voice.state.clone();
 
-        let (cmd_tx, cmd_rx) = mpsc::channel(32);
-        let (_media_tx, media_rx) = mpsc::channel(32);
-        let (event_tx, mut event_rx) = mpsc::channel(100);
-
-        let engine = CoreEngine::new(
-            cmd_rx, media_rx, event_tx, matrix, voice,
-            data_dir.to_path_buf(), settings::load(data_dir),
-        );
-        let engine_handle = tokio::spawn(async move { engine.run().await });
+        let (engine, cmd_tx, event_rx) = build_engine(matrix, voice, data_dir);
+        let driver = EngineDriver::start(engine, cmd_tx, event_rx);
 
         for cmd in commands {
-            cmd_tx.send(cmd).await.unwrap();
-        }
-        drop(cmd_tx);
-
-        timeout(Duration::from_secs(2), engine_handle)
-            .await
-            .expect("engine did not shut down within 2s")
-            .expect("engine task panicked");
-
-        let mut events = Vec::new();
-        while let Ok(event) = event_rx.try_recv() {
-            events.push(event);
+            driver.step(cmd).await;
         }
 
-        (events, matrix_state, voice_state)
+        (driver.finish().await, matrix_state, voice_state)
     }
 
     /// Write a settings.json for the engine to pick up when it is built.
@@ -1041,7 +1371,7 @@ mod tests {
             password: Some("other_pass".into()),
         });
 
-        let creds = CoreEngine::<MockMatrix, MockVoice>::resolve_mumble_credentials(&form, voice_server);
+        let creds = CoreEngine::resolve_mumble_credentials(&form, voice_server);
         assert_eq!(creds.host, "mumble.example.com");
         assert_eq!(creds.port, 12345);
         assert_eq!(creds.username.as_deref(), Some("alice_voice"));
@@ -1068,7 +1398,7 @@ mod tests {
             password: Some("vs_pass".into()),
         });
 
-        let creds = CoreEngine::<MockMatrix, MockVoice>::resolve_mumble_credentials(&form, voice_server);
+        let creds = CoreEngine::resolve_mumble_credentials(&form, voice_server);
         assert_eq!(creds.host, "voice.example.com");
         assert_eq!(creds.port, 55555);
         assert_eq!(creds.username.as_deref(), Some("alice")); // falls back to form.username
@@ -1089,7 +1419,7 @@ mod tests {
             homeserver_url: None,
         };
 
-        let creds = CoreEngine::<MockMatrix, MockVoice>::resolve_mumble_credentials(&form, None);
+        let creds = CoreEngine::resolve_mumble_credentials(&form, None);
         assert_eq!(creds.host, "matrix.example.com");
         assert_eq!(creds.port, 64738);
         assert_eq!(creds.username.as_deref(), Some("alice"));
@@ -1592,12 +1922,8 @@ mod tests {
     /// drains `cmd_rx`, so the bounded channel from the Tauri layer fills and
     /// every subsequent `invoke` hangs, which the user sees as a frozen UI.
     ///
-    /// Still outstanding. Fixing it means moving `MatrixBackend::connect` and
-    /// `VoiceService::launch` to `&self` with internal mutability so the engine
-    /// can spawn a connection and take the result back as an `InternalEvent`.
-    /// Skipping the needless voice relaunch cut the window that this leaves
-    /// exposed from a measured 8s median to the Matrix connect alone.
-    #[ignore = "requires moving connect off the engine's select loop; see doc comment"]
+    /// The connect now runs in the Matrix actor and reports back as an
+    /// internal event, so the loop is free for the whole of it.
     #[tokio::test]
     async fn engine_keeps_serving_commands_while_a_connect_is_in_flight() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1644,11 +1970,218 @@ mod tests {
 
         let _ = gate_tx.send(());
         drop(cmd_tx);
-        let _ = timeout(Duration::from_secs(2), engine_handle).await;
+        let _ = timeout(Duration::from_secs(5), engine_handle).await;
 
         assert!(
             matches!(served, Ok(true)),
             "engine stopped serving commands while a connect was in flight",
+        );
+    }
+
+    /// The property behind the test above, stated directly: a burst of UI
+    /// commands issued during a connect is served *while* the connect is
+    /// still running, not afterwards.
+    ///
+    /// The burst is deliberately several times the control channel's depth.
+    /// A loop parked in the connect would fill that channel and then block
+    /// the sender, so the burst would not even finish being issued -- which
+    /// is exactly what the frozen UI was.
+    #[tokio::test]
+    async fn a_burst_of_commands_is_served_before_an_in_flight_connect_completes() {
+        const CONTROL_CAPACITY: usize = 32;
+        const BURST: usize = CONTROL_CAPACITY * 4;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let (gate_tx, gate_rx) = tokio::sync::oneshot::channel();
+        let matrix = MockMatrix::new().with_connect_gate(gate_rx);
+        let voice = MockVoice::new();
+        let voice_state = voice.state.clone();
+
+        let (cmd_tx, cmd_rx) = mpsc::channel(CONTROL_CAPACITY);
+        let (_media_tx, media_rx) = mpsc::channel(32);
+        let (event_tx, mut event_rx) = mpsc::channel(1000);
+        let engine = CoreEngine::new(
+            cmd_rx, media_rx, event_tx, matrix, voice,
+            tmp.path().to_path_buf(), settings::load(tmp.path()),
+        );
+        let engine_handle = tokio::spawn(async move { engine.run().await });
+
+        cmd_tx.send(CoreCommand::System(SystemCommand::ConnectToServer(connect_form())))
+            .await.unwrap();
+        timeout(Duration::from_secs(2), async {
+            while let Some(e) = event_rx.recv().await {
+                if matches!(
+                    e,
+                    CoreEvent::Matrix(MatrixEvent::ConnectionState(ConnectionState::Connecting))
+                ) {
+                    return;
+                }
+            }
+            panic!("engine never reported Connecting");
+        }).await.expect("engine never reported Connecting");
+
+        // The user carries on using the app: a slider drag, then mute.
+        let issued = timeout(Duration::from_secs(5), async {
+            for i in 0..BURST {
+                cmd_tx.send(CoreCommand::Mumble(MumbleCommand::SetVadThreshold(i as f64 / 1000.0)))
+                    .await.unwrap();
+            }
+        }).await;
+        assert!(
+            issued.is_ok(),
+            "{BURST} commands could not even be enqueued on a {CONTROL_CAPACITY}-slot \
+             channel while a connect was in flight",
+        );
+
+        // All of them must be served while the connect is still gated.
+        let served = timeout(Duration::from_secs(5), async {
+            loop {
+                if voice_state.commands.lock().unwrap().len() >= BURST {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        }).await;
+        assert!(
+            served.is_ok(),
+            "only {} of {BURST} commands were served before the connect completed",
+            voice_state.commands.lock().unwrap().len(),
+        );
+
+        // And the control channel is not merely draining eventually -- it is
+        // empty, which is the number the instrumentation reports during a
+        // connect.
+        assert_eq!(
+            cmd_tx.capacity(), cmd_tx.max_capacity(),
+            "the control channel still had commands backed up behind the connect",
+        );
+
+        let _ = gate_tx.send(());
+        drop(cmd_tx);
+        let _ = timeout(Duration::from_secs(5), engine_handle).await;
+    }
+
+    /// Asking to connect again while an attempt is in flight supersedes it.
+    ///
+    /// Queueing instead would be wrong twice over: the user asking again, or
+    /// picking a different server, means the attempt underway is the one they
+    /// no longer want, and a first attempt that never returns would hold the
+    /// second one behind it forever. So the first attempt here is held open
+    /// and never released -- the engine can only reach Connected if the
+    /// supersede genuinely stopped it rather than waited on it.
+    #[tokio::test]
+    async fn a_second_connect_request_supersedes_the_one_in_flight() {
+        use crate::test_mocks::MockCall;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let (_gate_tx, gate_rx) = tokio::sync::oneshot::channel();
+        let matrix = MockMatrix::new()
+            .with_repeating_connect_result(ConnectOutcome::Connected(None))
+            .with_connect_gate(gate_rx);
+        let matrix_state = matrix.state.clone();
+        let voice = MockVoice::new();
+        let voice_state = voice.state.clone();
+
+        let (engine, cmd_tx, event_rx) = build_engine(matrix, voice, tmp.path());
+        let driver = EngineDriver::start(engine, cmd_tx, event_rx);
+
+        driver.send(CoreCommand::System(SystemCommand::ConnectToServer(connect_form()))).await;
+
+        // Wait until the first attempt is genuinely inside `connect()`, so
+        // that what the second one supersedes is work actually underway.
+        timeout(Duration::from_secs(2), async {
+            loop {
+                if matrix_state.call_log.lock().unwrap().contains(&MockCall::Connect) {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        }).await.expect("the first attempt never reached connect()");
+
+        driver.step(CoreCommand::System(SystemCommand::ConnectToServer(connect_form()))).await;
+        let events = driver.finish().await;
+
+        assert_eq!(
+            matrix_state.call_log.lock().unwrap().as_slice(),
+            &[MockCall::Reset, MockCall::Connect, MockCall::Reset, MockCall::Connect],
+            "both attempts should have started, each with its own reset",
+        );
+
+        let connected = events.iter().filter(|e| matches!(e,
+            CoreEvent::Matrix(MatrixEvent::ConnectionState(ConnectionState::Connected))
+        )).count();
+        assert_eq!(
+            connected, 1,
+            "the second attempt should have connected, and only it -- the first \
+             never returned, so reaching Connected at all means it was stopped",
+        );
+
+        assert_eq!(
+            voice_state.launched_with.lock().unwrap().len(), 1,
+            "only the attempt that completed should have launched voice",
+        );
+    }
+
+    /// A request the Matrix actor cannot take has to be reported as a failed
+    /// attempt, not left outstanding.
+    ///
+    /// `pending_connect` is what gates the retry timer, so a dispatch that
+    /// quietly went nowhere would leave the app unable to connect ever again,
+    /// with nothing but one log line to say so. Reaching `Failed` puts that
+    /// in front of the user and re-arms the retry; a retry that finds the
+    /// actor still gone simply fails again on a backoff, which is correct.
+    #[tokio::test]
+    async fn a_connect_that_cannot_be_dispatched_fails_and_re_arms_the_retry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (engine, cmd_tx, event_rx) = build_engine(MockMatrix::new(), MockVoice::new(), tmp.path());
+        engine.kill_matrix_actor().await;
+        let driver = EngineDriver::start(engine, cmd_tx, event_rx);
+
+        // Settling at all is half the assertion: the barrier is only answered
+        // once nothing dispatched is still outstanding.
+        driver.step(CoreCommand::System(SystemCommand::ConnectToServer(connect_form()))).await;
+        let events = driver.finish().await;
+
+        let states: Vec<_> = events.iter().filter_map(|e| match e {
+            CoreEvent::Matrix(MatrixEvent::ConnectionState(s)) => Some(s),
+            _ => None,
+        }).collect();
+        assert!(
+            matches!(states.last(), Some(ConnectionState::Failed { retries: 1, .. })),
+            "a connect that could not be dispatched must reach Failed with the \
+             retry armed, got {:?}",
+            states,
+        );
+    }
+
+    /// The same for the voice side: a launch the actor cannot take clears
+    /// `pending_launch` and records the session as down, by the same path a
+    /// launch that failed inside the actor takes.
+    #[tokio::test]
+    async fn a_voice_launch_that_cannot_be_dispatched_does_not_stay_outstanding() {
+        let tmp = tempfile::tempdir().unwrap();
+        let voice = MockVoice::new();
+        let voice_state = voice.state.clone();
+        let (engine, cmd_tx, event_rx) = build_engine(MockMatrix::new(), voice, tmp.path());
+        engine.kill_voice_actor().await;
+        let driver = EngineDriver::start(engine, cmd_tx, event_rx);
+
+        // An explicit Mumble host, so the connect dispatches a launch.
+        let mut form = connect_form();
+        form.mumble_host = Some("voice.example.com".into());
+        driver.step(CoreCommand::System(SystemCommand::ConnectToServer(form))).await;
+        let events = driver.finish().await;
+
+        assert!(
+            voice_state.launched_with.lock().unwrap().is_empty(),
+            "the actor was gone, so nothing can have been launched",
+        );
+        // The dead voice actor must not have taken the Matrix side with it.
+        assert!(
+            events.iter().any(|e| matches!(e,
+                CoreEvent::Matrix(MatrixEvent::ConnectionState(ConnectionState::Connected))
+            )),
+            "a failed voice dispatch must not stop the Matrix connect from landing",
         );
     }
 
@@ -1957,54 +2490,31 @@ mod tests {
             homeserver_url: None,
         };
 
+        // No launch reports Connected by itself: every Connected below is
+        // injected, so it is unambiguous which one the engine is reacting to.
         let voice = MockVoice::new();
         let voice_state = voice.state.clone();
         let matrix = MockMatrix::new().with_repeating_connect_result(ConnectOutcome::Connected(None));
-        let (_cmd_tx, cmd_rx) = mpsc::channel(32);
-        let (_media_tx, media_rx) = mpsc::channel(32);
-        let (event_tx, mut event_rx) = mpsc::channel(100);
-        let mut engine = CoreEngine::new(
-            cmd_rx, media_rx, event_tx, matrix, voice,
-            tmp.path().to_path_buf(), settings::load(tmp.path()),
-        );
-
-        // Driven command by command rather than through `run_commands`: the
-        // Connected has to land while the prompt is up, which is after a
-        // launch that never happened.
-        let mut retry_timer = Box::pin(sleep(Duration::from_secs(3600)));
-        let (itx, _itx_rx) = mpsc::channel(32);
+        let (engine, cmd_tx, event_rx) = build_engine(matrix, voice, tmp.path());
+        let driver = EngineDriver::start(engine, cmd_tx, event_rx);
 
         // Voice comes up on the first server.
-        engine.handle_system_command(
-            SystemCommand::ConnectToServer(voice_form(first_port)),
-            &mut retry_timer, itx.clone(),
-        ).await;
-        engine.handle_internal_event(
-            InternalEvent::Mumble(InternalMumbleEvent::Connected), &mut retry_timer,
-        ).await;
+        driver.step(CoreCommand::System(SystemCommand::ConnectToServer(voice_form(first_port)))).await;
+        driver.inject(InternalEvent::Mumble(InternalMumbleEvent::Connected)).await;
+        driver.settle().await;
 
         // The second server's cert has changed, so its launch is blocked on
         // the user. Mumble is untouched, still on the first server.
-        engine.handle_system_command(
-            SystemCommand::ConnectToServer(voice_form(second_port)),
-            &mut retry_timer, itx.clone(),
-        ).await;
+        driver.step(CoreCommand::System(SystemCommand::ConnectToServer(voice_form(second_port)))).await;
 
         // That still-running Mumble re-joins the first server by itself.
-        engine.handle_internal_event(
-            InternalEvent::Mumble(InternalMumbleEvent::Connected), &mut retry_timer,
-        ).await;
+        driver.inject(InternalEvent::Mumble(InternalMumbleEvent::Connected)).await;
+        driver.settle().await;
 
         // The reconnect must still re-attempt the launch the user never approved.
-        engine.handle_system_command(
-            SystemCommand::ConnectToServer(voice_form(second_port)),
-            &mut retry_timer, itx,
-        ).await;
+        driver.step(CoreCommand::System(SystemCommand::ConnectToServer(voice_form(second_port)))).await;
 
-        let mut events = Vec::new();
-        while let Ok(event) = event_rx.try_recv() {
-            events.push(event);
-        }
+        let events = driver.finish().await;
 
         let prompts = events.iter().filter(|e| matches!(e,
             CoreEvent::Mumble(MumbleEvent::CertificateChanged { .. })
@@ -2092,13 +2602,10 @@ mod tests {
 
         let voice = MockVoice::new();
         let voice_state = voice.state.clone();
-        let (_, cmd_rx) = mpsc::channel(32);
-        let (_media_tx, media_rx) = mpsc::channel(32);
-        let (event_tx, _) = mpsc::channel(100);
-        let mut engine = CoreEngine::new(
-            cmd_rx, media_rx, event_tx, MockMatrix::new(), voice,
-            tmp.path().to_path_buf(), settings::load(tmp.path()),
-        );
+        let (mut engine, cmd_tx, _event_rx) = build_engine(MockMatrix::new(), voice, tmp.path());
+        // Nothing else is sent, so close the command channel now: the engine
+        // is only being run below to drain what is dispatched here.
+        drop(cmd_tx);
 
         // Simulate state saved from a previous session
         engine.voice_session = VoiceSessionState {
@@ -2107,19 +2614,22 @@ mod tests {
             deafened: true,
         };
 
-        // ConnectToServer should clear all saved state
-        let mut retry_timer = Box::pin(sleep(Duration::from_secs(3600)));
-        let (itx, _) = mpsc::channel(32);
-        engine.handle_system_command(
-            SystemCommand::ConnectToServer(connect_form()),
-            &mut retry_timer,
-            itx,
-        ).await;
-
+        // Connecting to a server resolves fresh credentials, and none of the
+        // old session's channel/mute/deafen belongs to them.
+        engine.resolve_and_launch_voice(&connect_form(), None, false, "").await;
         assert_eq!(engine.voice_session, VoiceSessionState::default());
+
+        // Run the engine out so the dispatched launch reaches the mock. The
+        // command channel is already closed, so this is just the shutdown
+        // drain finishing what was dispatched.
+        timeout(Duration::from_secs(5), tokio::spawn(async move { engine.run().await }))
+            .await
+            .expect("engine did not shut down within 5s")
+            .expect("engine task panicked");
 
         // Voice launched with no channel path
         let paths = voice_state.launched_channel_paths.lock().unwrap();
+        assert_eq!(paths.len(), 1);
         assert_eq!(paths[0], None, "ConnectToServer should launch with no channel path");
     }
 

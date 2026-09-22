@@ -6,6 +6,7 @@ pub mod events;
 pub(crate) mod traits;
 
 mod models;
+mod actor;
 mod connection;
 mod matrix;
 mod mumble;
@@ -25,8 +26,16 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use crate::engine::*;
 
-pub type ProductionEngine = CoreEngine<matrix::MatrixService, mumble::service::MumbleVoiceService>;
+/// The engine no longer owns the services -- each lives in a task of its own
+/// -- so there is nothing left for it to be generic over. Kept as an alias
+/// because callers name the type.
+pub type ProductionEngine = CoreEngine;
 
+/// Build the engine and the handle the UI talks to it through.
+///
+/// **Must be called from inside a Tokio runtime context.** The engine spawns
+/// a task per subsystem as it is constructed -- that is what keeps the
+/// services off its event loop -- and `tokio::spawn` panics outside a runtime.
 pub fn init_core(
     data_dir: PathBuf,
     resource_dir: PathBuf,

@@ -1,9 +1,8 @@
 use tokio::sync::mpsc;
 use tokio::time::{Duration, Instant, Sleep};
-use crate::events::{CoreEvent, InternalEvent, MatrixEvent};
+use crate::events::{CoreEvent, MatrixEvent};
 use crate::commands::ServerConnectionForm;
 use crate::models::{backoff_secs, ConnectOutcome, ConnectionState, VoiceServerConfig};
-use crate::traits::MatrixBackend;
 
 use std::pin::Pin;
 
@@ -45,18 +44,25 @@ impl MatrixConnection {
         let _ = event_tx.send(matrix_conn_event(new)).await;
     }
 
-    pub async fn attempt_connect<M: MatrixBackend>(
-        &mut self,
-        timer: &mut Pin<Box<Sleep>>,
-        service: &mut M,
-        form: ServerConnectionForm,
-        internal_tx: mpsc::Sender<InternalEvent>,
-        event_tx: &mpsc::Sender<CoreEvent>,
-    ) -> Option<VoiceServerConfig> {
+    /// An attempt has been dispatched.
+    ///
+    /// `Connecting` is also the gate on starting another one: for as long as
+    /// the state says an attempt is in flight, the retry timer stays disarmed
+    /// and a fresh request supersedes rather than runs alongside.
+    pub async fn begin(&mut self, event_tx: &mpsc::Sender<CoreEvent>) {
         self.state = ConnectionState::Connecting;
         let _ = event_tx.send(matrix_conn_event(ConnectionState::Connecting)).await;
+    }
 
-        match service.connect(form, internal_tx).await {
+    /// An attempt has come back. Returns the voice server it discovered, if it
+    /// got far enough to discover one.
+    pub async fn settle(
+        &mut self,
+        outcome: ConnectOutcome,
+        timer: &mut Pin<Box<Sleep>>,
+        event_tx: &mpsc::Sender<CoreEvent>,
+    ) -> Option<VoiceServerConfig> {
+        match outcome {
             ConnectOutcome::Connected(voice_server) => {
                 self.retries = 0;
                 self.state = ConnectionState::Connected;
@@ -80,41 +86,23 @@ impl MatrixConnection {
 mod tests {
     use super::*;
     use crate::models::ConnectOutcome;
-    use crate::test_mocks::MockMatrix;
     use tokio::time::sleep;
 
-    fn test_form() -> ServerConnectionForm {
-        ServerConnectionForm {
-            username: "alice".into(),
-            hostname: "example.com".into(),
-            port: "8448".into(),
-            password: None,
-            mumble_host: None,
-            mumble_port: None,
-            mumble_username: None,
-            mumble_password: None,
-            homeserver_url: None,
-        }
-    }
-
     /// Consecutive failed connection attempts must escalate the backoff.
-    /// `attempt_connect` moves through `Connecting`, which reports zero
-    /// retries; if that transition is allowed to clobber the counter the
-    /// backoff is pinned at the first step forever and the client hammers
-    /// the server every 2s indefinitely.
+    /// An attempt in flight is `Connecting`, which reports zero retries; if
+    /// that transition is allowed to clobber the counter the backoff is
+    /// pinned at the first step forever and the client hammers the server
+    /// every 2s indefinitely.
     #[tokio::test]
     async fn consecutive_failures_escalate_backoff() {
         let (event_tx, _event_rx) = mpsc::channel(100);
-        let (internal_tx, _internal_rx) = mpsc::channel(100);
         let mut timer: Pin<Box<Sleep>> = Box::pin(sleep(Duration::from_secs(3600)));
         let mut conn = MatrixConnection::new();
 
         let mut observed = Vec::new();
         for _ in 0..4 {
-            let mut matrix = MockMatrix::new().with_connect_result(ConnectOutcome::Failed);
-            conn.attempt_connect(
-                &mut timer, &mut matrix, test_form(), internal_tx.clone(), &event_tx,
-            ).await;
+            conn.begin(&event_tx).await;
+            conn.settle(ConnectOutcome::Failed, &mut timer, &event_tx).await;
             match &conn.state {
                 ConnectionState::Failed { retries, retry_in_secs, .. } => {
                     observed.push((*retries, *retry_in_secs));
@@ -135,32 +123,57 @@ mod tests {
     #[tokio::test]
     async fn success_resets_backoff() {
         let (event_tx, _event_rx) = mpsc::channel(100);
-        let (internal_tx, _internal_rx) = mpsc::channel(100);
         let mut timer: Pin<Box<Sleep>> = Box::pin(sleep(Duration::from_secs(3600)));
         let mut conn = MatrixConnection::new();
 
         for _ in 0..3 {
-            let mut matrix = MockMatrix::new().with_connect_result(ConnectOutcome::Failed);
-            conn.attempt_connect(
-                &mut timer, &mut matrix, test_form(), internal_tx.clone(), &event_tx,
-            ).await;
+            conn.begin(&event_tx).await;
+            conn.settle(ConnectOutcome::Failed, &mut timer, &event_tx).await;
         }
         assert_eq!(conn.state.retries(), 3, "three failures should accumulate");
 
-        let mut matrix = MockMatrix::new().with_connect_result(ConnectOutcome::Connected(None));
-        conn.attempt_connect(
-            &mut timer, &mut matrix, test_form(), internal_tx.clone(), &event_tx,
-        ).await;
+        conn.begin(&event_tx).await;
+        conn.settle(ConnectOutcome::Connected(None), &mut timer, &event_tx).await;
         assert!(matches!(conn.state, ConnectionState::Connected));
 
-        let mut matrix = MockMatrix::new().with_connect_result(ConnectOutcome::Failed);
-        conn.attempt_connect(
-            &mut timer, &mut matrix, test_form(), internal_tx, &event_tx,
-        ).await;
+        conn.begin(&event_tx).await;
+        conn.settle(ConnectOutcome::Failed, &mut timer, &event_tx).await;
         assert!(
             matches!(conn.state, ConnectionState::Failed { retries: 1, retry_in_secs: 2, .. }),
             "backoff should restart after a successful connection, got {:?}",
             conn.state,
+        );
+    }
+
+    /// `Connecting` is the gate the engine reads to decide whether an attempt
+    /// is already in flight, so beginning one has to leave the state saying so
+    /// -- and must not touch the accumulated retry count on the way.
+    #[tokio::test]
+    async fn beginning_an_attempt_reports_connecting_without_clearing_the_backoff() {
+        let (event_tx, mut event_rx) = mpsc::channel(100);
+        let mut timer: Pin<Box<Sleep>> = Box::pin(sleep(Duration::from_secs(3600)));
+        let mut conn = MatrixConnection::new();
+
+        conn.begin(&event_tx).await;
+        conn.settle(ConnectOutcome::Failed, &mut timer, &event_tx).await;
+        assert_eq!(conn.retries, 1);
+
+        conn.begin(&event_tx).await;
+        assert!(
+            matches!(conn.state, ConnectionState::Connecting),
+            "an attempt in flight must read as Connecting, got {:?}",
+            conn.state,
+        );
+        assert_eq!(conn.retries, 1, "beginning an attempt must not clear the backoff");
+
+        let mut announced = Vec::new();
+        while let Ok(CoreEvent::Matrix(MatrixEvent::ConnectionState(s))) = event_rx.try_recv() {
+            announced.push(s);
+        }
+        assert!(
+            matches!(announced.last(), Some(ConnectionState::Connecting)),
+            "the frontend must be told the attempt started, got {:?}",
+            announced,
         );
     }
 }
