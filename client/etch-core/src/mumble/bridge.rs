@@ -453,7 +453,7 @@ mod tests {
 
     #[test]
     fn channel_path_stops_at_root() {
-        let mut state = BridgeState::new(Arc::new(crate::scripting::ScriptDispatcher::new(std::path::Path::new("/tmp"))));
+        let mut state = BridgeState::new(Arc::new(crate::scripting::ScriptDispatcher::empty()));
         state.channel_tree.insert(0, ChannelInfo { name: "Root".into(), parent_id: 0 });
         state.channel_tree.insert(1, ChannelInfo { name: "Voice".into(), parent_id: 0 });
         state.channel_tree.insert(2, ChannelInfo { name: "General".into(), parent_id: 1 });
@@ -464,7 +464,7 @@ mod tests {
 
     #[test]
     fn channel_path_handles_cycle() {
-        let mut state = BridgeState::new(Arc::new(crate::scripting::ScriptDispatcher::new(std::path::Path::new("/tmp"))));
+        let mut state = BridgeState::new(Arc::new(crate::scripting::ScriptDispatcher::empty()));
         state.channel_tree.insert(3, ChannelInfo { name: "A".into(), parent_id: 5 });
         state.channel_tree.insert(5, ChannelInfo { name: "B".into(), parent_id: 3 });
         // Should terminate instead of looping forever
@@ -483,9 +483,7 @@ mod translate_tests {
     use bridge_types::{Channel, User};
 
     fn new_state() -> BridgeState {
-        BridgeState::new(Arc::new(crate::scripting::ScriptDispatcher::new(
-            std::path::Path::new("/tmp"),
-        )))
+        BridgeState::new(Arc::new(crate::scripting::ScriptDispatcher::empty()))
     }
 
     fn drain<T>(rx: &mut mpsc::Receiver<T>) -> Vec<T> {

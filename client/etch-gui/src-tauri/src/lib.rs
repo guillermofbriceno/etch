@@ -1,7 +1,7 @@
 mod sfx;
 
 use etch_core::init_core;
-use etch_core::commands::CoreCommand;
+use etch_core::commands::{CoreCommand, MediaRequest};
 use tauri::{AppHandle, Manager, State};
 use tauri::Emitter;
 use tauri_plugin_updater::UpdaterExt;
@@ -220,10 +220,17 @@ fn setup_cursor_events(app: &tauri::App) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Create the command channel early so the protocol handler
-    // (registered on the Builder, before setup) can send FetchMedia.
+    // Control commands from the UI. Small on purpose: these are user actions,
+    // and a backlog of them means something is wrong.
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel::<CoreCommand>(32);
-    let core_tx_for_protocol = cmd_tx.clone();
+
+    // Media fetches, on their own channel. The `etch-media` protocol handler
+    // raises one per image the webview loads, so a freshly opened room can
+    // burst well past the control channel's capacity; sharing a queue with UI
+    // commands meant those bursts blocked `invoke`. Created here rather than
+    // in `init_core` because the handler is registered on the Builder, before
+    // `setup` runs.
+    let (media_tx, media_rx) = tokio::sync::mpsc::channel::<MediaRequest>(256);
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -233,7 +240,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .register_asynchronous_uri_scheme_protocol("etch-media", move |_ctx, request, responder| {
-            let core_tx = core_tx_for_protocol.clone();
+            let media_tx = media_tx.clone();
             tauri::async_runtime::spawn(async move {
                 let uri = request.uri();
                 let raw_host = uri.host().unwrap_or_default();
@@ -249,7 +256,7 @@ pub fn run() {
                 };
 
                 let (tx, rx) = tokio::sync::oneshot::channel();
-                let _ = core_tx.send(CoreCommand::FetchMedia { mxc_url, respond: tx }).await;
+                let _ = media_tx.send(MediaRequest { mxc_url, respond: tx }).await;
 
                 match rx.await {
                     Ok(Ok(bytes)) => {
@@ -294,7 +301,8 @@ pub fn run() {
             let logger = build_logger(&log_path);
 
             let sfx_player = SfxPlayer::new(&data_dir);
-            let (mut core_handle, engine) = init_core(data_dir, resource_dir, cmd_tx, cmd_rx, logger);
+            let (mut core_handle, engine) =
+                init_core(data_dir, resource_dir, cmd_tx, cmd_rx, media_rx, logger);
             app.manage(TauriState { core_tx: core_handle.cmd_tx });
             app.manage(sfx_player);
 

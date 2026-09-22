@@ -33,17 +33,48 @@ struct TestHarness {
     _data_dir: tempfile::TempDir,
 }
 
+/// Send `etch_core`'s own logs to stderr so the engine's instrumentation is
+/// visible under `cargo test -- --nocapture`. Installed once per test process;
+/// the matrix-sdk's own (very chatty) output is filtered out by target.
+fn init_test_logging() {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+
+    struct StderrLog;
+    impl log::Log for StderrLog {
+        fn enabled(&self, m: &log::Metadata) -> bool {
+            m.target().starts_with("etch_core")
+        }
+        fn log(&self, record: &log::Record) {
+            if self.enabled(record.metadata()) {
+                eprintln!("[{} {}] {}", record.level(), record.target(), record.args());
+            }
+        }
+        fn flush(&self) {}
+    }
+
+    ONCE.call_once(|| {
+        if log::set_boxed_logger(Box::new(StderrLog)).is_ok() {
+            log::set_max_level(log::LevelFilter::Info);
+        }
+    });
+}
+
 impl TestHarness {
     fn new() -> Self {
+        init_test_logging();
         let data_dir = tempfile::tempdir().expect("failed to create temp dir");
         let (cmd_tx, cmd_rx) = mpsc::channel(32);
+        let (_media_tx, media_rx) = mpsc::channel(256);
         let (event_tx, event_rx) = mpsc::channel(256);
 
-        let dispatcher = Arc::new(ScriptDispatcher::new(data_dir.path()));
+        let settings = crate::settings::load(data_dir.path());
+        let dispatcher = Arc::new(ScriptDispatcher::from_settings(&settings));
         let matrix = MatrixService::new(event_tx.clone(), data_dir.path().to_path_buf(), dispatcher);
         let voice = MockVoice::new();
         let engine = CoreEngine::new(
-            cmd_rx, event_tx, matrix, voice, data_dir.path().to_path_buf(),
+            cmd_rx, media_rx, event_tx, matrix, voice,
+            data_dir.path().to_path_buf(), settings,
         );
         let engine_handle = tokio::spawn(engine.run());
 

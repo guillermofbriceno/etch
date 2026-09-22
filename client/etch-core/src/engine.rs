@@ -2,9 +2,9 @@ use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration, Sleep};
 use crate::connection::MatrixConnection;
 use crate::events::{CoreEvent, InternalEvent, InternalMatrixEvent, InternalMumbleEvent, MumbleEvent, SystemEvent};
-use crate::commands::{CoreCommand, MumbleCommand, ServerConnectionForm, SystemCommand};
+use crate::commands::{CoreCommand, MediaRequest, MumbleCommand, ServerConnectionForm, SystemCommand};
 use crate::models::{ConnectionState, VoiceServerConfig};
-use crate::settings;
+use crate::settings::{Settings, SettingsStore};
 use crate::traits::{MatrixBackend, VoiceService};
 
 use std::path::PathBuf;
@@ -69,12 +69,20 @@ impl VoiceSession {
 
 pub struct CoreEngine<M, V> {
     pub(crate) cmd_rx: mpsc::Receiver<CoreCommand>,
+    /// Media fetches, on their own channel with its own capacity. Servicing
+    /// one only spawns a task, so the loop is never held up by this arm; what
+    /// it buys is that a burst of image loads cannot eat the control
+    /// channel's slots.
+    pub(crate) media_rx: mpsc::Receiver<MediaRequest>,
     pub(crate) event_tx: mpsc::Sender<CoreEvent>,
 
     matrix: M,
     voice_service: V,
     conn: MatrixConnection,
     pub(crate) data_dir: PathBuf,
+    /// The settings, owned here. Reads are from memory; writes go to memory
+    /// and are persisted off this loop.
+    pub(crate) settings: SettingsStore,
     /// Voice state persisted across Mumble client restarts.
     pub(crate) voice_session: VoiceSessionState,
     /// Where the one voice session stands right now.
@@ -89,17 +97,21 @@ pub struct CoreHandle {
 impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
     pub fn new(
         cmd_rx: mpsc::Receiver<CoreCommand>,
+        media_rx: mpsc::Receiver<MediaRequest>,
         event_tx: mpsc::Sender<CoreEvent>,
         matrix: M,
         voice: V,
         data_dir: PathBuf,
+        settings: Settings,
     ) -> Self {
         Self {
             cmd_rx,
+            media_rx,
             event_tx,
             matrix,
             voice_service: voice,
             conn: MatrixConnection::new(),
+            settings: SettingsStore::from_loaded(data_dir.clone(), settings),
             data_dir,
             voice_session: VoiceSessionState::default(),
             voice: VoiceSession::Idle,
@@ -121,9 +133,6 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
                         CoreCommand::Mumble(mumble_cmd) => {
                             self.dispatch_mumble_command(mumble_cmd).await;
                         }
-                        CoreCommand::FetchMedia { mxc_url, respond } => {
-                            self.matrix.spawn_media_fetch(mxc_url, respond);
-                        }
                         CoreCommand::System(cmd) => {
                             self.handle_system_command(cmd, &mut retry_timer, internal_tx.clone()).await;
                         }
@@ -133,6 +142,16 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
                     while let Ok(event) = internal_rx.try_recv() {
                         self.handle_internal_event(event, &mut retry_timer).await;
                     }
+                }
+
+                // --- Media data path ---
+                //
+                // Separate from the control channel above so that loading a
+                // timeline's worth of images cannot fill the queue the UI's
+                // commands arrive on. `spawn_media_fetch` only spawns, so this
+                // arm never parks the loop.
+                Some(request) = self.media_rx.recv() => {
+                    self.matrix.spawn_media_fetch(request.mxc_url, request.respond);
                 }
 
                 Some(internal_event) = internal_rx.recv() => {
@@ -156,6 +175,11 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
         while let Ok(event) = internal_rx.try_recv() {
             self.handle_internal_event(event, &mut retry_timer).await;
         }
+
+        // Settings are written off this loop, so the last change may still be
+        // in the coalescing window. This waits for it: nothing the user set is
+        // lost by closing the app.
+        self.settings.shutdown().await;
     }
 
     async fn handle_system_command(
@@ -171,7 +195,7 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
                 self.connect_to_server(&form, retry_timer, internal_tx).await;
             }
             SystemCommand::LoadSettings => {
-                let s = settings::load(&self.data_dir);
+                let s = self.settings.get().clone();
                 let _ = self.event_tx.send(CoreEvent::System(
                     SystemEvent::SettingsLoaded(s.clone()),
                 )).await;
@@ -183,8 +207,8 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
                 }
             }
             SystemCommand::SaveBookmarks(bookmarks) => {
-                settings::update_bookmarks(&self.data_dir, bookmarks);
-                let s = settings::load(&self.data_dir);
+                self.settings.update(|s| s.bookmarks = bookmarks);
+                let s = self.settings.get().clone();
                 let _ = self.event_tx.send(CoreEvent::System(
                     SystemEvent::SettingsLoaded(s),
                 )).await;
@@ -212,13 +236,13 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
                 log::error!("Test error triggered from Developer Options");
             }
             SystemCommand::SetDeafenSuppressesNotifs(value) => {
-                settings::set_deafen_suppresses_notifs(&self.data_dir, value);
+                self.settings.update(|s| s.deafen_suppresses_notifs = Some(value));
             }
             SystemCommand::HideDm { room_id } => {
-                settings::hide_dm(&self.data_dir, room_id);
+                self.settings.update(|s| s.hide_dm(room_id));
             }
             SystemCommand::UnhideDm { room_id } => {
-                settings::unhide_dm(&self.data_dir, &room_id);
+                self.settings.update(|s| s.unhide_dm(&room_id));
             }
             SystemCommand::AcceptMumbleCert { host, port, fingerprint } => {
                 let db_path = self.data_dir.join("mumble/mumble.sqlite");
@@ -318,15 +342,18 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
                         // The settings and mute/deafen restoration below are
                         // about the Mumble process that just came up, so they
                         // run either way.
-                        let s = settings::load(&self.data_dir);
-                        if s.use_mumble_settings != Some(true) {
-                            if let Some(mode) = s.transmission_mode {
+                        let (use_mumble_settings, mode, vad_threshold, voice_hold) = {
+                            let s = self.settings.get();
+                            (s.use_mumble_settings, s.transmission_mode.clone(), s.vad_threshold, s.voice_hold)
+                        };
+                        if use_mumble_settings != Some(true) {
+                            if let Some(mode) = mode {
                                 self.voice_service.send_command(MumbleCommand::SetTransmissionMode(mode)).await;
                             }
-                            if let Some(value) = s.vad_threshold {
+                            if let Some(value) = vad_threshold {
                                 self.voice_service.send_command(MumbleCommand::SetVadThreshold(value)).await;
                             }
-                            if let Some(value) = s.voice_hold {
+                            if let Some(value) = voice_hold {
                                 self.voice_service.send_command(MumbleCommand::SetVoiceHold(value)).await;
                             }
                         }
@@ -358,13 +385,22 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
     }
 
     async fn dispatch_mumble_command(&mut self, cmd: MumbleCommand) {
-        // Persist settings regardless of whether Mumble is connected
+        // Record the setting regardless of whether Mumble is connected. These
+        // arrive one per slider event; they update memory and the write is
+        // coalesced elsewhere, so none of this touches the disk here.
         match &cmd {
-            MumbleCommand::SetTransmissionMode(mode) => settings::set_transmission_mode(&self.data_dir, mode.clone()),
-            MumbleCommand::SetVadThreshold(value) => settings::set_vad_threshold(&self.data_dir, *value),
-            MumbleCommand::SetVoiceHold(value) => settings::set_voice_hold(&self.data_dir, *value),
-            MumbleCommand::SetUseMumbleSettings(value) => {
-                settings::set_use_mumble_settings(&self.data_dir, *value);
+            MumbleCommand::SetTransmissionMode(mode) => {
+                let mode = mode.clone();
+                self.settings.update(move |s| s.transmission_mode = Some(mode));
+            }
+            &MumbleCommand::SetVadThreshold(value) => {
+                self.settings.update(move |s| s.vad_threshold = Some(value));
+            }
+            &MumbleCommand::SetVoiceHold(value) => {
+                self.settings.update(move |s| s.voice_hold = Some(value));
+            }
+            &MumbleCommand::SetUseMumbleSettings(value) => {
+                self.settings.update(move |s| s.use_mumble_settings = Some(value));
                 return;
             }
             _ => {}
@@ -379,6 +415,7 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
         retry_timer: &mut Pin<Box<Sleep>>,
         internal_tx: mpsc::Sender<InternalEvent>,
     ) {
+        let started = std::time::Instant::now();
         let _ = self.event_tx.send(CoreEvent::System(SystemEvent::ServerReset)).await;
         self.matrix.reset().await;
 
@@ -399,6 +436,18 @@ impl<M: MatrixBackend, V: VoiceService> CoreEngine<M, V> {
                 self.resolve_and_launch_voice(form, voice_server, false, "", internal_tx).await;
             }
         }
+
+        // The select loop is parked for the whole of the above, so nothing
+        // drains `cmd_rx` while a connect is in flight. The queue depth
+        // sampled here is what backed up behind it: the UI's `invoke` blocks
+        // once the channel fills. Both numbers are how the next step -- moving
+        // the connect off the loop -- gets verified, so they stay.
+        log::info!(
+            "connect_to_server took {:?}; queue depth after it: control={}, media={}",
+            started.elapsed(),
+            self.cmd_rx.len(),
+            self.media_rx.len(),
+        );
     }
 
     pub(crate) fn resolve_mumble_credentials(
@@ -543,9 +592,13 @@ mod tests {
         let voice_state = voice.state.clone();
 
         let (cmd_tx, cmd_rx) = mpsc::channel(32);
+        let (_media_tx, media_rx) = mpsc::channel(32);
         let (event_tx, mut event_rx) = mpsc::channel(100);
 
-        let engine = CoreEngine::new(cmd_rx, event_tx, matrix, voice, data_dir.to_path_buf());
+        let engine = CoreEngine::new(
+            cmd_rx, media_rx, event_tx, matrix, voice,
+            data_dir.to_path_buf(), settings::load(data_dir),
+        );
         let engine_handle = tokio::spawn(async move { engine.run().await });
 
         for cmd in commands {
@@ -564,6 +617,16 @@ mod tests {
         }
 
         (events, matrix_state, voice_state)
+    }
+
+    /// Write a settings.json for the engine to pick up when it is built.
+    fn seed_settings(
+        data_dir: &std::path::Path,
+        change: impl FnOnce(&mut settings::Settings),
+    ) {
+        let mut s = settings::load(data_dir);
+        change(&mut s);
+        settings::save(data_dir, &s);
     }
 
     #[tokio::test]
@@ -635,8 +698,10 @@ mod tests {
     async fn unhide_dm_removes_from_settings() {
         let tmp = tempfile::tempdir().unwrap();
         // Pre-populate with hidden DMs
-        settings::hide_dm(tmp.path(), "!room1:example.com".into());
-        settings::hide_dm(tmp.path(), "!room2:example.com".into());
+        seed_settings(tmp.path(), |s| {
+            s.hide_dm("!room1:example.com".into());
+            s.hide_dm("!room2:example.com".into());
+        });
 
         let _ = run_commands(
             MockMatrix::new(),
@@ -722,30 +787,140 @@ mod tests {
         let (respond_tx, respond_rx) = tokio::sync::oneshot::channel();
 
         let (cmd_tx, cmd_rx) = mpsc::channel(32);
+        let (media_tx, media_rx) = mpsc::channel(32);
         let (event_tx, _event_rx) = mpsc::channel(100);
         let matrix = MockMatrix::new();
         let voice = MockVoice::new();
-        let engine = CoreEngine::new(cmd_rx, event_tx, matrix, voice, tmp.path().to_path_buf());
+        let engine = CoreEngine::new(
+            cmd_rx, media_rx, event_tx, matrix, voice,
+            tmp.path().to_path_buf(), settings::load(tmp.path()),
+        );
 
         let engine_handle = tokio::spawn(async move { engine.run().await });
 
-        cmd_tx.send(CoreCommand::FetchMedia {
+        media_tx.send(MediaRequest {
             mxc_url: "mxc://example.com/abc".into(),
             respond: respond_tx,
         }).await.unwrap();
-        drop(cmd_tx);
 
-        // oneshot resolves once the engine processes the command
+        // oneshot resolves once the engine services the request
         let result = timeout(Duration::from_secs(2), respond_rx).await
             .expect("timed out waiting for media response")
             .expect("oneshot dropped");
 
         assert_eq!(result.unwrap(), vec![0xDE, 0xAD]);
 
+        drop(cmd_tx);
         timeout(Duration::from_secs(2), engine_handle)
             .await
             .expect("engine did not shut down")
             .expect("engine task panicked");
+    }
+
+    /// The media data path must not consume the control channel's capacity.
+    ///
+    /// One `etch-media` request is raised per image the webview loads, so
+    /// opening a picture-heavy room bursts more requests than the control
+    /// channel has slots. While they shared a channel, that burst filled it
+    /// and the next UI command could not even be enqueued -- the frontend's
+    /// `invoke` blocked until the engine drained it, which it cannot do while
+    /// parked in a connect.
+    #[tokio::test]
+    async fn a_burst_of_media_requests_leaves_the_control_channel_usable() {
+        const CONTROL_CAPACITY: usize = 32;
+        const IMAGES: usize = CONTROL_CAPACITY * 4;
+
+        let tmp = tempfile::tempdir().unwrap();
+        // Hold the engine inside a connect: the loop is parked, so nothing is
+        // drained from either channel for the duration.
+        let (_gate_tx, gate_rx) = tokio::sync::oneshot::channel();
+        let matrix = MockMatrix::new().with_connect_gate(gate_rx);
+
+        let (cmd_tx, cmd_rx) = mpsc::channel(CONTROL_CAPACITY);
+        let (media_tx, media_rx) = mpsc::channel(256);
+        let (event_tx, mut event_rx) = mpsc::channel(100);
+        let engine = CoreEngine::new(
+            cmd_rx, media_rx, event_tx, matrix, MockVoice::new(),
+            tmp.path().to_path_buf(), settings::load(tmp.path()),
+        );
+        let engine_handle = tokio::spawn(async move { engine.run().await });
+
+        cmd_tx.send(CoreCommand::System(SystemCommand::ConnectToServer(connect_form())))
+            .await.unwrap();
+        timeout(Duration::from_secs(2), async {
+            while let Some(e) = event_rx.recv().await {
+                if matches!(
+                    e,
+                    CoreEvent::Matrix(MatrixEvent::ConnectionState(ConnectionState::Connecting))
+                ) {
+                    return;
+                }
+            }
+            panic!("engine never reported Connecting");
+        }).await.expect("engine never reported Connecting");
+
+        // Keep the response ends alive so nothing is dropped early.
+        let mut pending = Vec::new();
+        for i in 0..IMAGES {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            pending.push(rx);
+            media_tx.try_send(MediaRequest {
+                mxc_url: format!("mxc://example.com/{i}"),
+                respond: tx,
+            }).unwrap_or_else(|_| panic!("media request {i} was refused"));
+        }
+
+        // The user clicks mute while those images are still outstanding.
+        let control = cmd_tx.try_send(CoreCommand::System(SystemCommand::MuteMic(true)));
+
+        engine_handle.abort();
+        assert!(
+            control.is_ok(),
+            "{IMAGES} queued media requests blocked a UI command on a \
+             {CONTROL_CAPACITY}-slot control channel",
+        );
+    }
+
+    /// Dragging the VAD slider sends one command per event. Each used to cost
+    /// a full read-modify-write of settings.json, synchronously, on this loop.
+    /// They must now cost memory writes plus the writer's two coalesced file
+    /// writes -- one on the leading edge of the burst, one on the trailing.
+    #[tokio::test]
+    async fn a_slider_drag_does_not_cost_a_write_per_event() {
+        const EVENTS: usize = 200;
+        let tmp = tempfile::tempdir().unwrap();
+
+        let (cmd_tx, cmd_rx) = mpsc::channel(EVENTS + 1);
+        let (_media_tx, media_rx) = mpsc::channel(32);
+        let (event_tx, _event_rx) = mpsc::channel(100);
+        let engine = CoreEngine::new(
+            cmd_rx, media_rx, event_tx, MockMatrix::new(), MockVoice::new(),
+            tmp.path().to_path_buf(), settings::load(tmp.path()),
+        );
+        let writes = engine.settings.write_counter();
+        let engine_handle = tokio::spawn(async move { engine.run().await });
+
+        for i in 0..EVENTS {
+            cmd_tx.send(CoreCommand::Mumble(MumbleCommand::SetVadThreshold(i as f64 / 1000.0)))
+                .await.unwrap();
+        }
+        drop(cmd_tx);
+        timeout(Duration::from_secs(5), engine_handle)
+            .await
+            .expect("engine did not shut down")
+            .expect("engine task panicked");
+
+        let performed = writes.count();
+        assert!(
+            performed <= 2,
+            "{EVENTS} slider events cost {performed} settings writes; \
+             the drag should have collapsed to a leading and a trailing write",
+        );
+        assert_eq!(
+            settings::load(tmp.path()).vad_threshold,
+            Some((EVENTS - 1) as f64 / 1000.0),
+            "the value the drag ended on must be what is on disk",
+        );
     }
 
     #[tokio::test]
@@ -940,9 +1115,11 @@ mod tests {
     #[tokio::test]
     async fn mumble_connected_applies_saved_voice_settings() {
         let tmp = tempfile::tempdir().unwrap();
-        settings::set_transmission_mode(tmp.path(), "push_to_talk".into());
-        settings::set_vad_threshold(tmp.path(), 0.42);
-        settings::set_voice_hold(tmp.path(), 250);
+        seed_settings(tmp.path(), |s| {
+            s.transmission_mode = Some("push_to_talk".into());
+            s.vad_threshold = Some(0.42);
+            s.voice_hold = Some(250);
+        });
 
         let voice = MockVoice::new().with_internal_events(vec![
             InternalEvent::Mumble(InternalMumbleEvent::Connected),
@@ -964,10 +1141,12 @@ mod tests {
     #[tokio::test]
     async fn mumble_connected_skips_when_use_mumble_settings_enabled() {
         let tmp = tempfile::tempdir().unwrap();
-        settings::set_transmission_mode(tmp.path(), "push_to_talk".into());
-        settings::set_vad_threshold(tmp.path(), 0.42);
-        settings::set_voice_hold(tmp.path(), 250);
-        settings::set_use_mumble_settings(tmp.path(), true);
+        seed_settings(tmp.path(), |s| {
+            s.transmission_mode = Some("push_to_talk".into());
+            s.vad_threshold = Some(0.42);
+            s.voice_hold = Some(250);
+            s.use_mumble_settings = Some(true);
+        });
 
         let voice = MockVoice::new().with_internal_events(vec![
             InternalEvent::Mumble(InternalMumbleEvent::Connected),
@@ -1049,7 +1228,7 @@ mod tests {
             mumble_username: None,
             mumble_password: None,
         };
-        settings::update_bookmarks(tmp.path(), vec![bookmark]);
+        seed_settings(tmp.path(), |s| s.bookmarks = vec![bookmark]);
 
         let (events, _, voice_state) = run_commands(
             MockMatrix::new(),
@@ -1426,9 +1605,11 @@ mod tests {
         let matrix = MockMatrix::new().with_connect_gate(gate_rx);
 
         let (cmd_tx, cmd_rx) = mpsc::channel(32);
+        let (_media_tx, media_rx) = mpsc::channel(32);
         let (event_tx, mut event_rx) = mpsc::channel(100);
         let engine = CoreEngine::new(
-            cmd_rx, event_tx, matrix, MockVoice::new(), tmp.path().to_path_buf(),
+            cmd_rx, media_rx, event_tx, matrix, MockVoice::new(),
+            tmp.path().to_path_buf(), settings::load(tmp.path()),
         );
         let engine_handle = tokio::spawn(async move { engine.run().await });
 
@@ -1780,8 +1961,12 @@ mod tests {
         let voice_state = voice.state.clone();
         let matrix = MockMatrix::new().with_repeating_connect_result(ConnectOutcome::Connected(None));
         let (_cmd_tx, cmd_rx) = mpsc::channel(32);
+        let (_media_tx, media_rx) = mpsc::channel(32);
         let (event_tx, mut event_rx) = mpsc::channel(100);
-        let mut engine = CoreEngine::new(cmd_rx, event_tx, matrix, voice, tmp.path().to_path_buf());
+        let mut engine = CoreEngine::new(
+            cmd_rx, media_rx, event_tx, matrix, voice,
+            tmp.path().to_path_buf(), settings::load(tmp.path()),
+        );
 
         // Driven command by command rather than through `run_commands`: the
         // Connected has to land while the prompt is up, which is after a
@@ -1908,8 +2093,12 @@ mod tests {
         let voice = MockVoice::new();
         let voice_state = voice.state.clone();
         let (_, cmd_rx) = mpsc::channel(32);
+        let (_media_tx, media_rx) = mpsc::channel(32);
         let (event_tx, _) = mpsc::channel(100);
-        let mut engine = CoreEngine::new(cmd_rx, event_tx, MockMatrix::new(), voice, tmp.path().to_path_buf());
+        let mut engine = CoreEngine::new(
+            cmd_rx, media_rx, event_tx, MockMatrix::new(), voice,
+            tmp.path().to_path_buf(), settings::load(tmp.path()),
+        );
 
         // Simulate state saved from a previous session
         engine.voice_session = VoiceSessionState {
