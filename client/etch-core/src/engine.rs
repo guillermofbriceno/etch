@@ -1809,6 +1809,13 @@ mod tests {
     /// a teardown on a timer, so a test that shuts down immediately would pass
     /// against code that had scheduled one; waiting past the shortest backoff
     /// (`backoff_secs(1)`, two seconds) is what makes the absence real.
+    ///
+    /// A caller passing a non-zero `linger` runs under `start_paused`, so the
+    /// wait costs no wall time: the runtime advances the clock only once every
+    /// task is idle, which means a retry scheduled at two seconds gets its turn
+    /// first and has run by the time the sleep returns. That is stricter than
+    /// the real clock it replaces -- a loaded machine cannot swallow the wait
+    /// and let a scheduled teardown look like an absent one.
     async fn connect_then_inject(
         data_dir: &std::path::Path,
         events: Vec<InternalEvent>,
@@ -1835,7 +1842,8 @@ mod tests {
     }
 
     /// Long enough for the shortest retry backoff to have fired if one had
-    /// been scheduled.
+    /// been scheduled. Virtual time under `start_paused`, so it is a position
+    /// on the engine's own clock rather than a pause in the test run.
     const PAST_THE_FIRST_BACKOFF: Duration = Duration::from_millis(2_500);
 
     /// The bug, at the level of the engine. A sync request that failed and is
@@ -1844,7 +1852,7 @@ mod tests {
     /// the timelines and subscriptions behind them stay subscribed. The only
     /// thing that may happen is the UI being told the connection is working
     /// on something.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_transient_sync_failure_does_not_tear_the_session_down() {
         let tmp = tempfile::tempdir().unwrap();
         let (events, matrix_state) = connect_then_inject(tmp.path(), vec![
@@ -1884,7 +1892,7 @@ mod tests {
     /// And when the retry works, the session comes back where it was: still
     /// the same connection, still the same timelines, reported as `Connected`
     /// again without a reconnect in between.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_recovered_sync_returns_to_connected_without_reconnecting() {
         let tmp = tempfile::tempdir().unwrap();
         let (events, matrix_state) = connect_then_inject(tmp.path(), vec![
