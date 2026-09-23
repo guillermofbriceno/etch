@@ -137,9 +137,12 @@ jobs:
       # recorded baseline. Raise this number as coverage improves; never lower it.
       # History: 55.62% (2026-06-15, introduced) -> 61.34% (bridge.rs tests)
       #          -> 63.38% (timeline.rs) -> 64.81% (logger.rs)
-      #          -> 67.28% (process.rs URL/config/command extraction).
+      #          -> 67.28% (process.rs URL/config/command extraction)
+      #          -> 76.96% (session-state and actor-engine work: new retry.rs,
+      #             task.rs, actor.rs, and substantial new suites in
+      #             connection.rs, matrix/service.rs, settings.rs, bridge.rs).
       - name: Enforce coverage floor
-        run: cargo llvm-cov report --fail-under-lines 67
+        run: cargo llvm-cov report --fail-under-lines 75
 
   changes:
     name: Detect changes
