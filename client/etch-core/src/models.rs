@@ -11,17 +11,9 @@ pub enum ConnectionState {
 }
 
 impl ConnectionState {
-    pub fn retries(&self) -> u32 {
-        match self {
-            ConnectionState::Failed { retries, .. } => *retries,
-            _ => 0,
-        }
-    }
-
     pub fn is_failed(&self) -> bool {
         matches!(self, ConnectionState::Failed { .. })
     }
-
 }
 
 /// Seconds to wait before retry number `retries`, doubling each time and
@@ -41,8 +33,9 @@ mod tests {
 
     #[test]
     fn connection_state_defaults() {
+        // `Failed` is the only arm that carries a retry count, and a fresh
+        // state is not it, so there is nothing to read a count off.
         let state = ConnectionState::Disconnected;
-        assert_eq!(state.retries(), 0);
         assert!(!state.is_failed());
     }
 
@@ -65,17 +58,24 @@ mod tests {
         assert_eq!(backoff_secs(u32::MAX), 60);
     }
 
+    /// The retry count is carried by `Failed` and by no other arm.
+    ///
+    /// There is deliberately no accessor that answers it for a whole
+    /// `ConnectionState`: `Connecting` is an attempt in progress, so any such
+    /// accessor would have to report 0 however many attempts had already
+    /// failed. The authoritative counter is `MatrixConnection.retries`; the
+    /// field here is the display snapshot that crosses to the frontend.
     #[test]
-    fn failed_state_reports_its_retry_count() {
+    fn only_the_failed_arm_carries_a_retry_count() {
         let failed = ConnectionState::Failed {
             reason: "err".into(),
             retries: 5,
             retry_in_secs: 32,
         };
-        assert_eq!(failed.retries(), 5);
+        assert!(matches!(failed, ConnectionState::Failed { retries: 5, .. }));
         assert!(failed.is_failed());
 
-        assert_eq!(ConnectionState::Connected.retries(), 0);
+        assert!(!matches!(ConnectionState::Connected, ConnectionState::Failed { .. }));
         assert!(!ConnectionState::Connected.is_failed());
     }
 }

@@ -167,7 +167,11 @@ mod tests {
             conn.begin(&event_tx).await;
             conn.settle(ConnectOutcome::Failed, &mut timer, &event_tx).await;
         }
-        assert_eq!(conn.state.retries(), 3, "three failures should accumulate");
+        assert!(
+            matches!(conn.state, ConnectionState::Failed { retries: 3, .. }),
+            "three failures should accumulate, got {:?}",
+            conn.state,
+        );
 
         conn.begin(&event_tx).await;
         conn.settle(ConnectOutcome::Connected(None), &mut timer, &event_tx).await;
