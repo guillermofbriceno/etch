@@ -29,7 +29,7 @@ const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 /// Reset when connecting to a new server; preserved across process restarts
 /// on the same server.
 #[derive(Debug, Default, PartialEq)]
-pub(crate) struct VoiceSessionState {
+pub(crate) struct VoiceRestoreState {
     pub channel_path: Option<String>,
     pub muted: bool,
     pub deafened: bool,
@@ -143,7 +143,7 @@ pub struct CoreEngine {
     /// and are persisted off this loop.
     pub(crate) settings: SettingsStore,
     /// Voice state persisted across Mumble client restarts.
-    pub(crate) voice_session: VoiceSessionState,
+    pub(crate) voice_restore: VoiceRestoreState,
     /// Where the one voice session stands right now.
     pub(crate) voice: VoiceSession,
 
@@ -185,7 +185,7 @@ impl CoreEngine {
             conn: MatrixConnection::new(),
             settings: SettingsStore::from_loaded(data_dir.clone(), settings),
             data_dir,
-            voice_session: VoiceSessionState::default(),
+            voice_restore: VoiceRestoreState::default(),
             voice: VoiceSession::Idle,
             pending_connect: None,
             pending_launch: None,
@@ -572,21 +572,21 @@ impl CoreEngine {
                         // Restore mute/deafen from the previous session. Send each flag
                         // independently rather than leaning on deafen's implicit mute: an
                         // explicitly muted user must stay muted after they later undeafen.
-                        if self.voice_session.muted {
+                        if self.voice_restore.muted {
                             self.send_voice_command(MumbleCommand::MuteSelf(true)).await;
                         }
-                        if self.voice_session.deafened {
+                        if self.voice_restore.deafened {
                             self.send_voice_command(MumbleCommand::DeafenSelf(true)).await;
                         }
                     }
                     InternalMumbleEvent::LocalChannelChanged { channel_path } => {
-                        self.voice_session.channel_path = Some(channel_path);
+                        self.voice_restore.channel_path = Some(channel_path);
                     }
                     InternalMumbleEvent::LocalMuteChanged(muted) => {
-                        self.voice_session.muted = muted;
+                        self.voice_restore.muted = muted;
                     }
                     InternalMumbleEvent::LocalDeafChanged(deafened) => {
-                        self.voice_session.deafened = deafened;
+                        self.voice_restore.deafened = deafened;
                     }
                 }
             }
@@ -831,7 +831,7 @@ impl CoreEngine {
         // A different voice server means nothing about the old session carries
         // over: channel, mute and deafen are all specific to where we were.
         if self.voice.creds() != Some(&new_creds) {
-            self.voice_session = VoiceSessionState::default();
+            self.voice_restore = VoiceRestoreState::default();
         }
 
         self.launch_voice(new_creds, show_gui, extra_args).await;
@@ -862,7 +862,7 @@ impl CoreEngine {
             creds,
             show_gui,
             extra_args: extra_args.to_string(),
-            channel_path: self.voice_session.channel_path.clone(),
+            channel_path: self.voice_restore.channel_path.clone(),
             internal_tx: self.internal_tx.clone(),
             generation,
         })).await;
@@ -2846,7 +2846,7 @@ mod tests {
         drop(cmd_tx);
 
         // Simulate state saved from a previous session
-        engine.voice_session = VoiceSessionState {
+        engine.voice_restore = VoiceRestoreState {
             channel_path: Some("Voice/General".into()),
             muted: true,
             deafened: true,
@@ -2855,7 +2855,7 @@ mod tests {
         // Connecting to a server resolves fresh credentials, and none of the
         // old session's channel/mute/deafen belongs to them.
         engine.resolve_and_launch_voice(&connect_form(), None, false, "").await;
-        assert_eq!(engine.voice_session, VoiceSessionState::default());
+        assert_eq!(engine.voice_restore, VoiceRestoreState::default());
 
         // Run the engine out so the dispatched launch reaches the mock. The
         // command channel is already closed, so this is just the shutdown

@@ -336,7 +336,7 @@ describe('the voice session outlives a matrix reset', () => {
         expect(get(talkingUsers).size).toBe(1);
         expect(get(userVolumes)).toEqual({ someone: -3.5 });
 
-        // The engine persists these in VoiceSessionState and re-sends them
+        // The engine persists these in VoiceRestoreState and re-sends them
         // when Mumble comes back up, so the frontend must not second-guess it.
         expect(get(isMuted)).toBe(true);
         expect(get(isDeafened)).toBe(true);
