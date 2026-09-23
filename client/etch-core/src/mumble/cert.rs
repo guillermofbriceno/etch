@@ -8,8 +8,12 @@ use crate::error::*;
 ///
 /// Neither a TCP connect nor a TLS handshake bounds itself, so against a black
 /// hole this would otherwise wait out the kernel's SYN retries, or forever on a
-/// peer that connects and then goes quiet. The probe runs on the engine's event
-/// loop, so that wait stalls every queued frontend command.
+/// peer that connects and then goes quiet. The probe runs in the voice actor
+/// rather than on the engine's loop, which keeps the UI responsive but does
+/// not make the wait harmless: the actor serves its requests strictly in
+/// order, so an unbounded probe holds up every voice command behind it, and
+/// the launch it opens never reports `LaunchFinished`, leaving the session
+/// stuck in `Launching` with no answer coming.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// TLS-connect to host:port (accepting any cert), return SHA1 hex of the
@@ -136,8 +140,10 @@ mod tests {
     }
 
     /// A server that completes the TCP handshake but never speaks TLS must not
-    /// stall the probe forever. `probe_server_cert` runs on the engine's event
-    /// loop, so an unbounded hang there freezes every queued frontend command.
+    /// stall the probe forever. `probe_server_cert` is the first step of a
+    /// voice launch and runs in the voice actor, which takes nothing else
+    /// until it returns: an unbounded hang here strands the launch and every
+    /// voice request queued behind it.
     #[tokio::test]
     async fn probe_gives_up_on_a_server_that_never_completes_the_handshake() {
         // Accept connections and then do nothing, holding the socket open.
