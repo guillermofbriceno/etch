@@ -7,7 +7,7 @@ import { closeOverlay } from './overlay';
 import { initHiddenDms } from './channels';
 import { transmissionMode, vadThreshold, voiceHold, useMumbleSettings, deafenSuppressesNotifs } from './voiceSettings';
 import type { TransmissionMode } from './voiceSettings';
-import { registerSessionStore } from './session';
+import { registerSessionStore, declareStores } from './session';
 
 // Device-scoped. The saved server list and the row selected in settings are
 // both preferences that outlive any one connection.
@@ -20,6 +20,8 @@ export const selectedBookmarkId = writable<string | null>(null);
 // would wipe the details of the connection currently in flight and leave the
 // password prompt with nothing to show.
 export const connectingBookmark = writable<ServerBookmark | null>(null);
+
+declareStores('device', 'serverBookmarks', 'selectedBookmarkId', 'connectingBookmark');
 
 // Matrix session. All three describe the homeserver connection being
 // established or already attached. ServerReset is emitted before the

@@ -9,20 +9,25 @@ import { handleMatrixEvent as userHandleMatrix, handleSystemEvent as userHandleS
 import { handleSystemEvent as serversHandleSystem } from './servers';
 import { handleSystemEvent as errorsHandleSystem } from './errors';
 import { handleMumbleEvent, handleSystemEvent as voiceHandleSystem } from './voiceState';
-import { resetMatrixSession } from './session';
+import { resetMatrixSession, declareStores } from './session';
 
-// Store modules declare their session-scoped state by calling
-// registerSessionStore() at import time, so a reset only knows about a module
-// something has pulled in. The handler imports above cover most of them; these
-// three own session state but no event handler, so they need an import of
-// their own to get registered.
-import './activeChannel';
-import './compose';
-import './userVolumes';
+// Store modules classify their state by calling registerSessionStore() or
+// declareStores() at import time, so a reset only covers a module something
+// has pulled in. Every store module is imported here, by pattern rather than
+// by name: a hand-written list of imports would be the reset list's old bug
+// wearing a different hat, and a store whose module is only reached through
+// some component would otherwise go unregistered until that component was
+// first rendered -- possibly after the first ServerReset.
+//
+// The glob is eager on purpose: the registrations must have run by the time
+// initEventRouter() can fire a reset, not at some later await point.
+import.meta.glob('./*.ts', { eager: true });
 
 // Device-scoped. Tracks OS window focus for notification sounds, which has
 // nothing to do with which server is connected.
 export const appFocused = writable(true);
+
+declareStores('device', 'appFocused');
 
 export function initEventRouter(): void {
     appFocused.set(document.hasFocus());

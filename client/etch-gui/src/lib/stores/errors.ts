@@ -1,5 +1,6 @@
 import { writable } from 'svelte/store';
 import type { SystemEvent } from '$lib/ipc';
+import { declareStores } from './session';
 
 export type ErrorEntry = {
     message: string;
@@ -13,6 +14,8 @@ export type ErrorEntry = {
 // clear them. The toast expires on its own timer a few seconds later.
 export const errorLog = writable<ErrorEntry[]>([]);
 export const toastError = writable<string | null>(null);
+
+declareStores('device', 'errorLog', 'toastError');
 
 let toastTimer: ReturnType<typeof setTimeout> | null = null;
 

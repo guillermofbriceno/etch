@@ -5,7 +5,7 @@ import { isMuted, isDeafened } from './audio';
 import { userVolumes, setUserVolume } from './userVolumes';
 import { transmissionMode, vadThreshold, voiceHold, useMumbleSettings } from './voiceSettings';
 import type { TransmissionMode } from './voiceSettings';
-import { registerSessionStore, resetVoiceSession } from './session';
+import { registerSessionStore, declareStores, resetVoiceSession } from './session';
 
 export type VoiceChannel = {
     id: number;
@@ -54,6 +54,8 @@ export const usersByChannel = derived(voiceUsers, ($users) => {
     }
     return grouped;
 });
+
+declareStores('derived', 'voiceConnected', 'usersByChannel');
 
 let settled = false;
 let localSession: number | null = null;

@@ -5,7 +5,7 @@ import { sendCoreCommand } from '$lib/ipc';
 import { activeChannelId, onUnreadMessage } from './activeChannel';
 import { setActiveChannel } from './messages';
 import { currentUser } from './user';
-import { registerSessionStore } from './session';
+import { registerSessionStore, declareStores } from './session';
 
 /** Return the timestamp of the last Message in a list of entries, or null. */
 function lastMessageTs(entries: TimelineEntry[]): number | null {
@@ -30,6 +30,8 @@ export const dmLastActivity = writable<Record<string, number>>({});
 // fire again on reconnect, so clearing this would silently unhide every DM
 // and leave the stored list disagreeing with what is on screen.
 const hiddenDmIds = writable<Set<string>>(new Set());
+
+declareStores('device', 'hiddenDmIds');
 
 // Matrix session. A cache of RoomInfo pulled from the connected server's
 // channel list, held only so an unhide can put the room straight back.
@@ -115,6 +117,8 @@ export const activeChannel = derived(
     [channels, activeChannelId],
     ([$channels, $id]) => $channels.find(c => c.id === $id) ?? null
 );
+
+declareStores('derived', 'activeChannel');
 
 // --- Event handler called by eventRouter ---
 

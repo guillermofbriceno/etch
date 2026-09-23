@@ -55,9 +55,11 @@ src/lib/
 
 ## Things to know
 
-**Don't import from the barrel `$lib/stores/index.ts` in store tests.** It re-exports from `updater.ts`, which calls `listen()` at the module level. Import directly from the specific store file instead (e.g., `../voiceState`). Component tests can safely import from `$lib/stores` since `listen` is already mocked.
+**Don't import from the barrel `$lib/stores/index.ts` in store tests.** It re-exports from `updater.ts`, which calls `listen()` at the module level. Import directly from the specific store file instead (e.g., `../voiceState`). Component tests can safely import from `$lib/stores` since `listen` is already mocked. Importing `../eventRouter` pulls in every store module as well: it globs the directory so that each one's session classification is registered, which is what makes a reset cover all of them.
 
-**The `windows` store in messages.ts is private.** You can't reset it with `resetStores()`. If your test populates a room's timeline, clear it in `beforeEach` with:
+**Every store must be classified.** A `writable`/`derived`/`readable` in `src/lib/stores/` is either registered with `registerSessionStore()` (matrix or voice session, with the reset that clears it) or declared with `declareStores()` as device-scoped, backend-owned, or derived. `storeClassification.test.ts` reads the source of the directory and fails on a store that did neither, so a new store needs a decision, not just a definition.
+
+**The `messageWindows` store in messages.ts is private.** You can't reset it with `resetStores()`. If your test populates a room's timeline, clear it in `beforeEach` with:
 ```ts
 handleMatrixEvent({ type: 'TimelineCleared', data: 'room1' } as any);
 ```

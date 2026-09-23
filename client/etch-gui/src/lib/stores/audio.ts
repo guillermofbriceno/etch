@@ -1,6 +1,7 @@
 import { writable, get } from 'svelte/store';
 import { sendCoreCommand } from '$lib/ipc';
 import { playSfx, setSfxDeafened } from './sfx';
+import { declareStores } from './session';
 
 // Backend-owned, so registered in neither session scope. These mirror the
 // local Mumble user's self-mute and self-deaf flags, and the engine persists
@@ -11,6 +12,8 @@ import { playSfx, setSfxDeafened } from './sfx';
 // VoiceSessionState itself and the new UserState corrects them.
 export const isMuted = writable<boolean>(false);
 export const isDeafened = writable<boolean>(false);
+
+declareStores('backend', 'isMuted', 'isDeafened');
 
 export async function toggleMute(): Promise<void> {
     if (get(isDeafened)) {

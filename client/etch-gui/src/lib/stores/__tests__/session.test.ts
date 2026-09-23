@@ -12,9 +12,10 @@ vi.mock('../sfx', () => ({
 }));
 
 // Importing the router is what pulls every store module into the graph, which
-// is what makes them register. This mirrors how the running app loads them,
-// so a module the router cannot reach shows up here as a missing name rather
-// than as a store that quietly never gets cleared.
+// is what makes them register. The probes below need the stores themselves as
+// well, so this file cannot tell a module the router reaches from one it only
+// imports itself; storeClassification.test.ts imports the router alone and is
+// where that distinction is checked.
 import { initEventRouter } from '../eventRouter';
 import { sessionStoreNames } from '../session';
 
@@ -346,12 +347,19 @@ describe('the voice session outlives a matrix reset', () => {
 // The registered sets themselves
 // -----------------------------------------------------------------------
 
-// These two lists exist to fail. They are the only thing standing between a
-// new session-scoped store and the old bug, where state belonging to a session
-// that had ended kept showing because nobody remembered to clear it.
+// These two lists exist to fail. They pin which stores belong to which
+// session, so a store moving between scopes, losing its registration, or
+// changing name has to be a deliberate edit here rather than a silent change
+// in behaviour.
 //
-// If one fails, work out which bucket the store belongs in before touching the
-// list:
+// What they cannot do is notice a store nobody registered at all: a name that
+// never reached the registry leaves both lists exactly as they were. That
+// direction -- the one the original bug came from -- is covered by
+// storeClassification.test.ts, which reads the source rather than the
+// registry.
+//
+// If one of these fails, work out which bucket the store belongs in before
+// touching the list:
 //   matrix session  state from one homeserver connection, cleared on ServerReset
 //   voice session   state from one Mumble connection, cleared on its disconnect
 //   device-scoped   a preference or UI state that has to survive both
@@ -359,9 +367,9 @@ describe('the voice session outlives a matrix reset', () => {
 //                   not clear it (isMuted and isDeafened are the two)
 //   derived         computed from other stores, needs no reset of its own
 //
-// Register it in the right scope and add it here, or decide it belongs in
-// neither and say so in a comment where it is defined. Editing a list to make
-// the red go away puts the bug back.
+// Register it in the right scope and add it here, or declare it in one of the
+// other three buckets where it is defined. Editing a list to make the red go
+// away puts the bug back.
 const EXPECTED_MATRIX_STORES = [
     'activeChannelId',
     'certChangeRequest',
