@@ -307,6 +307,7 @@ impl MatrixBackend for MatrixService {
         &mut self,
         form: ServerConnectionForm,
         internal_tx: mpsc::Sender<InternalEvent>,
+        generation: u64,
     ) -> ConnectOutcome {
         let client = match self.prepare_session(&form, &internal_tx).await {
             Ok(client) => client,
@@ -405,9 +406,10 @@ impl MatrixBackend for MatrixService {
         let sync_client = client.clone();
         let itx = internal_tx.clone();
         let sync = AbortOnDrop::new(tokio::spawn(async move {
-            let end = matrix::sync_loop(sync_client, SYNC_POLL_TIMEOUT, itx.clone()).await;
+            let end = matrix::sync_loop(sync_client, SYNC_POLL_TIMEOUT, itx.clone(), generation)
+                .await;
             let _ = itx.send(InternalEvent::Matrix(
-                InternalMatrixEvent::Disconnected(end),
+                InternalMatrixEvent::Disconnected { generation, end },
             )).await;
         }));
 
@@ -858,7 +860,7 @@ mod tests {
             "access_token": "revoked-token"
         }"#).unwrap();
 
-        let outcome = service.connect(form.clone(), internal_tx.clone()).await;
+        let outcome = service.connect(form.clone(), internal_tx.clone(), 1).await;
 
         assert!(matches!(outcome, ConnectOutcome::Failed), "a rejected token cannot connect");
         assert!(server.requests_to("/sync") > 0, "the rejection should have come from the server");

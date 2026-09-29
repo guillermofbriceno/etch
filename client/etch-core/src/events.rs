@@ -87,9 +87,10 @@ impl SyncEnd {
 pub enum InternalMatrixEvent {
     Connected,
     /// Nothing has been torn down; a later `SyncRecovered` may be all that follows.
-    SyncDegraded { reason: String },
-    SyncRecovered,
-    Disconnected(SyncEnd),
+    /// Each sync report carries the generation of the connect that started its session.
+    SyncDegraded { generation: u64, reason: String },
+    SyncRecovered { generation: u64 },
+    Disconnected { generation: u64, end: SyncEnd },
     SubscribeToRoom(matrix_sdk::ruma::OwnedRoomId),
     /// A result from a superseded attempt can still arrive and is discarded by `generation`.
     ConnectFinished {

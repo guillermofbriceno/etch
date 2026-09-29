@@ -4,7 +4,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::commands::{MatrixCommand, MumbleCommand, ServerConnectionForm};
 use crate::error::CoreError;
-use crate::events::InternalEvent;
+use crate::events::{InternalEvent, InternalMatrixEvent};
 use crate::models::{ConnectOutcome, VoiceServerConfig};
 use crate::traits::{MatrixBackend, VoiceService};
 
@@ -33,10 +33,10 @@ pub struct MockMatrix {
     pub repeat_connect_result: bool,
     pub profile_response: (Option<String>, Option<String>),
     pub media_response: Result<Vec<u8>, String>,
-    /// Events sent through `internal_tx` during `connect()`.
-    pub internal_events: Vec<InternalEvent>,
     /// Holds a connection in flight so a test can check the engine stays responsive.
     pub connect_gate: Option<oneshot::Receiver<()>>,
+    /// Sent by the first connect before it returns, as a sync task it spawned would.
+    pub reports_during_connect: Vec<fn(u64) -> InternalMatrixEvent>,
 }
 
 impl MockMatrix {
@@ -51,8 +51,8 @@ impl MockMatrix {
             repeat_connect_result: false,
             profile_response: (None, None),
             media_response: Ok(vec![0xDE, 0xAD]),
-            internal_events: Vec::new(),
             connect_gate: None,
+            reports_during_connect: Vec::new(),
         }
     }
 
@@ -72,13 +72,16 @@ impl MockMatrix {
         self
     }
 
-    pub fn with_internal_events(mut self, events: Vec<InternalEvent>) -> Self {
-        self.internal_events = events;
+    pub fn with_connect_gate(mut self, gate: oneshot::Receiver<()>) -> Self {
+        self.connect_gate = Some(gate);
         self
     }
 
-    pub fn with_connect_gate(mut self, gate: oneshot::Receiver<()>) -> Self {
-        self.connect_gate = Some(gate);
+    pub fn with_reports_during_connect(
+        mut self,
+        reports: Vec<fn(u64) -> InternalMatrixEvent>,
+    ) -> Self {
+        self.reports_during_connect = reports;
         self
     }
 }
@@ -88,13 +91,14 @@ impl MatrixBackend for MockMatrix {
         &mut self,
         _form: ServerConnectionForm,
         internal_tx: mpsc::Sender<InternalEvent>,
+        generation: u64,
     ) -> ConnectOutcome {
         self.state.call_log.lock().unwrap().push(MockCall::Connect);
         if let Some(gate) = self.connect_gate.take() {
             let _ = gate.await;
         }
-        for event in self.internal_events.drain(..) {
-            let _ = internal_tx.send(event).await;
+        for report in std::mem::take(&mut self.reports_during_connect) {
+            let _ = internal_tx.send(InternalEvent::Matrix(report(generation))).await;
         }
         if self.repeat_connect_result {
             return self.connect_result.clone();

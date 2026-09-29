@@ -146,7 +146,7 @@ async fn matrix_actor<M: MatrixBackend>(
             MatrixRequest::Connect { form, internal_tx, generation, cancel } => {
                 let attempt = async {
                     service.reset().await;
-                    service.connect(form, internal_tx.clone()).await
+                    service.connect(form, internal_tx.clone(), generation).await
                 };
                 tokio::pin!(attempt);
                 tokio::pin!(cancel);

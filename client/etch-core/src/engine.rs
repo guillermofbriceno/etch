@@ -2,7 +2,7 @@ use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration, Instant, Sleep};
 use crate::actor::{LaunchRequest, MatrixHandle, MatrixRequest, VoiceHandle, VoiceRequest};
 use crate::connection::MatrixConnection;
-use crate::events::{CoreEvent, InternalEvent, InternalMatrixEvent, InternalMumbleEvent, InternalSystemEvent, LaunchOutcome, MumbleEvent, SyncEnd, SystemEvent};
+use crate::events::{CoreEvent, InternalEvent, InternalMatrixEvent, InternalMumbleEvent, LaunchOutcome, MumbleEvent, SyncEnd, SystemEvent};
 use crate::commands::{CoreCommand, MediaRequest, MumbleCommand, ServerConnectionForm, SystemCommand};
 use crate::models::{ConnectOutcome, ConnectionState, VoiceServerConfig};
 use crate::settings::{Settings, SettingsStore};
@@ -69,7 +69,14 @@ struct PendingConnect {
     form: ServerConnectionForm,
     cancel: tokio::sync::oneshot::Sender<()>,
     started: Instant,
-    peak_control_depth: usize,
+    /// The connect spawns its sync task before it answers, so its session can report first.
+    held_sync: Option<SyncReport>,
+}
+
+enum SyncReport {
+    Degraded,
+    Recovered,
+    Ended(SyncEnd),
 }
 
 /// A voice launch the engine has dispatched and not yet had an answer for.
@@ -100,6 +107,9 @@ pub struct CoreEngine {
     pending_connect: Option<PendingConnect>,
     pending_launch: Option<PendingLaunch>,
     connect_generation: u64,
+    /// The connect generation whose sync reports are current: set when that connect settles
+    /// `Connected`, cleared when its sync ends or another connect starts.
+    live_generation: Option<u64>,
     launch_generation: u64,
 
     /// Set at the top of `shut_down` so a connect landing during the grace cannot start voice.
@@ -140,6 +150,7 @@ impl CoreEngine {
             pending_connect: None,
             pending_launch: None,
             connect_generation: 0,
+            live_generation: None,
             launch_generation: 0,
             shutting_down: false,
             #[cfg(test)]
@@ -151,10 +162,6 @@ impl CoreEngine {
         let mut retry_timer: Pin<Box<Sleep>> = Box::pin(sleep(Duration::MAX));
 
         loop {
-            if let Some(pending) = &mut self.pending_connect {
-                pending.peak_control_depth = pending.peak_control_depth.max(self.cmd_rx.len());
-            }
-
             tokio::select! {
                 cmd = self.cmd_rx.recv() => {
                     let Some(cmd) = cmd else { break };
@@ -230,38 +237,17 @@ impl CoreEngine {
         self.settings.shutdown().await;
     }
 
-    /// Test-only: shutdown waits on a narrower condition than this.
-    #[cfg(test)]
-    fn settled(&self) -> bool {
-        self.pending_connect.is_none() && self.pending_launch.is_none()
-    }
-
-    #[cfg(test)]
+    /// A no-op outside tests; shutdown waits on a narrower condition than a barrier does.
     fn answer_barriers(&mut self) {
-        if !self.settled() || !self.cmd_rx.is_empty() {
-            return;
+        #[cfg(test)]
+        if self.pending_connect.is_none()
+            && self.pending_launch.is_none()
+            && self.cmd_rx.is_empty()
+        {
+            for reply in self.pending_barriers.drain(..) {
+                let _ = reply.send(());
+            }
         }
-        for reply in self.pending_barriers.drain(..) {
-            let _ = reply.send(());
-        }
-    }
-
-    #[cfg(not(test))]
-    fn answer_barriers(&self) {}
-
-    #[cfg(test)]
-    pub(crate) async fn kill_matrix_actor(&self) {
-        self.matrix.kill_for_test().await;
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn kill_voice_actor(&self) {
-        self.voice_service.kill_for_test().await;
-    }
-
-    #[cfg(test)]
-    pub(crate) fn internal_sender(&self) -> mpsc::Sender<InternalEvent> {
-        self.internal_tx.clone()
     }
 
     async fn handle_system_command(
@@ -366,32 +352,27 @@ impl CoreEngine {
                     InternalMatrixEvent::SubscribeToRoom(room_id) => {
                         let _ = self.matrix.send(MatrixRequest::Subscribe(room_id.to_string())).await;
                     }
-                    InternalMatrixEvent::SyncDegraded { reason } => {
+                    InternalMatrixEvent::SyncDegraded { generation, reason } => {
                         log::warn!(
-                            "Matrix sync degraded ({reason}); retrying in place, session untouched",
+                            "Matrix sync #{generation} degraded ({reason}); retrying in place, \
+                             session untouched",
                         );
-                        if self.sync_health_is_current() {
-                            self.conn.degraded(&self.event_tx).await;
-                        }
+                        self.on_sync_report(generation, SyncReport::Degraded, retry_timer).await;
                     }
-                    InternalMatrixEvent::SyncRecovered => {
-                        log::info!("Matrix sync recovered without a reconnect");
-                        if self.sync_health_is_current() {
-                            self.conn.recovered(&self.event_tx).await;
-                        }
+                    InternalMatrixEvent::SyncRecovered { generation } => {
+                        log::info!("Matrix sync #{generation} recovered without a reconnect");
+                        self.on_sync_report(generation, SyncReport::Recovered, retry_timer).await;
                     }
-                    InternalMatrixEvent::Disconnected(end) => {
+                    InternalMatrixEvent::Disconnected { generation, end } => {
                         match &end {
                             SyncEnd::SessionInvalidated { reason } => log::error!(
-                                "Matrix session invalidated by the server: {reason}",
+                                "Matrix session #{generation} invalidated by the server: {reason}",
                             ),
                             SyncEnd::RetriesExhausted { reason } => log::warn!(
-                                "Matrix sync stopped after retrying: {reason}",
+                                "Matrix sync #{generation} stopped after retrying: {reason}",
                             ),
                         }
-                        self.conn.schedule_retry(
-                            retry_timer, end.reason().to_string(), &self.event_tx,
-                        ).await;
+                        self.on_sync_report(generation, SyncReport::Ended(end), retry_timer).await;
                     }
                     InternalMatrixEvent::ConnectFinished { generation, outcome } => {
                         self.finish_connect(generation, outcome, retry_timer).await;
@@ -495,20 +476,11 @@ impl CoreEngine {
                     }
                 }
             }
-            InternalEvent::System(evt) => self.handle_internal_system_event(evt),
+            InternalEvent::System(evt) => match evt {
+                #[cfg(test)]
+                crate::events::InternalSystemEvent::Barrier(reply) => self.pending_barriers.push(reply),
+            },
         }
-    }
-
-    #[cfg(test)]
-    fn handle_internal_system_event(&mut self, evt: InternalSystemEvent) {
-        match evt {
-            InternalSystemEvent::Barrier(reply) => self.pending_barriers.push(reply),
-        }
-    }
-
-    #[cfg(not(test))]
-    fn handle_internal_system_event(&mut self, evt: InternalSystemEvent) {
-        match evt {}
     }
 
     async fn send_voice_command(&self, cmd: MumbleCommand) {
@@ -560,6 +532,8 @@ impl CoreEngine {
         // new session's data.
         let _ = self.event_tx.send(CoreEvent::System(SystemEvent::ServerReset)).await;
         self.conn.begin(&self.event_tx).await;
+        // The actor resets the backend before connecting, which ends the live session.
+        self.live_generation = None;
 
         let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
         self.pending_connect = Some(PendingConnect {
@@ -567,7 +541,7 @@ impl CoreEngine {
             form: form.clone(),
             cancel: cancel_tx,
             started: Instant::now(),
-            peak_control_depth: 0,
+            held_sync: None,
         });
 
         let dispatched = self.matrix.send(MatrixRequest::Connect {
@@ -588,14 +562,38 @@ impl CoreEngine {
         }
     }
 
-    /// A connect owns the connection state, and the report may come from the session it
-    /// is replacing.
-    fn sync_health_is_current(&self) -> bool {
-        if self.pending_connect.is_some() {
-            log::debug!("Ignoring a sync health report: a connect is already in flight");
-            return false;
+    async fn on_sync_report(
+        &mut self,
+        generation: u64,
+        report: SyncReport,
+        retry_timer: &mut Pin<Box<Sleep>>,
+    ) {
+        if let Some(pending) = &mut self.pending_connect
+            && pending.generation == generation
+        {
+            // An end is final for the session, so no later health report may displace it.
+            if !matches!(pending.held_sync, Some(SyncReport::Ended(_))) {
+                pending.held_sync = Some(report);
+            }
+            return;
         }
-        true
+        if self.live_generation != Some(generation) {
+            log::debug!("Ignoring a sync report from session #{generation}: it is not live");
+            return;
+        }
+        self.apply_sync_report(report, retry_timer).await;
+    }
+
+    async fn apply_sync_report(&mut self, report: SyncReport, retry_timer: &mut Pin<Box<Sleep>>) {
+        match report {
+            SyncReport::Degraded => self.conn.degraded(&self.event_tx).await,
+            SyncReport::Recovered => self.conn.recovered(&self.event_tx).await,
+            SyncReport::Ended(end) => {
+                self.live_generation = None;
+                self.conn.schedule_retry(retry_timer, end.reason().to_string(), &self.event_tx)
+                    .await;
+            }
+        }
     }
 
     async fn finish_connect(
@@ -614,19 +612,20 @@ impl CoreEngine {
             return;
         }
 
-        log::info!(
-            "Matrix connect #{generation} took {:?}; peak control queue depth during it: {}; \
-             queue depth after it: control={}, media={}",
-            pending.started.elapsed(),
-            pending.peak_control_depth,
-            self.cmd_rx.len(),
-            self.media_rx.len(),
-        );
+        log::info!("Matrix connect #{generation} took {:?}", pending.started.elapsed());
 
         let voice_server = self.conn.settle(outcome, retry_timer, &self.event_tx).await;
+        if !matches!(self.conn.state, ConnectionState::Connected) {
+            return;
+        }
+        self.live_generation = Some(generation);
 
-        if matches!(self.conn.state, ConnectionState::Connected) && pending.form.mumble_host.is_none() {
+        if pending.form.mumble_host.is_none() {
             self.resolve_and_launch_voice(&pending.form, voice_server, false, "").await;
+        }
+        // Applied after the voice decision, as if it had arrived just after the result.
+        if let Some(report) = pending.held_sync {
+            self.apply_sync_report(report, retry_timer).await;
         }
     }
 
@@ -769,7 +768,7 @@ mod tests {
 
     impl EngineDriver {
         fn start(engine: CoreEngine, cmd_tx: mpsc::Sender<CoreCommand>, event_rx: mpsc::Receiver<CoreEvent>) -> Self {
-            let internal_tx = engine.internal_sender();
+            let internal_tx = engine.internal_tx.clone();
             Self {
                 cmd_tx,
                 internal_tx,
@@ -1523,30 +1522,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn matrix_disconnect_triggers_retry() {
-        let tmp = tempfile::tempdir().unwrap();
-        let matrix = MockMatrix::new().with_internal_events(vec![
-            InternalEvent::Matrix(InternalMatrixEvent::Disconnected(
-                SyncEnd::RetriesExhausted { reason: "test disconnect".into() },
-            )),
-        ]);
-
-        let (events, _, _) = run_commands(
-            matrix,
-            MockVoice::new(),
-            tmp.path(),
-            vec![CoreCommand::System(SystemCommand::ConnectToServer(connect_form()))],
-        ).await;
-
-        // After a successful connect, the mock fires an InternalMatrixEvent::Disconnected.
-        // The engine should schedule a retry, emitting a Failed connection state.
-        let has_failed = events.iter().any(|e| matches!(e,
-            CoreEvent::Matrix(MatrixEvent::ConnectionState(ConnectionState::Failed { .. }))
-        ));
-        assert!(has_failed, "Disconnection should schedule a retry with Failed state");
-    }
-
-    #[tokio::test]
     async fn open_mumble_gui_launches_with_cached_creds() {
         let tmp = tempfile::tempdir().unwrap();
 
@@ -1678,6 +1653,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (events, matrix_state) = connect_then_inject(tmp.path(), vec![
             InternalEvent::Matrix(InternalMatrixEvent::SyncDegraded {
+                generation: 1,
                 reason: "Sync error: error sending request".into(),
             }),
         ], PAST_THE_FIRST_BACKOFF).await;
@@ -1714,8 +1690,11 @@ mod tests {
     async fn a_recovered_sync_returns_to_connected_without_reconnecting() {
         let tmp = tempfile::tempdir().unwrap();
         let (events, matrix_state) = connect_then_inject(tmp.path(), vec![
-            InternalEvent::Matrix(InternalMatrixEvent::SyncDegraded { reason: "blip".into() }),
-            InternalEvent::Matrix(InternalMatrixEvent::SyncRecovered),
+            InternalEvent::Matrix(InternalMatrixEvent::SyncDegraded {
+                generation: 1,
+                reason: "blip".into(),
+            }),
+            InternalEvent::Matrix(InternalMatrixEvent::SyncRecovered { generation: 1 }),
         ], PAST_THE_FIRST_BACKOFF).await;
 
         use crate::test_mocks::MockCall;
@@ -1740,9 +1719,10 @@ mod tests {
     async fn a_sync_loop_that_gave_up_falls_back_to_the_reconnect_path() {
         let tmp = tempfile::tempdir().unwrap();
         let (events, _) = connect_then_inject(tmp.path(), vec![
-            InternalEvent::Matrix(InternalMatrixEvent::Disconnected(
-                SyncEnd::RetriesExhausted { reason: "out of retries".into() },
-            )),
+            InternalEvent::Matrix(InternalMatrixEvent::Disconnected {
+                generation: 1,
+                end: SyncEnd::RetriesExhausted { reason: "out of retries".into() },
+            }),
         ], Duration::ZERO).await;
 
         assert!(
@@ -1759,9 +1739,10 @@ mod tests {
     async fn an_invalidated_session_is_distinguishable_from_exhausted_retries() {
         let tmp = tempfile::tempdir().unwrap();
         let (events, _) = connect_then_inject(tmp.path(), vec![
-            InternalEvent::Matrix(InternalMatrixEvent::Disconnected(
-                SyncEnd::SessionInvalidated { reason: "M_UNKNOWN_TOKEN".into() },
-            )),
+            InternalEvent::Matrix(InternalMatrixEvent::Disconnected {
+                generation: 1,
+                end: SyncEnd::SessionInvalidated { reason: "M_UNKNOWN_TOKEN".into() },
+            }),
         ], Duration::ZERO).await;
 
         assert!(
@@ -2065,7 +2046,7 @@ mod tests {
     async fn a_connect_that_cannot_be_dispatched_fails_and_re_arms_the_retry() {
         let tmp = tempfile::tempdir().unwrap();
         let (engine, cmd_tx, event_rx) = build_engine(MockMatrix::new(), MockVoice::new(), tmp.path());
-        engine.kill_matrix_actor().await;
+        engine.matrix.kill_for_test().await;
         let driver = EngineDriver::start(engine, cmd_tx, event_rx);
 
         // Settling is half the assertion: barriers answer only once nothing dispatched
@@ -2091,7 +2072,7 @@ mod tests {
         let voice = MockVoice::new();
         let voice_state = voice.state.clone();
         let (engine, cmd_tx, event_rx) = build_engine(MockMatrix::new(), voice, tmp.path());
-        engine.kill_voice_actor().await;
+        engine.voice_service.kill_for_test().await;
         let driver = EngineDriver::start(engine, cmd_tx, event_rx);
 
         let mut form = connect_form();
@@ -2142,16 +2123,22 @@ mod tests {
         );
     }
 
-    /// Until a connect lands, a sync report can only come from the session it replaces.
-    #[tokio::test]
-    async fn a_sync_report_from_the_replaced_session_cannot_mark_a_connect_in_flight_connected() {
+    /// Starts from a live session #1, which the connect (#2) replaces.
+    async fn replaced_session_report_during_a_connect(
+        outcome: ConnectOutcome,
+        report: InternalMatrixEvent,
+    ) -> Vec<CoreEvent> {
         let tmp = tempfile::tempdir().unwrap();
         let (gate_tx, gate_rx) = tokio::sync::oneshot::channel();
         let matrix = MockMatrix::new()
-            .with_connect_result(ConnectOutcome::Failed)
+            .with_connect_result(outcome)
             .with_connect_gate(gate_rx);
-        let (engine, cmd_tx, mut event_rx) = build_engine(matrix, MockVoice::new(), tmp.path());
-        let internal_tx = engine.internal_sender();
+        let (mut engine, cmd_tx, mut event_rx) =
+            build_engine(matrix, MockVoice::new(), tmp.path());
+        engine.connect_generation = 1;
+        engine.live_generation = Some(1);
+        engine.conn.state = ConnectionState::Connected;
+        let internal_tx = engine.internal_tx.clone();
         let engine_handle = tokio::spawn(async move { engine.run().await });
 
         cmd_tx.send(CoreCommand::System(SystemCommand::ConnectToServer(connect_form())))
@@ -2159,7 +2146,7 @@ mod tests {
         wait_for_connecting(&mut event_rx).await;
 
         // Sent on the channel the connect reports on, so it is handled before the result.
-        internal_tx.send(InternalEvent::Matrix(InternalMatrixEvent::SyncRecovered)).await.unwrap();
+        internal_tx.send(InternalEvent::Matrix(report)).await.unwrap();
         let _ = gate_tx.send(());
 
         drop(cmd_tx);
@@ -2171,11 +2158,144 @@ mod tests {
         while let Ok(event) = event_rx.try_recv() {
             events.push(event);
         }
+        events
+    }
+
+    #[tokio::test]
+    async fn a_sync_report_from_the_replaced_session_cannot_mark_a_connect_in_flight_connected() {
+        let events = replaced_session_report_during_a_connect(
+            ConnectOutcome::Failed,
+            InternalMatrixEvent::SyncRecovered { generation: 1 },
+        ).await;
 
         let states = conn_states(&events);
         assert!(
             matches!(states.as_slice(), [ConnectionState::Failed { .. }]),
             "only the connect's own outcome may settle it, got Connecting then {states:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn the_replaced_session_ending_cannot_fail_a_connect_in_flight() {
+        let events = replaced_session_report_during_a_connect(
+            ConnectOutcome::Failed,
+            InternalMatrixEvent::Disconnected {
+                generation: 1,
+                end: SyncEnd::RetriesExhausted { reason: "the old session's sync gave up".into() },
+            },
+        ).await;
+
+        let states = conn_states(&events);
+        assert!(
+            matches!(
+                states.as_slice(),
+                [ConnectionState::Failed { reason, retries: 1, retry_in_secs: 2 }]
+                    if reason == "Connection failed",
+            ),
+            "only the connect's own failure may count toward the backoff, got Connecting \
+             then {states:?}",
+        );
+    }
+
+    async fn own_report_before_the_connect_answers(
+        data_dir: &std::path::Path,
+        reports: Vec<fn(u64) -> InternalMatrixEvent>,
+        linger: Duration,
+    ) -> (Vec<CoreEvent>, Arc<MockMatrixState>) {
+        let matrix = MockMatrix::new()
+            .with_repeating_connect_result(ConnectOutcome::Connected(None))
+            .with_reports_during_connect(reports);
+        let matrix_state = matrix.state.clone();
+        let (engine, cmd_tx, event_rx) = build_engine(matrix, MockVoice::new(), data_dir);
+        let driver = EngineDriver::start(engine, cmd_tx, event_rx);
+
+        driver.step(CoreCommand::System(SystemCommand::ConnectToServer(connect_form()))).await;
+        tokio::time::sleep(linger).await;
+        driver.settle().await;
+
+        (driver.finish().await, matrix_state)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_session_that_ends_before_its_connect_answers_is_retried() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (events, matrix_state) = own_report_before_the_connect_answers(
+            tmp.path(),
+            vec![|generation| InternalMatrixEvent::Disconnected {
+                generation,
+                end: SyncEnd::RetriesExhausted { reason: "the new session's sync gave up".into() },
+            }],
+            PAST_THE_FIRST_BACKOFF,
+        ).await;
+
+        let states = conn_states(&events);
+        assert!(
+            matches!(
+                states.as_slice(),
+                [ConnectionState::Connecting, ConnectionState::Connected,
+                 ConnectionState::Failed { reason, retries: 1, .. }, ConnectionState::Connecting,
+                 ConnectionState::Connected]
+                    if reason == "the new session's sync gave up",
+            ),
+            "a dead sync loop must not be left looking connected, got {states:?}",
+        );
+
+        use crate::test_mocks::MockCall;
+        assert_eq!(
+            matrix_state.call_log.lock().unwrap().iter()
+                .filter(|call| **call == MockCall::Connect).count(),
+            2,
+            "the ended session should have been reconnected by the retry",
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_held_session_end_is_not_displaced_by_a_later_health_report() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (events, _) = own_report_before_the_connect_answers(
+            tmp.path(),
+            vec![
+                |generation| InternalMatrixEvent::Disconnected {
+                    generation,
+                    end: SyncEnd::RetriesExhausted { reason: "the new session's sync gave up".into() },
+                },
+                |generation| InternalMatrixEvent::SyncRecovered { generation },
+            ],
+            Duration::ZERO,
+        ).await;
+
+        let states = conn_states(&events);
+        assert!(
+            matches!(
+                states.as_slice(),
+                [ConnectionState::Connecting, ConnectionState::Connected,
+                 ConnectionState::Failed { reason, retries: 1, .. }]
+                    if reason == "the new session's sync gave up",
+            ),
+            "the session ended, so it must settle Failed with a retry, got {states:?}",
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_degradation_reported_before_its_connect_answers_is_applied_once_it_lands() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (events, _) = own_report_before_the_connect_answers(
+            tmp.path(),
+            vec![|generation| InternalMatrixEvent::SyncDegraded {
+                generation,
+                reason: "Sync error: error sending request".into(),
+            }],
+            Duration::ZERO,
+        ).await;
+
+        let states = conn_states(&events);
+        assert!(
+            matches!(
+                states.as_slice(),
+                [ConnectionState::Connecting, ConnectionState::Connected,
+                 ConnectionState::Connecting],
+            ),
+            "the new session is degraded and the UI should say so, got {states:?}",
         );
     }
 
@@ -2189,7 +2309,7 @@ mod tests {
         let voice = MockVoice::new();
         let voice_state = voice.state.clone();
         let (engine, cmd_tx, mut event_rx) = build_engine(matrix, voice, tmp.path());
-        let internal_tx = engine.internal_sender();
+        let internal_tx = engine.internal_tx.clone();
         let engine_handle = tokio::spawn(async move { engine.run().await });
 
         cmd_tx.send(CoreCommand::System(SystemCommand::ConnectToServer(connect_form())))

@@ -142,9 +142,10 @@ jobs:
       #             task.rs, actor.rs, and substantial new suites in
       #             connection.rs, matrix/service.rs, settings.rs, bridge.rs)
       #          -> 79.43% (test review: gap tests for the engine, settings writer,
-      #             sync backoff, rejected tokens, and join_within).
+      #             sync backoff, rejected tokens, and join_within)
+      #          -> 80.06% (sync reports tagged with their session's generation).
       - name: Enforce coverage floor
-        run: cargo llvm-cov report --fail-under-lines 79
+        run: cargo llvm-cov report --fail-under-lines 80
 
   changes:
     name: Detect changes

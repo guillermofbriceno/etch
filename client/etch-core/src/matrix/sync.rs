@@ -60,6 +60,7 @@ pub async fn sync_loop(
     client: Client,
     poll_timeout: Duration,
     internal_tx: mpsc::Sender<InternalEvent>,
+    generation: u64,
 ) -> SyncEnd {
     log::debug!("Entering matrix sync loop (poll_timeout={poll_timeout:?})");
 
@@ -87,7 +88,7 @@ pub async fn sync_loop(
                 SyncStep::Recovered => {
                     log::info!("Matrix sync recovered; the session was never dropped");
                     let _ = tx.send(InternalEvent::Matrix(
-                        InternalMatrixEvent::SyncRecovered,
+                        InternalMatrixEvent::SyncRecovered { generation },
                     )).await;
                     Ok(LoopCtrl::Continue)
                 }
@@ -102,7 +103,7 @@ pub async fn sync_loop(
                     // Once per degraded stretch, not per retry.
                     if attempt == 1 {
                         let _ = tx.send(InternalEvent::Matrix(
-                            InternalMatrixEvent::SyncDegraded { reason },
+                            InternalMatrixEvent::SyncDegraded { generation, reason },
                         )).await;
                     }
                     tokio::time::sleep(delay).await;
@@ -261,7 +262,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(16);
         let started = tokio::time::Instant::now();
 
-        let end = sync_loop(client, Duration::from_millis(1), tx).await;
+        let end = sync_loop(client, Duration::from_millis(1), tx, 7).await;
         let elapsed = started.elapsed();
         let reported = drain(&mut rx);
 
@@ -281,21 +282,22 @@ mod tests {
         );
 
         let degraded = reported.iter().filter(|e| matches!(
-            e, InternalEvent::Matrix(InternalMatrixEvent::SyncDegraded { .. })
+            e, InternalEvent::Matrix(InternalMatrixEvent::SyncDegraded { generation: 7, .. })
         )).count();
         assert_eq!(
             degraded, 1,
-            "a degraded stretch is announced once, not once per retry; got {reported:?}",
+            "a degraded stretch is announced once, not once per retry, under the session's \
+             generation; got {reported:?}",
         );
         assert!(
             !reported.iter().any(|e| matches!(
-                e, InternalEvent::Matrix(InternalMatrixEvent::SyncRecovered)
+                e, InternalEvent::Matrix(InternalMatrixEvent::SyncRecovered { .. })
             )),
             "nothing recovered here; got {reported:?}",
         );
         assert!(
             !reported.iter().any(|e| matches!(
-                e, InternalEvent::Matrix(InternalMatrixEvent::Disconnected(_))
+                e, InternalEvent::Matrix(InternalMatrixEvent::Disconnected { .. })
             )),
             "the driver reports the end by returning it, not on the channel; got {reported:?}",
         );
@@ -311,7 +313,7 @@ mod tests {
 
         let end = tokio::time::timeout(
             Duration::from_secs(10),
-            sync_loop(client, Duration::from_millis(1), tx),
+            sync_loop(client, Duration::from_millis(1), tx, 1),
         ).await.expect("a rejected token should end the loop, not wait out a retry");
         let reported = drain(&mut rx);
 
