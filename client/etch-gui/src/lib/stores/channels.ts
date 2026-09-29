@@ -77,12 +77,6 @@ registerSessionStore('matrix', 'channels', clearChannels);
 registerSessionStore('matrix', 'hiddenDmInfos', clearHiddenDmInfos);
 registerSessionStore('matrix', 'dmLastActivity', clearDmLastActivity);
 
-export function resetChannels(): void {
-    clearChannels();
-    clearHiddenDmInfos();
-    clearDmLastActivity();
-}
-
 // --- Unread / active channel bookkeeping ---
 
 export function initChannels(): void {

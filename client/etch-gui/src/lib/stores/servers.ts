@@ -100,12 +100,6 @@ registerSessionStore('matrix', 'mediaBaseUrl', clearMediaBaseUrl);
 registerSessionStore('matrix', 'passwordRequested', clearPasswordRequested);
 registerSessionStore('matrix', 'matrixConnecting', clearMatrixConnecting);
 
-export function resetServerConnection(): void {
-    clearMediaBaseUrl();
-    clearPasswordRequested();
-    clearMatrixConnecting();
-}
-
 // Handlers called by eventRouter
 export function handleMatrixEvent(me: MatrixEvent): void {
     if (me.type === 'PasswordRequest') {

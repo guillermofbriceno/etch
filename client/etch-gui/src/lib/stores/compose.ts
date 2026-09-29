@@ -5,9 +5,6 @@ import { registerSessionStore } from './session';
 export const replyingTo = writable<ChatMessage | null>(null);
 export const editingMessage = writable<ChatMessage | null>(null);
 
-registerSessionStore('matrix', 'replyingTo', clearReply);
-registerSessionStore('matrix', 'editingMessage', clearEditing);
-
 export function setReply(msg: ChatMessage): void {
     editingMessage.set(null);
     replyingTo.set(msg);
@@ -26,7 +23,5 @@ export function clearEditing(): void {
     editingMessage.set(null);
 }
 
-export function resetCompose(): void {
-    clearReply();
-    clearEditing();
-}
+registerSessionStore('matrix', 'replyingTo', clearReply);
+registerSessionStore('matrix', 'editingMessage', clearEditing);
