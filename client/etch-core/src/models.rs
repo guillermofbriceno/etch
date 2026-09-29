@@ -16,13 +16,8 @@ impl ConnectionState {
     }
 }
 
-/// Seconds to wait before retry number `retries`, doubling each time and
-/// levelling off at a minute.
-///
-/// The caller owns the retry count. It cannot be derived from the current
-/// `ConnectionState`, because an attempt in progress is `Connecting`, which
-/// has no count to derive from; reading it back from the state would reset
-/// the backoff on every attempt and pin it at the first step forever.
+/// The caller owns the retry count: `Connecting` carries none, so deriving it from
+/// state would pin the backoff at the first step.
 pub fn backoff_secs(retries: u32) -> u64 {
     std::cmp::min(2u64.saturating_pow(retries), 60)
 }
@@ -33,8 +28,6 @@ mod tests {
 
     #[test]
     fn connection_state_defaults() {
-        // `Failed` is the only arm that carries a retry count, and a fresh
-        // state is not it, so there is nothing to read a count off.
         let state = ConnectionState::Disconnected;
         assert!(!state.is_failed());
     }
@@ -50,21 +43,15 @@ mod tests {
 
     #[test]
     fn backoff_caps_at_60_seconds() {
-        // 2^6 = 64, capped to 60, and it stays there.
         assert_eq!(backoff_secs(6), 60);
         assert_eq!(backoff_secs(7), 60);
         assert_eq!(backoff_secs(50), 60);
-        // Far enough out that 2^retries no longer fits in a u64.
+        // 2^retries would overflow a u64 here.
         assert_eq!(backoff_secs(u32::MAX), 60);
     }
 
-    /// The retry count is carried by `Failed` and by no other arm.
-    ///
-    /// There is deliberately no accessor that answers it for a whole
-    /// `ConnectionState`: `Connecting` is an attempt in progress, so any such
-    /// accessor would have to report 0 however many attempts had already
-    /// failed. The authoritative counter is `MatrixConnection.retries`; the
-    /// field here is the display snapshot that crosses to the frontend.
+    /// `MatrixConnection.retries` is the authoritative counter; `Failed` only carries a
+    /// display snapshot.
     #[test]
     fn only_the_failed_arm_carries_a_retry_count() {
         let failed = ConnectionState::Failed {

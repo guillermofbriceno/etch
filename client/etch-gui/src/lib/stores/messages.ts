@@ -19,13 +19,9 @@ type ChannelWindow = {
 
 const EMPTY_WINDOW: ChannelWindow = { entries: [], hasMore: true, loading: false };
 
-// Matrix session. Timelines keyed by room ID, all of them from the connected
-// homeserver. Private to this module, but named for the registry all the same:
-// a classification is only checkable if the name matches the store it claims
-// to be about.
 const messageWindows = writable<Record<string, ChannelWindow>>({});
 
-// Derived. Active channel's window — what components subscribe to
+// Active channel's window — what components subscribe to
 export const activeWindow = derived(
     [messageWindows, activeChannelId],
     ([$messageWindows, $id]) => ($id ? $messageWindows[$id] : null) ?? EMPTY_WINDOW

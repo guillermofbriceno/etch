@@ -19,7 +19,6 @@ function applyTheme(t: Theme): void {
     }
 }
 
-// Device-scoped. An appearance preference, persisted to localStorage.
 export const theme = writable<Theme>(loadTheme());
 
 declareStores('device', 'theme');

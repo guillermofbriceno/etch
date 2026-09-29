@@ -87,17 +87,12 @@ pub enum ConnectionResult {
 //     Ok(())
 // }
 
-/// Where everything belonging to one account on one server is kept.
 fn server_dir(data_dir: &Path, form: &ServerConnectionForm) -> PathBuf {
     data_dir.join("servers").join(format!("{}@{}", form.username, form.hostname))
 }
 
-/// The saved login session for an account.
-///
-/// Shared with `MatrixService`, which deletes this file when the server
-/// rejects the access token inside it. `restore_session` never checks a saved
-/// session against the server, so as long as the file parses it is restored
-/// and reused; removing it is the only way to force the login path below.
+/// `restore_session` never validates a saved session, so deleting this file is the only
+/// way to force a fresh login.
 pub(crate) fn session_path(data_dir: &Path, form: &ServerConnectionForm) -> PathBuf {
     server_dir(data_dir, form).join("session.json")
 }

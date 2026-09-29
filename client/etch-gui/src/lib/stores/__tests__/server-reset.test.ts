@@ -95,7 +95,6 @@ describe('ServerReset clears session state', () => {
         });
         fireMatrixEvent({ type: 'HomeserverResolved', data: 'https://a.example.com' });
 
-        // Set some compose state
         const { setReply } = await import('../compose');
         setReply({ id: '$e1', sender: '@alice:a', body: 'hello', html_body: null, media: null, timestamp: Date.now(), edited: false, reactions: {} });
 
@@ -117,14 +116,11 @@ describe('ServerReset clears session state', () => {
         expect(get(mediaBaseUrl)).toBeNull();
         expect(get(passwordRequested)).toBe(false);
         expect(get(replyingTo)).toBeNull();
-        // userVolumes is not here any more: it belongs to the voice session, which
-        // survives a Matrix reconnect. session.test.ts covers it on both sides.
     });
 
     it('clears a pending certificate prompt', async () => {
         const { certChangeRequest } = await import('../voiceState');
 
-        // Server A's voice server presents a fingerprint we do not have stored.
         routeCoreEvent({
             payload: {
                 type: 'Mumble',
@@ -136,9 +132,6 @@ describe('ServerReset clears session state', () => {
         });
         expect(get(certChangeRequest)).not.toBeNull();
 
-        // The user switches servers before answering the prompt. Accepting it
-        // afterwards would store a fingerprint for, and resume a launch onto,
-        // a server they have left.
         fireServerReset();
 
         expect(get(certChangeRequest)).toBeNull();

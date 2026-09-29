@@ -3,13 +3,7 @@ import { sendCoreCommand } from '$lib/ipc';
 import { playSfx, setSfxDeafened } from './sfx';
 import { declareStores } from './session';
 
-// Backend-owned, so registered in neither session scope. These mirror the
-// local Mumble user's self-mute and self-deaf flags, and the engine persists
-// both in VoiceRestoreState across Mumble restarts, re-sending MuteSelf and
-// DeafenSelf once the new process reports Connected. Clearing them on a Matrix
-// reset would desync a muted user into an unmuted-looking toggle after any
-// retry; on a genuine switch to a different voice server the engine drops
-// VoiceRestoreState itself and the new UserState corrects them.
+// Backend-owned: the engine restores them across Mumble restarts, so a reset must not clear them.
 export const isMuted = writable<boolean>(false);
 export const isDeafened = writable<boolean>(false);
 

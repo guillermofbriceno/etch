@@ -13,12 +13,8 @@ use time::macros::format_description;
 
 use sfx::SfxPlayer;
 
-/// The command channel's sending end, held for the life of the process.
-///
-/// Wrapped in an `Option` so that exiting can drop it. That is the only way
-/// the engine learns the app is closing: `run()` returns when this channel
-/// closes, and the settings it holds in memory are flushed on the way out.
-/// While it stayed alive to the end of the process, that flush never ran.
+/// The `Option` lets exit drop the sender, which is how the engine learns to flush
+/// settings and stop.
 pub struct TauriState {
     core_tx: std::sync::Mutex<Option<tokio::sync::mpsc::Sender<CoreCommand>>>,
 }
@@ -28,13 +24,11 @@ impl TauriState {
         Self { core_tx: std::sync::Mutex::new(Some(core_tx)) }
     }
 
-    /// A sender to use for one command. Cloned out rather than borrowed so
-    /// the lock is never held across the send's await.
+    /// Cloned out so the lock is never held across the send's await.
     fn sender(&self) -> Option<tokio::sync::mpsc::Sender<CoreCommand>> {
         self.core_tx.lock().ok().and_then(|guard| guard.clone())
     }
 
-    /// Close the command channel, which is what tells the engine to shut down.
     fn close(&self) {
         if let Ok(mut guard) = self.core_tx.lock() {
             *guard = None;
@@ -244,29 +238,17 @@ fn setup_cursor_events(app: &tauri::App) {
     }
 }
 
-/// How long exiting waits for the engine to finish shutting down.
-///
-/// The engine bounds its own drain, so this only has to be long enough to
-/// cover it. When nothing is in flight -- the ordinary case -- the engine
-/// returns immediately and this wait costs nothing.
+/// Must cover the engine's own bounded drain.
 const ENGINE_SHUTDOWN_WAIT: std::time::Duration = std::time::Duration::from_secs(6);
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Control commands from the UI. Small on purpose: these are user actions,
-    // and a backlog of them means something is wrong.
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel::<CoreCommand>(32);
 
-    // Signalled once the engine's `run()` has returned, which is after it has
-    // flushed settings. Exiting waits on this so the flush actually happens.
+    // Signalled after the engine has flushed settings; exit waits on it.
     let (engine_done_tx, engine_done_rx) = std::sync::mpsc::sync_channel::<()>(1);
 
-    // Media fetches, on their own channel. The `etch-media` protocol handler
-    // raises one per image the webview loads, so a freshly opened room can
-    // burst well past the control channel's capacity; sharing a queue with UI
-    // commands meant those bursts blocked `invoke`. Created here rather than
-    // in `init_core` because the handler is registered on the Builder, before
-    // `setup` runs.
+    // Created here because the protocol handler is registered before `setup` runs.
     let (media_tx, media_rx) = tokio::sync::mpsc::channel::<MediaRequest>(256);
 
     tauri::Builder::default()
@@ -338,9 +320,7 @@ pub fn run() {
             let logger = build_logger(&log_path);
 
             let sfx_player = SfxPlayer::new(&data_dir);
-            // Inside the runtime: building the engine spawns a task per
-            // subsystem, and `setup` runs on the main thread, which is not
-            // otherwise in a Tokio context.
+            // `setup` runs outside a Tokio context, and `init_core` spawns tasks.
             let (mut core_handle, engine) = tauri::async_runtime::block_on(async {
                 init_core(data_dir, resource_dir, cmd_tx, cmd_rx, media_rx, logger)
             });
@@ -374,9 +354,7 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("Error while building Tauri")
         .run(move |app_handle, event| {
-            // Quitting is the only chance the engine gets to write out
-            // settings that are still only in memory, so the channel it reads
-            // from has to be closed and the engine given a moment to drain.
+            // Exit is the engine's last chance to write out in-memory settings.
             if let tauri::RunEvent::Exit = event {
                 log::info!("Exiting: closing the core command channel");
                 app_handle.state::<TauriState>().close();

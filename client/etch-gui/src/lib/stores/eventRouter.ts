@@ -11,20 +11,10 @@ import { handleSystemEvent as errorsHandleSystem } from './errors';
 import { handleMumbleEvent, handleSystemEvent as voiceHandleSystem } from './voiceState';
 import { resetMatrixSession, declareStores } from './session';
 
-// Store modules classify their state by calling registerSessionStore() or
-// declareStores() at import time, so a reset only covers a module something
-// has pulled in. Every store module is imported here, by pattern rather than
-// by name: a hand-written list of imports would be the reset list's old bug
-// wearing a different hat, and a store whose module is only reached through
-// some component would otherwise go unregistered until that component was
-// first rendered -- possibly after the first ServerReset.
-//
-// The glob is eager on purpose: the registrations must have run by the time
-// initEventRouter() can fire a reset, not at some later await point.
+// Eager, so every store has registered its session scope before the first ServerReset can fire.
 import.meta.glob('./*.ts', { eager: true });
 
-// Device-scoped. Tracks OS window focus for notification sounds, which has
-// nothing to do with which server is connected.
+// Track app focus state for notification sounds
 export const appFocused = writable(true);
 
 declareStores('device', 'appFocused');
@@ -49,9 +39,7 @@ export function initEventRouter(): void {
                 break;
             case 'System':
                 if (ce.data.type === 'ServerReset') {
-                    // Matrix only. The voice session has its own lifecycle and
-                    // survives a homeserver reconnect; voiceState.ts clears it
-                    // when Mumble actually disconnects.
+                    // Matrix only: the voice session survives a homeserver reconnect.
                     resetMatrixSession();
                 }
                 serversHandleSystem(ce.data);

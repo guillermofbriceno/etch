@@ -9,8 +9,6 @@ export type UserInfo = {
     avatarUrl: string | null;
 };
 
-// Matrix session. Identifies who we are logged in as on the connected
-// homeserver, so it means nothing once that connection is gone.
 export const currentUser = writable<UserInfo>({
     username: '',
     matrixId: '',

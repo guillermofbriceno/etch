@@ -24,24 +24,15 @@ export type VoiceUser = {
     hash: string | null;
 };
 
-// Voice session, except certChangeRequest. Everything here is keyed by Mumble
-// channel or session IDs, which the voice server hands out per connection and
-// reuses across them, so carrying any of it into a new voice session mislabels
-// the new server's users. None of it belongs to the Matrix lifecycle: a Matrix
-// reconnect to the same voice server leaves Mumble joined and emits no fresh
-// ChannelState or UserState, so clearing these on ServerReset would empty the
-// voice panel of a user who is still in the channel and still audible.
 export const voiceChannels = writable<Map<number, VoiceChannel>>(new Map());
 export const voiceUsers = writable<Map<number, VoiceUser>>(new Map());
 export const talkingUsers = writable<Set<number>>(new Set());
 export type MumbleStatus = 'disconnected' | 'connecting' | 'connected';
 export const mumbleStatus = writable<MumbleStatus>('disconnected');
 export const certChangeRequest = writable<{ host: string; port: number; new_fingerprint: string } | null>(null);
-
-// Derived.
 export const voiceConnected = derived(mumbleStatus, ($s) => $s === 'connected');
 
-// Derived. Users grouped by channel ID, sorted alphabetically by name
+// Users grouped by channel ID, sorted alphabetically by name
 export const usersByChannel = derived(voiceUsers, ($users) => {
     const grouped = new Map<number, VoiceUser[]>();
     for (const user of $users.values()) {
@@ -187,9 +178,6 @@ export function handleMumbleEvent(me: MumbleEvent): void {
     }
 }
 
-// Drop any pending certificate prompt. The prompt belongs to one server's
-// launch attempt, so leaving it up across a server switch would let the user
-// accept a fingerprint for a server they have already left.
 export function resetCertRequest(): void {
     certChangeRequest.set(null);
 }
@@ -199,18 +187,13 @@ registerSessionStore('voice', 'voiceUsers', () => { voiceUsers.set(new Map()); }
 registerSessionStore('voice', 'talkingUsers', () => { talkingUsers.set(new Set()); });
 registerSessionStore('voice', 'mumbleStatus', () => {
     mumbleStatus.set('disconnected');
-    // The module-private connection bookkeeping goes with the status store.
-    // A session ID left over from the previous voice server can collide with
-    // one the new server hands to somebody else, and the UserState handler
-    // would then sync that stranger's mute flags onto the local toggles.
+    // A stale localSession could collide with a session ID the new server hands out.
     settled = false;
     localSession = null;
 });
 
-// The certificate prompt is the exception: it belongs to the Matrix session,
-// because a server switch is what makes accepting a stale fingerprint
-// dangerous. If the engine is sitting in AwaitingCert it re-prompts on the
-// next attempt, so a retry costs at worst a flicker.
+// Matrix scope: accepting a prompt left over from a server the user has since left
+// would trust the wrong server.
 registerSessionStore('matrix', 'certChangeRequest', resetCertRequest);
 
 export function handleSystemEvent(se: SystemEvent): void {

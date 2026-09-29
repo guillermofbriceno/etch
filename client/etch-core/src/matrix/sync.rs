@@ -54,27 +54,8 @@ pub async fn fetch_rooms(client: &Client) -> anyhow::Result<Vec<RoomInfo>> {
     Ok(rooms_model)
 }
 
-/// Keep `client` syncing until the session is genuinely over, riding out the
-/// failures that are not.
-///
-/// This is the *driver*: every decision it makes is `SyncRetryPolicy`'s, and
-/// all it does is act on them -- wait, announce, carry on, or stop. What makes
-/// that worth spelling out is what it replaced. `Client::sync` delegates to
-/// `sync_with_callback`, whose callback only ever sees successful responses;
-/// the first error propagates straight out of the call. So one dropped
-/// 30-second long poll -- a laptop lid, a NAT timeout, a dropped route --
-/// ended the sync loop for good, and the engine, having nothing better to go
-/// on than "disconnected", tore the whole session down and cold-connected a
-/// client whose token was never in doubt.
-///
-/// `sync_with_result_callback` hands the callback the `Result`, so an error
-/// can be answered with `LoopCtrl::Continue` and the loop carries on from the
-/// same `since` token. Nothing is torn down for a retry: the client, its
-/// timelines, its subscriptions and its sqlite handles all stay exactly where
-/// they are, and the UI keeps the data it is showing.
-///
-/// Returns only when the loop is over for good; `SyncEnd` says which kind of
-/// over it is.
+/// Keeps syncing through transient errors, which `Client::sync` would propagate and end
+/// the loop on; returns only when `SyncEnd` says the session is over.
 pub async fn sync_loop(
     client: Client,
     poll_timeout: Duration,
@@ -82,11 +63,8 @@ pub async fn sync_loop(
 ) -> SyncEnd {
     log::debug!("Entering matrix sync loop (poll_timeout={poll_timeout:?})");
 
-    // The SDK takes a `Fn` callback, so the policy and the verdict it reaches
-    // have to live outside it behind a lock the callback borrows. Neither lock
-    // is ever held across an await: the decision is taken, the guard dropped,
-    // and only then does the driver wait or send. Shared references are copied
-    // into each call's future, which is the shape the SDK's own example uses.
+    // The SDK callback is `Fn`, so policy and verdict sit behind locks that are never
+    // held across an await.
     let policy = Mutex::new(SyncRetryPolicy::new());
     let verdict: Mutex<Option<SyncEnd>> = Mutex::new(None);
     let (policy, verdict, tx) = (&policy, &verdict, &internal_tx);
@@ -101,9 +79,6 @@ pub async fn sync_loop(
                 policy.observe(failure)
             };
 
-            // Every arm but `Proceed` has a failure behind it, so the reason
-            // is present wherever it is used. The fallback keeps that from
-            // being an unwrap.
             let reason = move || reason.unwrap_or_else(|| "Sync error".to_string());
 
             match step {
@@ -124,10 +99,7 @@ pub async fn sync_loop(
                          session left intact",
                         SyncRetryPolicy::MAX_RETRIES,
                     );
-                    // Told once per degraded stretch, not once per retry: the
-                    // engine only needs to know the connection went from fine
-                    // to not, and a healthy client syncs every 30 seconds for
-                    // as long as the app is open.
+                    // Once per degraded stretch, not per retry.
                     if attempt == 1 {
                         let _ = tx.send(InternalEvent::Matrix(
                             InternalMatrixEvent::SyncDegraded { reason },
@@ -160,11 +132,8 @@ pub async fn sync_loop(
         .await;
 
     let end = verdict.lock().expect("sync verdict lock").take().unwrap_or_else(|| {
-        // `sync_stream` never ends of its own accord and the callback only
-        // breaks after recording a verdict, so this is unreachable in
-        // practice. It is reported as an exhausted retry rather than quietly
-        // treated as success, because whatever happened the client is no
-        // longer syncing and the reconnect path is what fixes that.
+        // Unreachable in practice; reported as exhausted so the reconnect path repairs
+        // a client that stopped syncing.
         let reason = match result {
             Ok(()) => "Sync loop ended without a verdict".to_string(),
             Err(e) => format!("Sync error: {e}"),
@@ -259,10 +228,7 @@ mod tests {
     use super::*;
     use crate::matrix::retry::SyncRetryPolicy;
 
-    /// A client pointed at a port nothing is listening on. Every sync it
-    /// attempts fails with a transport error -- exactly the failure that used
-    /// to end the loop on its first occurrence -- without a server, a mock, or
-    /// a dependency to stand one up.
+    /// A client pointed at a port nothing listens on, so every sync fails with a transport error.
     async fn client_with_nowhere_to_sync() -> Client {
         Client::builder()
             .homeserver_url("http://127.0.0.1:1")
@@ -279,13 +245,7 @@ mod tests {
         out
     }
 
-    /// The bug, at the level of the driver: a sync that fails has to be tried
-    /// again, and again, up to the policy's ceiling -- not abandoned on the
-    /// first error the way `Client::sync` abandons it.
-    ///
-    /// Runs on a paused clock, so the policy's real 122 seconds of backoff
-    /// cost the test nothing. What is not faked is the failure: the requests
-    /// are genuinely attempted and genuinely refused.
+    /// Runs on a paused clock so the policy's real backoff costs nothing.
     #[tokio::test(start_paused = true)]
     async fn a_failing_sync_is_retried_to_the_ceiling_before_it_gives_up() {
         let client = client_with_nowhere_to_sync().await;
@@ -305,9 +265,6 @@ mod tests {
         }
     }
 
-    /// While retrying, the loop says so once and then stays quiet. It must
-    /// never report a disconnect mid-retry: that is the event the engine turns
-    /// into a teardown.
     #[tokio::test(start_paused = true)]
     async fn retrying_reports_degradation_once_and_nothing_else() {
         let client = client_with_nowhere_to_sync().await;
@@ -337,8 +294,6 @@ mod tests {
             "the driver reports the end by returning it, not on the channel; got {reported:?}",
         );
 
-        // The verdict is still the return value, so the caller has exactly one
-        // place to read it from.
         assert!(matches!(end, SyncEnd::RetriesExhausted { .. }));
     }
 }

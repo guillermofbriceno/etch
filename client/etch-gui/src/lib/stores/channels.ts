@@ -18,23 +18,16 @@ function lastMessageTs(entries: TimelineEntry[]): number | null {
     return null;
 }
 
-// Matrix session. The room list, and per-room activity timestamps, both keyed
-// by Matrix room IDs that only resolve on the connected homeserver.
 export const channels = writable<RoomInfo[]>([]);
 export const dmLastActivity = writable<Record<string, number>>({});
 
 // --- Hidden DM state (Etch-level, not Matrix) ---
 
-// Device-scoped. Which DMs the user has hidden is a preference, persisted by
-// the backend and handed over once on SettingsLoaded. SettingsLoaded does not
-// fire again on reconnect, so clearing this would silently unhide every DM
-// and leave the stored list disagreeing with what is on screen.
+// SettingsLoaded does not fire again on reconnect, so this must survive a reset.
 const hiddenDmIds = writable<Set<string>>(new Set());
 
 declareStores('device', 'hiddenDmIds');
 
-// Matrix session. A cache of RoomInfo pulled from the connected server's
-// channel list, held only so an unhide can put the room straight back.
 const hiddenDmInfos = writable<Map<string, RoomInfo>>(new Map());
 
 export function initHiddenDms(ids: string[]): void {
@@ -84,9 +77,6 @@ registerSessionStore('matrix', 'channels', clearChannels);
 registerSessionStore('matrix', 'hiddenDmInfos', clearHiddenDmInfos);
 registerSessionStore('matrix', 'dmLastActivity', clearDmLastActivity);
 
-/** Clear the channel state this module owns. resetMatrixSession() already
- *  does this as part of a full ServerReset; this stays exported for callers
- *  that want the channel half on its own. */
 export function resetChannels(): void {
     clearChannels();
     clearHiddenDmInfos();
@@ -112,7 +102,6 @@ export function initChannels(): void {
     });
 }
 
-// Derived.
 export const activeChannel = derived(
     [channels, activeChannelId],
     ([$channels, $id]) => $channels.find(c => c.id === $id) ?? null

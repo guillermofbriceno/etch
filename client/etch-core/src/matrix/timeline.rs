@@ -60,12 +60,8 @@ impl BoundedMediaSources {
 
 pub type MediaSourceMap = Arc<RwLock<BoundedMediaSources>>;
 
-/// A room's timeline together with the task streaming its diffs.
-///
-/// The two must live and die together. The Matrix client now survives a
-/// reconnect, so a diff task left running after its timeline is replaced is
-/// still fed by that client, and every event it forwards is a duplicate of
-/// what the new subscription already sent.
+/// The diff task must be dropped with its timeline, or a resubscribe leaves a duplicate
+/// stream running.
 struct RoomTimeline {
     timeline: Arc<Timeline>,
     _diff_task: AbortOnDrop,
@@ -127,7 +123,6 @@ impl TimelineManager {
     }
 
     /// Clear all timeline subscriptions and the media source cache.
-    /// Dropping each entry aborts the diff-stream task that fed it.
     pub fn clear(&mut self) {
         self.timelines.clear();
         let mut sources = self.media_sources.write().expect("media source lock");
@@ -202,9 +197,7 @@ impl TimelineManager {
             log::warn!("[timeline] Diff stream ended for room {}", rid);
         }));
 
-        // Inserting over an existing entry drops it, which aborts the diff task
-        // that entry owned. That is what keeps a resubscribe from leaving two
-        // live subscriptions forwarding the same room.
+        // Replacing an entry drops it, aborting its diff task.
         self.timelines.insert(room_id.to_owned(), RoomTimeline { timeline, _diff_task: diff_task });
     }
 

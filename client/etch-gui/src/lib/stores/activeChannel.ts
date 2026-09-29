@@ -1,7 +1,7 @@
 import { writable } from 'svelte/store';
 import { registerSessionStore } from './session';
 
-// Matrix session. The currently selected channel ID.
+// The currently selected channel ID.
 // Shared leaf dependency for both messages.ts and channels.ts,
 // breaking what was previously a circular import.
 export const activeChannelId = writable<string | null>(null);

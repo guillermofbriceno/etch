@@ -10,15 +10,8 @@ pub enum CoreCommand {
     System(SystemCommand),
 }
 
-/// A request for the bytes behind an `mxc://` URI, raised by the `etch-media`
-/// protocol handler when the webview loads an image.
-///
-/// Deliberately not a `CoreCommand`: nothing the user does produces one
-/// directly, it never arrives through the `core_command` IPC entry point (it
-/// could not -- it carries a `oneshot::Sender`, which has no wire form), and
-/// it travels on its own channel. A timeline full of images therefore cannot
-/// take up the queue slots the UI's control commands need, nor block an
-/// `invoke` behind a parked engine.
+/// Not a `CoreCommand`: it carries a `oneshot::Sender` and travels on its own channel,
+/// so images cannot crowd out control commands.
 pub struct MediaRequest {
     pub mxc_url: String,
     pub respond: tokio::sync::oneshot::Sender<Result<Vec<u8>, String>>,

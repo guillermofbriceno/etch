@@ -2,9 +2,6 @@ import { writable } from 'svelte/store';
 import type { ChatMessage } from '$lib/types';
 import { registerSessionStore } from './session';
 
-// Matrix session. Both hold a message from the connected server's timeline;
-// replying to or editing one after switching servers would target an event
-// that the new session knows nothing about.
 export const replyingTo = writable<ChatMessage | null>(null);
 export const editingMessage = writable<ChatMessage | null>(null);
 

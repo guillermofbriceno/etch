@@ -14,7 +14,7 @@ export type SfxName =
     | 'user_leave'
     | 'new_notif';
 
-/** Device-scoped. Volume from 0 to 100. Default 30. */
+/** Volume from 0 to 100. Default 30. */
 export const sfxVolume = writable<number>(30);
 
 declareStores('device', 'sfxVolume');

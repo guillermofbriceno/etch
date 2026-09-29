@@ -30,15 +30,12 @@ pub struct MockMatrixState {
 pub struct MockMatrix {
     pub state: Arc<MockMatrixState>,
     pub connect_result: ConnectOutcome,
-    /// Keep returning `connect_result` instead of failing after the first call.
-    /// Needed by tests that drive more than one successful connection.
     pub repeat_connect_result: bool,
     pub profile_response: (Option<String>, Option<String>),
     pub media_response: Result<Vec<u8>, String>,
     /// Events sent through `internal_tx` during `connect()`.
     pub internal_events: Vec<InternalEvent>,
-    /// When set, `connect()` waits on this before returning. Lets a test hold a
-    /// connection in flight and observe whether the engine stays responsive.
+    /// Holds a connection in flight so a test can check the engine stays responsive.
     pub connect_gate: Option<oneshot::Receiver<()>>,
 }
 
@@ -64,7 +61,6 @@ impl MockMatrix {
         self
     }
 
-    /// Return `outcome` from every `connect()` call, not just the first.
     pub fn with_repeating_connect_result(mut self, outcome: ConnectOutcome) -> Self {
         self.connect_result = outcome;
         self.repeat_connect_result = true;
@@ -150,9 +146,7 @@ pub struct MockVoice {
     pub state: Arc<MockVoiceState>,
     /// Event batches sent through `internal_tx` during successive `launch()` calls.
     launch_event_batches: VecDeque<Vec<InternalEvent>>,
-    /// 1-based index of the `launch()` call that should fail, if any.
     failing_launch: Option<u32>,
-    /// `launch()` calls made so far, counted whether they failed or not.
     launch_calls: u32,
 }
 
@@ -179,9 +173,6 @@ impl MockVoice {
         self
     }
 
-    /// Fail the `nth` `launch()` call (1-based) and no other. Lets a test put
-    /// a launch failure in the middle of a run without racing the engine task
-    /// for the `launch_error` flag.
     pub fn with_failing_launch(mut self, nth: u32) -> Self {
         self.failing_launch = Some(nth);
         self

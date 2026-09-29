@@ -4,23 +4,12 @@ use sha1::{Sha1, Digest};
 use tokio::net::TcpStream;
 use crate::error::*;
 
-/// Ceiling on a whole probe: name resolution, TCP connect and TLS handshake.
-///
-/// Neither a TCP connect nor a TLS handshake bounds itself, so against a black
-/// hole this would otherwise wait out the kernel's SYN retries, or forever on a
-/// peer that connects and then goes quiet. The probe runs in the voice actor
-/// rather than on the engine's loop, which keeps the UI responsive but does
-/// not make the wait harmless: the actor serves its requests strictly in
-/// order, so an unbounded probe holds up every voice command behind it, and
-/// the launch it opens never reports `LaunchFinished`, leaving the session
-/// stuck in `Launching` with no answer coming.
+/// Ceiling on a whole probe: without it a black-holed peer stalls the voice actor and
+/// strands the launch in `Launching`.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// TLS-connect to host:port (accepting any cert), return SHA1 hex of the
 /// DER-encoded leaf certificate.
-///
-/// Gives up after `PROBE_TIMEOUT`. Callers treat that like any other probe
-/// failure: the fingerprint check is skipped and the connection proceeds.
 pub async fn probe_server_cert(host: &str, port: u16) -> Result<String, CoreError> {
     let addr = format!("{}:{}", host, port);
 
@@ -56,7 +45,7 @@ async fn probe(host: &str, addr: &str) -> Result<String, CoreError> {
 }
 
 /// Read the stored fingerprint for a given host:port from mumble.sqlite's cert table.
-pub fn get_stored_cert(db_path: &Path, host: &str, port: u16) -> Option<String> {
+pub(crate) fn get_stored_cert(db_path: &Path, host: &str, port: u16) -> Option<String> {
     let conn = rusqlite::Connection::open(db_path).ok()?;
     conn.query_row(
         "SELECT digest FROM cert WHERE hostname = ?1 AND port = ?2",
@@ -66,7 +55,9 @@ pub fn get_stored_cert(db_path: &Path, host: &str, port: u16) -> Option<String> 
 }
 
 /// Insert or update the cert fingerprint in mumble.sqlite.
-pub fn store_cert(db_path: &Path, host: &str, port: u16, digest: &str) -> Result<(), CoreError> {
+///
+/// Blocks the calling thread on rusqlite's busy timeout; call only from the voice actor.
+pub(crate) fn store_cert(db_path: &Path, host: &str, port: u16, digest: &str) -> Result<(), CoreError> {
     let conn = rusqlite::Connection::open(db_path)
         .map_err(|e| CertProbeSnafu { message: format!("Opening {}: {}", db_path.display(), e) }.build())?;
 
@@ -139,14 +130,8 @@ mod tests {
         assert_eq!(get_stored_cert(db.path(), "example.com", 64739), Some("fp_other".to_string()));
     }
 
-    /// A server that completes the TCP handshake but never speaks TLS must not
-    /// stall the probe forever. `probe_server_cert` is the first step of a
-    /// voice launch and runs in the voice actor, which takes nothing else
-    /// until it returns: an unbounded hang here strands the launch and every
-    /// voice request queued behind it.
     #[tokio::test]
     async fn probe_gives_up_on_a_server_that_never_completes_the_handshake() {
-        // Accept connections and then do nothing, holding the socket open.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let _server = tokio::spawn(async move {

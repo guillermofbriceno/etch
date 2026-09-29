@@ -24,21 +24,13 @@ use std::path::PathBuf;
 /// How long a sync long-poll is left open before the server answers it empty.
 const SYNC_POLL_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Compare homeserver URLs without tripping over a trailing slash: the SDK
-/// reports `http://host/` for a client built from `http://host`.
+/// The SDK reports `http://host/` for a client built from `http://host`.
 fn normalize_url(url: &str) -> String {
     url.trim_end_matches('/').to_string()
 }
 
-/// Identifies the Matrix session a client belongs to: the account it is logged
-/// in as, and the homeserver it talks to. Two connection attempts that agree on
-/// this can share one client.
-///
-/// Both halves are read off the client, never off the connection form. The form
-/// carries only a *predicted* MXID, `@username:hostname`, and
-/// `start_matrix_client` may hand back a client that restored a saved session
-/// belonging to a different user; a key taken from the form would then claim a
-/// client for an account it does not serve.
+/// Identifies the session a client belongs to, read off the client because the form's
+/// MXID is only a prediction.
 #[derive(Clone, PartialEq, Eq)]
 struct SessionKey {
     user_id: String,
@@ -46,15 +38,11 @@ struct SessionKey {
 }
 
 impl SessionKey {
-    /// The session a built client actually belongs to.
     fn of(client: &Client, form: &ServerConnectionForm) -> Self {
         let user_id = match client.user_id() {
             Some(id) => id.to_string(),
             None => {
-                // Only reachable if `start_matrix_client` returned a client
-                // that neither restored a session nor logged in. Fall back to
-                // the form's prediction so the session still has a key, and
-                // say so rather than pretending this was authoritative.
+                // Fall back to the form's prediction when the client has no session.
                 log::warn!("Matrix client has no user ID; keying its session off the connection form");
                 format!("@{}:{}", form.username, form.hostname)
             }
@@ -62,23 +50,15 @@ impl SessionKey {
         Self { user_id, homeserver: normalize_url(client.homeserver().as_str()) }
     }
 
-    /// Could a client with this key serve what `form` is asking for?
-    ///
-    /// This is the cheap pre-check that decides whether reuse is worth
-    /// attempting at all, and it runs before any client for the new request
-    /// exists. It can rule reuse out but never in: the form only predicts an
-    /// MXID, so a match is evidence that the same account was *asked for*,
-    /// which is as much as the form knows. The key on the other side of the
-    /// comparison is the authoritative one, taken from the cached client.
+    /// A cheap pre-check that can rule reuse out but never in, since the form only
+    /// predicts the MXID.
     fn could_serve(&self, form: &ServerConnectionForm) -> bool {
         if self.user_id != format!("@{}:{}", form.username, form.hostname) {
             return false;
         }
         match &form.homeserver_url {
             Some(url) => self.homeserver == normalize_url(url),
-            // Without an explicit URL the homeserver is whatever discovery
-            // resolves `hostname` to, and `hostname` is already pinned by the
-            // MXID comparison above.
+            // Without an explicit URL, `hostname` is already pinned by the MXID comparison.
             None => true,
         }
     }
@@ -90,35 +70,14 @@ impl std::fmt::Display for SessionKey {
     }
 }
 
-/// The Matrix client together with everything whose lifetime is tied to it.
-///
-/// **The client is kept across a reconnect rather than rebuilt.** Each client
-/// opens four sqlite stores, so building one per attempt costs roughly 18 file
-/// descriptors that only come back when the client is genuinely dropped, and
-/// anything still holding a clone of it pins that cost for the life of the
-/// process. Reusing one client per session takes the question off the table.
-///
-/// That is also why `reset` leaves a client behind: `Idle` is what "reset"
-/// means here. The session still owns a client, but it is not serving —
-/// its timelines have been cleared and its sync loop stopped. Nothing that
-/// writes to the homeserver may run against an `Idle` client, because the
-/// result would land somewhere the rest of the program is no longer watching.
-/// Read-only work is free to use it; that is the point of keeping it.
-///
-/// The one thing that does drop the client is the server rejecting its
-/// credentials; see `MatrixService::forget_rejected_session`.
+/// The Matrix client and the tasks tied to its lifetime, kept across reconnects because
+/// each new client leaks about 18 file descriptors.
+/// An `Idle` client may serve reads but nothing that writes.
 enum MatrixSession {
-    /// No client built yet, or the last one was invalidated.
     None,
-    /// A client exists for this session but is not serving: `reset` has run, or
-    /// a connect attempt has not completed.
     Idle { key: SessionKey, client: Client },
-    /// Connected and syncing. Both tasks are owned here so that leaving `Live`
-    /// — by reconnecting, resetting, or dropping the service — stops them
-    /// instead of leaving them running against a client that is about to be
-    /// replaced. A stranded sync task keeps syncing the cached client and
-    /// announces a disconnect when it ends; a stranded pagination task holds
-    /// `Arc<Timeline>` clones that pin the client it paginates.
+    /// Owning both tasks means leaving `Live` aborts them instead of stranding them
+    /// against a replaced client.
     Live {
         key: SessionKey,
         client: Client,
@@ -128,8 +87,7 @@ enum MatrixSession {
 }
 
 impl MatrixSession {
-    /// The client for work that only reads. Available while `Idle` so media
-    /// fetches and profile lookups keep working between connections.
+    /// Also available while `Idle`, so media fetches work between connections.
     fn client(&self) -> Option<&Client> {
         match self {
             Self::None => None,
@@ -137,8 +95,6 @@ impl MatrixSession {
         }
     }
 
-    /// The client for work that writes to the homeserver. Only a serving
-    /// session has one.
     fn live_client(&self) -> Option<&Client> {
         match self {
             Self::Live { client, .. } => Some(client),
@@ -153,9 +109,6 @@ impl MatrixSession {
         }
     }
 
-    /// Hand back the cached client if it belongs to the session `form` is
-    /// asking for, standing down first: a new connection supersedes whatever
-    /// the previous one had running.
     fn reuse_for(&mut self, form: &ServerConnectionForm) -> Option<Client> {
         match self.key() {
             Some(key) if key.could_serve(form) => {
@@ -167,18 +120,14 @@ impl MatrixSession {
         self.client().cloned()
     }
 
-    /// Adopt a freshly built client. The session is not serving yet.
     fn install(&mut self, key: SessionKey, client: Client) {
         *self = Self::Idle { key, client };
     }
 
-    /// Start serving, taking ownership of the tasks that do the serving.
     fn go_live(&mut self, sync: AbortOnDrop, pagination: AbortOnDrop) {
         let (key, client) = match std::mem::replace(self, Self::None) {
             Self::Idle { key, client } | Self::Live { key, client, .. } => (key, client),
             Self::None => {
-                // Nothing to attach the tasks to; dropping them here stops
-                // them rather than leaving them running unowned.
                 log::error!("No Matrix session to bring live; stopping the tasks just started");
                 return;
             }
@@ -186,8 +135,6 @@ impl MatrixSession {
         *self = Self::Live { key, client, _sync: sync, _pagination: pagination };
     }
 
-    /// Stop serving but keep the client for the next attempt. Dropping the
-    /// `Live` variant aborts the tasks it owned.
     fn stand_down(&mut self) {
         match std::mem::replace(self, Self::None) {
             Self::Live { key, client, .. } => *self = Self::Idle { key, client },
@@ -195,15 +142,11 @@ impl MatrixSession {
         }
     }
 
-    /// Forget the client entirely, so the next attempt builds a new one.
     fn invalidate(&mut self) {
         *self = Self::None;
     }
 }
 
-/// Dropping a `MatrixService` needs no `Drop` of its own: every task it owns is
-/// held through an `AbortOnDrop`, inside `session` or inside the per-room
-/// entries of `timeline_manager`, so dropping those fields tears the tasks down.
 pub struct MatrixService {
     session: MatrixSession,
     timeline_manager: TimelineManager,
@@ -281,14 +224,7 @@ impl MatrixService {
 }
 
 impl MatrixService {
-    /// Produce the client for a connection attempt, reusing the cached one when
-    /// it already belongs to the requested session, and leaving the session
-    /// holding that client either way.
-    ///
-    /// Reuse is what keeps reconnects from leaking (see `MatrixSession`). A
-    /// client is only built when there is nothing to reuse: the first
-    /// connection of a session, a switch to a different account or homeserver,
-    /// or the attempt after the server rejected our credentials.
+    /// Reuses the cached client when it belongs to the requested session, else builds one.
     async fn prepare_session(
         &mut self,
         form: &ServerConnectionForm,
@@ -298,9 +234,7 @@ impl MatrixService {
             return Ok(client);
         }
 
-        // Nothing reusable. Release what is held before building, so the old
-        // client's stores are closed rather than held open alongside the new
-        // client's.
+        // Release the old client first so its stores close before the new ones open.
         self.session.invalidate();
 
         match start_matrix_client(
@@ -332,11 +266,7 @@ impl MatrixService {
         }
     }
 
-    /// React to a sync failure the server blamed on our credentials.
-    ///
-    /// Without this the cache never invalidates: a revoked access token fails
-    /// every sync, the engine schedules a retry, and the retry is handed the
-    /// same dead client forever.
+    /// Without this a revoked token fails every sync and each retry is handed the same dead client.
     fn forget_rejected_session(&mut self, form: &ServerConnectionForm, err: &matrix_sdk::Error) {
         if !credentials_rejected(err.client_api_error_kind()) {
             return;
@@ -348,15 +278,8 @@ impl MatrixService {
         self.discard_saved_session(form);
     }
 
-    /// Drop the cached client *and* the saved login session.
-    ///
-    /// Dropping the client alone would not help. `start_matrix_client` restores
-    /// `session.json` without ever checking it against the server, so a rebuilt
-    /// client presents the same dead access token and fails in the same way.
-    /// Removing the file is what sends the next attempt down the login path,
-    /// which either logs in with the password on the form or asks the user for
-    /// one. The store is deliberately left alone: it holds the crypto and room
-    /// state that a re-login should not have to rebuild.
+    /// Also deletes `session.json`, since `start_matrix_client` restores it without
+    /// checking the token.
     fn discard_saved_session(&mut self, form: &ServerConnectionForm) {
         self.session.invalidate();
 
@@ -368,8 +291,6 @@ impl MatrixService {
         }
     }
 
-    /// The client for a command that writes to the homeserver, or `None` when
-    /// the session is not serving one. See `MatrixSession`.
     fn serving_client(&self, command: &str) -> Option<Client> {
         match self.session.live_client() {
             Some(client) => Some(client.clone()),
@@ -440,10 +361,7 @@ impl MatrixBackend for MatrixService {
             return ConnectOutcome::Failed;
         }
 
-        // Without a room list there is nothing to subscribe to and no sync loop
-        // to start, so the session cannot go live. Reporting a connection here
-        // would leave the engine believing it is connected to something that
-        // will never deliver an event or ever ask to be retried.
+        // No room list means no sync loop, so the session must not report a connection.
         let rooms = match matrix::fetch_rooms(&client).await {
             Ok(rooms) => rooms,
             Err(e) => {
@@ -487,9 +405,6 @@ impl MatrixBackend for MatrixService {
         let sync_client = client.clone();
         let itx = internal_tx.clone();
         let sync = AbortOnDrop::new(tokio::spawn(async move {
-            // Returns only once retrying in place has been ruled out; see
-            // `matrix::sync_loop`. Until then this task reports degradation
-            // and recovery on the same channel and the session stays up.
             let end = matrix::sync_loop(sync_client, SYNC_POLL_TIMEOUT, itx.clone()).await;
             let _ = itx.send(InternalEvent::Matrix(
                 InternalMatrixEvent::Disconnected(end),
@@ -796,7 +711,6 @@ mod tests {
         }
     }
 
-    /// Build a client without contacting a server, for lifecycle assertions.
     async fn offline_client(store: &std::path::Path) -> Client {
         Client::builder()
             .homeserver_url("http://127.0.0.1:1")
@@ -812,7 +726,6 @@ mod tests {
         MatrixService::new(tx, dir.to_path_buf(), dispatcher)
     }
 
-    /// A task that will not finish on its own, so that an abort is observable.
     fn parked_task() -> (AbortOnDrop, tokio::task::AbortHandle) {
         let handle = tokio::spawn(async {
             tokio::time::sleep(std::time::Duration::from_secs(300)).await;
@@ -821,7 +734,6 @@ mod tests {
         (AbortOnDrop::new(handle), abort_handle)
     }
 
-    /// Put a service into the state a completed connection leaves it in.
     async fn connected_service(
         dir: &std::path::Path,
     ) -> (MatrixService, tokio::task::AbortHandle, tokio::task::AbortHandle) {
@@ -847,7 +759,6 @@ mod tests {
 
         service.reset().await;
 
-        // The session is no longer serving, so it no longer owns the task.
         assert!(service.session.live_client().is_none(), "the session should have stood down");
         // Yield so the runtime can process the cancellation.
         tokio::task::yield_now().await;
@@ -857,9 +768,7 @@ mod tests {
         assert!(sources.get("mxc://stale").is_none(), "media sources should be cleared");
     }
 
-    /// The pagination task holds `Arc<Timeline>` clones for rooms that a
-    /// reconnect is about to resubscribe. Left running it paginates timelines
-    /// nothing is listening to any more, and keeps the client alive doing it.
+    /// Left running, the pagination task keeps the client alive.
     #[tokio::test]
     async fn reset_aborts_the_pagination_task_too() {
         let tmp = tempfile::tempdir().unwrap();
@@ -871,9 +780,6 @@ mod tests {
         assert!(pagination_abort.is_finished(), "pagination task should be aborted");
     }
 
-    /// `reset` prepares for the next connection attempt, and that attempt is
-    /// meant to reuse the client rather than build a second one. Clearing the
-    /// client here is what made every reconnect leak a set of sqlite pools.
     #[tokio::test]
     async fn reset_keeps_the_client_for_reuse() {
         let tmp = tempfile::tempdir().unwrap();
@@ -884,7 +790,6 @@ mod tests {
         assert!(service.session.client().is_some(), "reset must keep the client for the next attempt");
     }
 
-    /// The cached client is only reusable for the session it belongs to.
     #[tokio::test]
     async fn acquire_reuses_only_for_a_matching_session() {
         let tmp = tempfile::tempdir().unwrap();
@@ -904,27 +809,21 @@ mod tests {
         );
         assert!(service.session.client().is_some(), "the session should still hold the client");
 
-        // A different account on the same homeserver is a different session, so
-        // the cached client is dropped rather than reused. The build that
-        // follows cannot complete (there is no saved session and no password),
-        // which is all this asserts.
+        // The build that follows cannot complete (no saved session or password), which
+        // is all this asserts.
         let other = ServerConnectionForm { username: "bob".into(), ..form.clone() };
         let outcome = service.prepare_session(&other, &internal_tx).await;
         assert!(outcome.is_err(), "a different session must not reuse the cached client");
         assert!(service.session.client().is_none(), "the stale client should have been released");
     }
 
-    /// The key that decides reuse has to distinguish accounts and homeservers,
-    /// and has to tolerate the trailing slash the SDK adds to a homeserver URL.
     #[tokio::test]
     async fn a_session_key_only_serves_its_own_account_and_homeserver() {
         let tmp = tempfile::tempdir().unwrap();
         let client = offline_client(tmp.path()).await;
         let form = test_form();
 
-        // The offline client has no session, so the MXID falls back to the
-        // form's prediction; the homeserver still comes from the client, which
-        // reports it with a trailing slash.
+        // The offline client has no session, so the MXID falls back to the form.
         let key = SessionKey::of(&client, &form);
         assert_eq!(key.homeserver, "http://127.0.0.1:1", "the URL should be normalised");
 
@@ -945,11 +844,6 @@ mod tests {
         );
     }
 
-    /// A revoked access token has to cost us both the cached client and the
-    /// saved session, or the connection never comes back: the retry is handed
-    /// the same dead client, and rebuilding one only restores the same dead
-    /// token from `session.json`, because `restore_session` never checks it
-    /// against the server. Either half left in place is a permanent 60s loop.
     #[tokio::test]
     async fn a_rejected_token_forces_the_next_attempt_to_log_in_again() {
         let tmp = tempfile::tempdir().unwrap();
@@ -960,8 +854,6 @@ mod tests {
         let client = offline_client(tmp.path()).await;
         service.session.install(SessionKey::of(&client, &form), client);
 
-        // A saved session that `restore_session` would happily accept, because
-        // it never asks the server whether the token inside it still works.
         let saved = session_path(tmp.path(), &form);
         std::fs::create_dir_all(saved.parent().unwrap()).unwrap();
         std::fs::write(&saved, r#"{
@@ -975,9 +867,6 @@ mod tests {
         assert!(service.session.client().is_none(), "the rejected client must be dropped");
         assert!(!saved.exists(), "the rejected session file must be removed");
 
-        // With both gone the next attempt goes through `start_matrix_client`,
-        // which finds no session to restore and asks for a password rather than
-        // handing back a client that will be rejected again.
         let outcome = service.prepare_session(&form, &internal_tx).await;
         assert!(
             matches!(outcome, Err(ConnectOutcome::NeedsPassword)),
@@ -985,11 +874,8 @@ mod tests {
         );
     }
 
-    /// A command that arrives between `reset` and a completed reconnect must
-    /// not write. The client outlives a reset now, so without a `Live` guard a
-    /// send reaches a client whose timelines were just cleared: the timeline
-    /// send finds no room, falls back to `Room::send`, and unwraps a room the
-    /// client does not have. This test passing at all is the assertion.
+    /// Without a `Live` guard, a send after `reset` reaches a client whose timelines
+    /// were cleared and panics.
     #[tokio::test]
     async fn a_write_command_is_ignored_while_the_session_is_not_live() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1011,17 +897,12 @@ mod tests {
         );
     }
 
-    /// Going live has to take ownership of the tasks. A `Live` session that did
-    /// not own them would leave a sync loop running on the cached client after
-    /// the next reconnect replaced it, and that loop announces a disconnect
-    /// when it finally ends.
     #[tokio::test]
     async fn a_reconnect_stops_the_previous_session_tasks() {
         let tmp = tempfile::tempdir().unwrap();
         let (mut service, sync_abort, pagination_abort) = connected_service(tmp.path()).await;
         let (internal_tx, _internal_rx) = mpsc::channel(1);
 
-        // A second connection attempt for the same session reuses the client.
         let reused = service.prepare_session(&test_form(), &internal_tx).await
             .expect("the same session should be reusable");
         drop(reused);

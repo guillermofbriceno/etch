@@ -11,11 +11,7 @@ vi.mock('../sfx', () => ({
     sfxVolume: { subscribe: vi.fn() },
 }));
 
-// Importing the router is what pulls every store module into the graph, which
-// is what makes them register. The probes below need the stores themselves as
-// well, so this file cannot tell a module the router reaches from one it only
-// imports itself; storeClassification.test.ts imports the router alone and is
-// where that distinction is checked.
+// The router import pulls in every store module, which registers them.
 import { initEventRouter } from '../eventRouter';
 import { sessionStoreNames } from '../session';
 
@@ -111,20 +107,13 @@ function makeVoiceUser(sessionId: number) {
 }
 
 type SessionStoreProbe = {
-    /** The name the store is registered under in session.ts. */
     name: string;
-    /** Put the store into a state a live session would produce. */
     populate: () => void;
-    /** Assert the store holds what it held before that session began. */
     expectCleared: () => void;
 };
 
-// Both phases run in array order. Two stores here are private to their module
-// and can only be observed through a store that is itself being reset, so
-// their probes reach past their own store and their position matters:
-// hiddenDmInfos populates through a ChannelList event that replaces the whole
-// channel list, so it goes first; messageWindows can only be read back by
-// selecting a channel again, so it goes last.
+// Order matters: hiddenDmInfos populates via a ChannelList event that replaces the
+// channel list, and messageWindows is read back last by selecting a channel.
 const MATRIX_PROBES: SessionStoreProbe[] = [
     {
         name: 'hiddenDmInfos',
@@ -136,8 +125,7 @@ const MATRIX_PROBES: SessionStoreProbe[] = [
             });
         },
         expectCleared: () => {
-            // The stash is private. With no cached RoomInfo behind it, an
-            // unhide has nothing to put back and the list stays empty.
+            // The store is private, so observe it through unhide.
             unhideDm(HIDDEN_DM_ID);
             expect(get(channels)).toEqual([]);
         },
@@ -214,16 +202,13 @@ const MATRIX_PROBES: SessionStoreProbe[] = [
             });
         },
         expectCleared: () => {
-            // The window map is private, so read it back the only way a
-            // component can: select the room and look at activeWindow.
             setActiveChannel(ROOM_ID);
             expect(get(activeWindow).entries).toEqual([]);
         },
     },
 ];
 
-// mumbleStatus goes last: its probe fires a UserState to prove the private
-// localSession went with it, and that adds a user to voiceUsers.
+// mumbleStatus goes last: its probe adds a user to voiceUsers.
 const VOICE_PROBES: SessionStoreProbe[] = [
     {
         name: 'userVolumes',
@@ -253,19 +238,13 @@ const VOICE_PROBES: SessionStoreProbe[] = [
         },
         expectCleared: () => {
             expect(get(mumbleStatus)).toBe('disconnected');
-            // localSession is private. Prove it went too: a UserState for the
-            // old session ID must no longer be taken for the local user, or a
-            // stranger on the next server reusing that ID would drive the
-            // local mute toggles.
+            // localSession is private; a stale one would let a stranger reusing the ID
+            // drive the mute toggles.
             fireMumbleEvent({ type: 'UserState', data: { ...makeVoiceUser(LOCAL_SESSION), self_mute: true } });
             expect(get(isMuted)).toBe(false);
         },
     },
 ];
-
-// -----------------------------------------------------------------------
-// Matrix session scope
-// -----------------------------------------------------------------------
 
 describe('resetMatrixSession clears every registered store', () => {
     beforeEach(() => {
@@ -273,8 +252,6 @@ describe('resetMatrixSession clears every registered store', () => {
     });
 
     it('has a probe for every registered matrix store', () => {
-        // Without this the test below would quietly stop covering a store the
-        // moment one was registered without a probe to go with it.
         expect(MATRIX_PROBES.map(p => p.name).sort()).toEqual(sessionStoreNames('matrix'));
     });
 
@@ -286,10 +263,6 @@ describe('resetMatrixSession clears every registered store', () => {
         for (const probe of MATRIX_PROBES) probe.expectCleared();
     });
 });
-
-// -----------------------------------------------------------------------
-// Voice session scope
-// -----------------------------------------------------------------------
 
 describe('resetVoiceSession clears every registered store', () => {
     beforeEach(() => {
@@ -309,21 +282,12 @@ describe('resetVoiceSession clears every registered store', () => {
     });
 });
 
-// -----------------------------------------------------------------------
-// The two lifecycles stay independent
-// -----------------------------------------------------------------------
-
 describe('the voice session outlives a matrix reset', () => {
     beforeEach(() => {
         resetStores();
     });
 
     it('leaves voice state alone on ServerReset', () => {
-        // ServerReset fires on every Matrix connect attempt, retries in the
-        // backoff loop included, and the engine deliberately keeps Mumble
-        // joined when the voice server has not moved. Nothing reconnects to
-        // repopulate these, so clearing them here would blank the voice panel
-        // of a user who is still in the channel and still audible.
         for (const probe of VOICE_PROBES) probe.populate();
         isMuted.set(true);
         isDeafened.set(true);
@@ -336,40 +300,14 @@ describe('the voice session outlives a matrix reset', () => {
         expect(get(talkingUsers).size).toBe(1);
         expect(get(userVolumes)).toEqual({ someone: -3.5 });
 
-        // The engine persists these in VoiceRestoreState and re-sends them
-        // when Mumble comes back up, so the frontend must not second-guess it.
+        // The engine restores these itself.
         expect(get(isMuted)).toBe(true);
         expect(get(isDeafened)).toBe(true);
     });
 });
 
-// -----------------------------------------------------------------------
-// The registered sets themselves
-// -----------------------------------------------------------------------
-
-// These two lists exist to fail. They pin which stores belong to which
-// session, so a store moving between scopes, losing its registration, or
-// changing name has to be a deliberate edit here rather than a silent change
-// in behaviour.
-//
-// What they cannot do is notice a store nobody registered at all: a name that
-// never reached the registry leaves both lists exactly as they were. That
-// direction -- the one the original bug came from -- is covered by
-// storeClassification.test.ts, which reads the source rather than the
-// registry.
-//
-// If one of these fails, work out which bucket the store belongs in before
-// touching the list:
-//   matrix session  state from one homeserver connection, cleared on ServerReset
-//   voice session   state from one Mumble connection, cleared on its disconnect
-//   device-scoped   a preference or UI state that has to survive both
-//   backend-owned   the engine persists and replays it, so the frontend must
-//                   not clear it (isMuted and isDeafened are the two)
-//   derived         computed from other stores, needs no reset of its own
-//
-// Register it in the right scope and add it here, or declare it in one of the
-// other three buckets where it is defined. Editing a list to make the red go
-// away puts the bug back.
+// Pins scope membership, but cannot see a store nobody registered;
+// storeClassification.test.ts covers that.
 const EXPECTED_MATRIX_STORES = [
     'activeChannelId',
     'certChangeRequest',

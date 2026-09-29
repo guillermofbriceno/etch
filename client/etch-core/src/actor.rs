@@ -1,27 +1,7 @@
-//! Each subsystem in a task that owns it.
-//!
-//! `MatrixBackend::connect` and `VoiceService::launch` take `&mut self`, and
-//! both make several network round trips. Awaited inline on the engine's
-//! `select!` loop, that borrow is a lock on the whole engine: nothing drains
-//! the command channel for as long as the call runs, so the bounded queue from
-//! the Tauri layer fills and every `invoke` behind it blocks. The user sees a
-//! frozen UI for the length of a connect.
-//!
-//! The obvious fix -- move the traits to `&self` and put a `Mutex` inside each
-//! service -- only swaps one exclusion mechanism for another, and a lock held
-//! across an await is the same stall wearing a different hat. So instead each
-//! service moves into a task that owns it outright. `&mut self` stays exactly
-//! as it is, because the actor is the only thing that can reach the service;
-//! there is no lock anywhere. The engine keeps a channel and stops owning
-//! subsystems, and every result comes back as an `InternalEvent` on the
-//! channel the engine already drains.
-//!
-//! Requests to one actor are served strictly in order, which is what keeps the
-//! orderings the rest of the program relies on. A reset and the connect that
-//! follows it travel as one request so nothing can be dispatched between them,
-//! and a `MatrixCommand` issued after a connect is still handled after it.
+//! Each subsystem lives in a task that owns it, so a slow connect or launch never
+//! blocks the engine's event loop.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot};
@@ -32,51 +12,24 @@ use crate::models::VoiceServerConfig;
 use crate::task::AbortOnDrop;
 use crate::traits::{MatrixBackend, VoiceService};
 
-/// Depth of an actor's control queue.
-///
-/// Sized to match the control channel the Tauri layer feeds the engine: these
-/// are one-per-user-action requests plus the occasional connect, so a backlog
-/// deeper than that means something is wrong rather than merely busy. Keeping
-/// the two the same means the engine can forward a full control channel into
-/// an actor without ever finding the far end full.
+/// Matches the Tauri control channel depth, so the engine can forward a full channel
+/// without blocking.
 const CONTROL_QUEUE: usize = 32;
 
-/// Depth of the Matrix actor's media queue.
-///
-/// Media is a data path, not a control path: the webview raises one request
-/// per image, so opening a picture-heavy room bursts far past anything the
-/// control queue is sized for. It gets its own queue, as deep as the one the
-/// protocol handler fills, so a burst of images can be forwarded without the
-/// engine ever waiting on a full channel -- which would park the loop the rest
-/// of this module exists to keep free.
+/// Separate from control so a burst of image loads cannot starve commands or block the engine.
 const MEDIA_QUEUE: usize = 256;
 
-// ---------------------------------------------------------------------------
-// Matrix
-// ---------------------------------------------------------------------------
-
-/// Work for the Matrix service. Served in the order it is dispatched.
 pub(crate) enum MatrixRequest {
-    /// Clear the previous session and connect a new one.
-    ///
-    /// Reset and connect are one request rather than two so that nothing can
-    /// be dispatched between them: the point of the reset is that no state
-    /// from the old session survives into the new one.
+    /// Reset and connect are one request so nothing can be dispatched between them.
     Connect {
         form: ServerConnectionForm,
         internal_tx: mpsc::Sender<InternalEvent>,
-        /// Identifies this attempt. Echoed back so the engine can tell a
-        /// result it is still waiting for from one it has moved past.
         generation: u64,
-        /// Fired by the engine when a newer attempt supersedes this one. The
-        /// in-flight connect is then dropped where it stands rather than left
-        /// to run to completion and mutate a session the engine has replaced.
+        /// Fired when a newer attempt supersedes this one.
         cancel: oneshot::Receiver<()>,
     },
     Command(MatrixCommand),
     Subscribe(String),
-    /// Look up the Matrix profile behind a user who just joined voice. A
-    /// homeserver round trip, so it cannot be done on the engine's loop.
     ResolveVoiceUser {
         session_id: u32,
         name: String,
@@ -85,8 +38,6 @@ pub(crate) enum MatrixRequest {
     },
 }
 
-/// A request for the bytes behind an `mxc://` URI. On its own queue; see
-/// `MEDIA_QUEUE`.
 pub(crate) struct MediaFetch {
     pub mxc_url: String,
     pub respond: oneshot::Sender<Result<Vec<u8>, String>>,
@@ -94,8 +45,7 @@ pub(crate) struct MediaFetch {
 
 /// The engine's end of the Matrix actor.
 pub(crate) struct MatrixHandle {
-    /// `None` once shutdown has closed it, which is how the actor is told
-    /// there is no more work coming.
+    /// `None` once shutdown has closed it.
     control_tx: Option<mpsc::Sender<MatrixRequest>>,
     media_tx: Option<mpsc::Sender<MediaFetch>>,
     task: AbortOnDrop,
@@ -109,12 +59,7 @@ impl MatrixHandle {
         Self { control_tx: Some(control_tx), media_tx: Some(media_tx), task }
     }
 
-    /// Hand a request to the actor. `false` means the actor is gone and the
-    /// request will never be served.
-    ///
-    /// Reported rather than swallowed because some requests leave the engine
-    /// waiting on an answer that would now never come. The caller is the only
-    /// thing that knows whether this one did.
+    /// `false` means the actor is gone and the request will never be served.
     #[must_use = "a request the actor never took may leave the engine waiting on it"]
     pub(crate) async fn send(&self, request: MatrixRequest) -> bool {
         let Some(tx) = &self.control_tx else { return false };
@@ -125,11 +70,8 @@ impl MatrixHandle {
         true
     }
 
-    /// Hand a media fetch over without waiting.
-    ///
-    /// Never awaits: a room's worth of images must not be able to park the
-    /// engine on a full queue. A fetch that will not fit is answered with an
-    /// error, which the webview renders as a failed image rather than a hang.
+    /// Never awaits: a fetch that does not fit is answered with an error instead of
+    /// parking the engine.
     pub(crate) fn fetch_media(&self, mxc_url: String, respond: oneshot::Sender<Result<Vec<u8>, String>>) {
         let Some(tx) = &self.media_tx else {
             let _ = respond.send(Err("Matrix actor has stopped".into()));
@@ -145,18 +87,13 @@ impl MatrixHandle {
         }
     }
 
-    /// Stop accepting requests and let the actor run out what is already
-    /// queued, giving up after `grace`.
     pub(crate) async fn finish(&mut self, grace: Duration) {
         self.control_tx = None;
         self.media_tx = None;
         self.task.join_within(grace).await;
     }
 
-    /// Leave the actor in the state a panic inside it would: the task gone
-    /// and the receiver dropped, so the next dispatch finds a closed channel.
-    /// Unwinding drops the receiver just as aborting does, so this is the
-    /// same situation without needing something to actually panic.
+    /// Simulates a panicked actor: task gone, receiver dropped.
     #[cfg(test)]
     pub(crate) async fn kill_for_test(&self) {
         self.task.abort();
@@ -174,8 +111,7 @@ async fn matrix_actor<M: MatrixBackend>(
     let mut media_open = true;
     loop {
         let request = tokio::select! {
-            // Control first: a flood of image loads must not be able to
-            // starve the commands the user is issuing.
+            // Control first so image loads cannot starve user commands.
             biased;
 
             request = control_rx.recv() => match request {
@@ -185,7 +121,6 @@ async fn matrix_actor<M: MatrixBackend>(
 
             fetch = media_rx.recv(), if media_open => {
                 match fetch {
-                    // Only spawns, so this is never where the actor spends time.
                     Some(fetch) => {
                         service.spawn_media_fetch(fetch.mxc_url, fetch.respond);
                         continue;
@@ -207,8 +142,7 @@ async fn matrix_actor<M: MatrixBackend>(
                 tokio::pin!(attempt);
 
                 let outcome = tokio::select! {
-                    // Cancellation wins a tie: if both are ready the engine
-                    // has already moved on to a newer attempt.
+                    // Cancellation wins a tie: the engine has moved on to a newer attempt.
                     biased;
                     _ = cancel => None,
                     outcome = &mut attempt => Some(outcome),
@@ -241,14 +175,15 @@ async fn matrix_actor<M: MatrixBackend>(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Voice
-// ---------------------------------------------------------------------------
-
-/// Work for the voice service. Served in the order it is dispatched.
 pub(crate) enum VoiceRequest {
     Launch(LaunchRequest),
     Command(MumbleCommand),
+    /// Served in order so the launch queued behind it reads the stored fingerprint.
+    AcceptCert {
+        host: String,
+        port: u16,
+        fingerprint: String,
+    },
 }
 
 pub(crate) struct LaunchRequest {
@@ -277,8 +212,6 @@ impl VoiceHandle {
         Self { tx: Some(tx), task }
     }
 
-    /// Hand a request to the actor. `false` means the actor is gone and the
-    /// request will never be served. See `MatrixHandle::send`.
     #[must_use = "a request the actor never took may leave the engine waiting on it"]
     pub(crate) async fn send(&self, request: VoiceRequest) -> bool {
         let Some(tx) = &self.tx else { return false };
@@ -294,7 +227,6 @@ impl VoiceHandle {
         self.task.join_within(grace).await;
     }
 
-    /// See `MatrixHandle::kill_for_test`.
     #[cfg(test)]
     pub(crate) async fn kill_for_test(&self) {
         self.task.abort();
@@ -313,6 +245,14 @@ async fn voice_actor<V: VoiceService>(
     while let Some(request) = rx.recv().await {
         match request {
             VoiceRequest::Command(cmd) => service.send_command(cmd).await,
+            VoiceRequest::AcceptCert { host, port, fingerprint } => {
+                let db_path = mumble_db_path(&data_dir);
+                match crate::mumble::cert::store_cert(&db_path, &host, port, &fingerprint) {
+                    Ok(()) => log::info!("Stored the accepted cert for {host}:{port}"),
+                    // The queued launch will see the old fingerprint and re-prompt.
+                    Err(e) => log::error!("Failed to store the accepted cert for {host}:{port}: {e:?}"),
+                }
+            }
             VoiceRequest::Launch(request) => {
                 let outcome = launch(&mut service, &data_dir, &event_tx, &request).await;
                 let _ = request.internal_tx.send(InternalEvent::Mumble(
@@ -323,24 +263,24 @@ async fn voice_actor<V: VoiceService>(
     }
 }
 
-/// Check the server's certificate, then replace the Mumble process.
-///
-/// The probe is a TLS handshake with its own timeout, which is why this is
-/// here and not on the engine's loop: it is the single longest thing the
-/// connect path can wait on.
+/// Shared with the spawned Mumble client via `database_location` in `mumble-conf.json`.
+fn mumble_db_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("mumble/mumble.sqlite")
+}
+
 async fn launch<V: VoiceService>(
     service: &mut V,
-    data_dir: &std::path::Path,
+    data_dir: &Path,
     event_tx: &mpsc::Sender<CoreEvent>,
     request: &LaunchRequest,
 ) -> LaunchOutcome {
     let creds = &request.creds;
-    let db_path = data_dir.join("mumble/mumble.sqlite");
+    let db_path = mumble_db_path(data_dir);
 
     match crate::mumble::cert::probe_server_cert(&creds.host, creds.port).await {
         Ok(fingerprint) => match crate::mumble::cert::get_stored_cert(&db_path, &creds.host, creds.port) {
             None => {
-                // TOFU: first time seeing this server, store and proceed.
+                // TOFU: first sight of this server, trust and store.
                 log::info!("First connection to {}:{}, storing cert fingerprint", creds.host, creds.port);
                 if let Err(e) = crate::mumble::cert::store_cert(&db_path, &creds.host, creds.port, &fingerprint) {
                     log::warn!("Failed to store cert: {:?}", e);
@@ -356,22 +296,16 @@ async fn launch<V: VoiceService>(
                     port: creds.port,
                     new_fingerprint: fingerprint,
                 })).await;
-                // Mumble has not been touched, so it is still joined to
-                // wherever it was. The engine stashes the launch for the user
-                // to approve.
                 return LaunchOutcome::CertChanged;
             }
         },
         Err(e) => {
-            // Probe failed (network issue, etc.) -- log and proceed anyway.
+            // Probe failure is not fatal: proceed anyway.
             log::warn!("Cert probe failed for {}:{}: {:?}", creds.host, creds.port, e);
         }
     }
 
-    // Past this point the running Mumble is about to be killed and replaced,
-    // so say so before it happens: a `Connected` that arrives while the new
-    // process comes up belongs to this launch, and the engine needs to know
-    // that before it sees it.
+    // Must precede the replacement so the engine attributes the next `Connected` to this launch.
     let _ = request.internal_tx.send(InternalEvent::Mumble(
         InternalMumbleEvent::LaunchStarted { generation: request.generation },
     )).await;

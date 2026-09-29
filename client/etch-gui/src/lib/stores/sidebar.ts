@@ -14,11 +14,10 @@ function loadCollapsed(): boolean {
     }
 }
 
-// Device-scoped. A layout preference, persisted to localStorage.
 export const sidebarCollapsed = writable<boolean>(loadCollapsed());
 
-// Device-scoped. Temporary flag: forces text opacity to 0 during toggle
-// animation. Masks the container-query content swap so it happens invisibly.
+// Temporary flag: forces text opacity to 0 during toggle animation.
+// Masks the container-query content swap so it happens invisibly.
 export const sidebarTransitioning = writable<boolean>(false);
 let contentTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -46,9 +45,9 @@ export function toggleSidebar(): void {
     }, delay);
 }
 
-/** Device-scoped. Whether the sidebar peek (hover-expand) should be suppressed
- *  because the cursor has left the window. Only relevant on Linux where GTK
- *  cursor events drive this state. */
+/** Whether the sidebar peek (hover-expand) should be suppressed because the
+ *  cursor has left the window. Only relevant on Linux where GTK cursor events
+ *  drive this state. */
 export const peekSuppressed = writable<boolean>(false);
 
 declareStores('device', 'sidebarCollapsed', 'sidebarTransitioning', 'peekSuppressed');

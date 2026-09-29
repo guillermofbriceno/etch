@@ -9,24 +9,14 @@ import { transmissionMode, vadThreshold, voiceHold, useMumbleSettings, deafenSup
 import type { TransmissionMode } from './voiceSettings';
 import { registerSessionStore, declareStores } from './session';
 
-// Device-scoped. The saved server list and the row selected in settings are
-// both preferences that outlive any one connection.
 export const serverBookmarks = writable<ServerBookmark[]>([]);
 export const selectedBookmarkId = writable<string | null>(null);
 
-// Device-scoped, despite naming a server. This is the bookmark of the session
-// being opened, set by connectToServer() before the command leaves the app,
-// and ServerReset arrives afterwards as the backend's reply. Clearing it here
-// would wipe the details of the connection currently in flight and leave the
-// password prompt with nothing to show.
+// Set before ServerReset arrives as the reply to connecting, so a reset must not clear it.
 export const connectingBookmark = writable<ServerBookmark | null>(null);
 
 declareStores('device', 'serverBookmarks', 'selectedBookmarkId', 'connectingBookmark');
 
-// Matrix session. All three describe the homeserver connection being
-// established or already attached. ServerReset is emitted before the
-// Connecting state for the new attempt, so clearing them cannot race the
-// connection that follows.
 export const passwordRequested = writable<boolean>(false);
 export const matrixConnecting = writable<boolean>(false);
 export const mediaBaseUrl = writable<string | null>(null);
@@ -110,9 +100,6 @@ registerSessionStore('matrix', 'mediaBaseUrl', clearMediaBaseUrl);
 registerSessionStore('matrix', 'passwordRequested', clearPasswordRequested);
 registerSessionStore('matrix', 'matrixConnecting', clearMatrixConnecting);
 
-/** Clear the connection state this module owns. resetMatrixSession() already
- *  does this as part of a full ServerReset; this stays exported for callers
- *  that want the connection half on its own. */
 export function resetServerConnection(): void {
     clearMediaBaseUrl();
     clearPasswordRequested();

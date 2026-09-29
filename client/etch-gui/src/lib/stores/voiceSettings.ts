@@ -4,9 +4,6 @@ import { declareStores } from './session';
 
 export type TransmissionMode = 'voice_activation' | 'continuous' | 'push_to_talk';
 
-// Device-scoped, all five. Audio preferences the backend persists and replays
-// on SettingsLoaded, which only fires at startup, so a reconnect that cleared
-// them would drop the user back to defaults with no way to get them back.
 export const transmissionMode = writable<TransmissionMode>('voice_activation');
 export const vadThreshold = writable<number>(60);
 export const voiceHold = writable<number>(250);

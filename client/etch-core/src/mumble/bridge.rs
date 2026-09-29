@@ -15,8 +15,7 @@ use interprocess::local_socket::{
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 
-/// Each listener gets its own name. Reusing one name per process means a
-/// listener that outlives its launch blocks every later launch from binding.
+/// A per-process name would let a listener that outlives its launch block every later bind.
 fn next_socket_name() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     static GENERATION: AtomicU64 = AtomicU64::new(0);
@@ -46,8 +45,7 @@ pub fn start(
 
     let (cmd_tx, cmd_rx) = mpsc::channel::<BridgeCommand>(64);
 
-    // Held by the caller: an early return there tears the listener down rather
-    // than stranding the accept task on its socket for the life of the process.
+    // Held by the caller so an early return tears the listener down.
     let task = AbortOnDrop::new(tokio::spawn(async move {
         if let Err(e) = accept_loop(listener, event_tx, internal_tx, cmd_rx, dispatcher).await {
             log::error!("Bridge listener error: {}", e);
@@ -381,17 +379,12 @@ fn encode_path_segment(s: &str) -> String {
 mod tests {
     use super::*;
 
-    // --- Listener lifecycle ---
-
     fn start_listener() -> std::io::Result<(String, mpsc::Sender<BridgeCommand>, AbortOnDrop)> {
         let (event_tx, _event_rx) = mpsc::channel(16);
         let (internal_tx, _internal_rx) = mpsc::channel(16);
         start(event_tx, internal_tx, Arc::new(ScriptDispatcher::empty()))
     }
 
-    /// Every launch needs its own socket. Naming the socket after the process
-    /// alone means a listener that outlives its launch keeps the name, and no
-    /// later launch in that process can bind.
     #[tokio::test]
     async fn consecutive_listeners_get_distinct_names() {
         let (first_name, _first_tx, _first_task) = start_listener()
@@ -402,9 +395,6 @@ mod tests {
         assert_ne!(first_name, second_name);
     }
 
-    /// Dropping the listener must release its socket. A bare `JoinHandle`
-    /// detaches instead of aborting, which would leave the accept task parked
-    /// on the socket for the life of the process.
     #[tokio::test]
     async fn dropping_the_listener_releases_its_socket() {
         let (name, _cmd_tx, task) = start_listener().expect("listener should bind");

@@ -50,8 +50,7 @@ impl MumbleProcess {
         init_mumble_config(&mumble_config_dir, resource_dir)?;
 
         // 3. Start bridge listener
-        // Held across the fallible steps below: if any of them returns early the
-        // listener is torn down with it rather than stranded on its socket.
+        // Held across the fallible steps below so an early return tears the listener down.
         let (sock_name, cmd_tx, bridge_task) = crate::mumble::bridge::start(event_tx, internal_tx, dispatcher)
             .context(BridgeStartSnafu)?;
 
@@ -129,7 +128,7 @@ impl MumbleProcess {
 
     pub async fn kill(&mut self) {
         let _ = self.child.kill().await;
-        // Explicit because `kill` stops the session without dropping `self`.
+        // Explicit because `kill` does not drop `self`.
         self._bridge_task.abort();
         log::info!("Mumble process killed");
     }
@@ -138,7 +137,6 @@ impl MumbleProcess {
 impl Drop for MumbleProcess {
     fn drop(&mut self) {
         let _ = self.child.start_kill();
-        // `_bridge_task` aborts itself as it drops.
     }
 }
 
@@ -347,7 +345,8 @@ fn mumble_bin(resource_dir: &Path) -> PathBuf {
 fn build_mumble_command(mumble_path: &Path, url: &str, sock_name: &str, show_gui: bool, extra: &[&str], config_dir: &Path) -> Command {
     let config_file = config_dir.join("mumble-conf.json");
 
-    // Point Qt at the bundled plugins and shared libs (e.g. bundled/mumble/plugins, bundled/mumble/lib)
+    // Point Qt at the bundled plugins and shared libs (e.g. bundled/mumble/plugins,
+    // bundled/mumble/lib)
     let mumble_root = mumble_path.parent().and_then(|p| p.parent()).unwrap_or(Path::new("."));
     let qt_plugin_path = mumble_root.join("plugins");
     let lib_path = mumble_root.join("lib");

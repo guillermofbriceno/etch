@@ -6,8 +6,8 @@ use crate::settings::Settings;
 
 /// Dispatches event scripts configured in settings.
 ///
-/// Holds the `event_scripts` map (no per-event disk I/O) and enforces a
-/// per-event-type debounce window to prevent process storms.
+/// Caches the `event_scripts` map at construction time (avoids per-event disk I/O)
+/// and enforces a per-event-type debounce window to prevent process storms.
 pub struct ScriptDispatcher {
     scripts: HashMap<String, String>,
     last_fired: Mutex<HashMap<String, Instant>>,
@@ -15,14 +15,8 @@ pub struct ScriptDispatcher {
 }
 
 impl ScriptDispatcher {
-    /// Take the event scripts from the settings the app loaded at startup.
-    ///
-    /// This is a snapshot, and deliberately so: `event_scripts` has no setter
-    /// anywhere in the app. Like `custom_css` and `sfx_paths` it is a field
-    /// you hand-edit in `settings.json`, and all three take effect on the next
-    /// start. What has gone is the second read of the file that used to happen
-    /// here -- the settings owner reads it once and hands the map over, so
-    /// there is one copy of the truth rather than two that could disagree.
+    /// Snapshot of the settings loaded at startup; `event_scripts` is hand-edited and
+    /// applies on the next start.
     pub fn from_settings(settings: &Settings) -> Self {
         Self {
             scripts: settings.event_scripts.clone(),
@@ -159,8 +153,6 @@ mod tests {
         assert_eq!(d.scripts["user_join"], "echo joined");
     }
 
-    /// The dispatcher takes what the settings owner read; with no settings
-    /// file that is the default, which configures no scripts.
     #[test]
     fn from_settings_with_no_settings_file_yields_empty_scripts() {
         let tmp = tempfile::tempdir().unwrap();
