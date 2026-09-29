@@ -130,7 +130,7 @@ mod tests {
         assert_eq!(get_stored_cert(db.path(), "example.com", 64739), Some("fp_other".to_string()));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn probe_gives_up_on_a_server_that_never_completes_the_handshake() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -144,13 +144,11 @@ mod tests {
         let probe = probe_server_cert("127.0.0.1", port);
         let outcome = tokio::time::timeout(PROBE_TIMEOUT * 2, probe).await;
 
+        let result = outcome
+            .expect("probe_server_cert must time out on its own rather than hang the caller");
         assert!(
-            outcome.is_ok(),
-            "probe_server_cert must time out on its own rather than hang the caller",
-        );
-        assert!(
-            outcome.unwrap().is_err(),
-            "a stalled handshake should surface as a probe error",
+            matches!(&result, Err(CoreError::CertProbe { message }) if message.starts_with("Timed out")),
+            "a stalled handshake should surface as a probe timeout, got {result:?}",
         );
     }
 

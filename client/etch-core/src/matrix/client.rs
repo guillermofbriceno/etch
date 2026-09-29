@@ -265,8 +265,14 @@ fn register_event_handlers(client: &Client, tx: mpsc::Sender<InternalEvent>, eve
 }
 
 pub async fn send_message(text: String, html_body: Option<String>, room_id_str: String, attachment_path: Option<String>, client: &Client) {
-    let room_id = RoomId::parse(&room_id_str).unwrap();
-    let room = client.get_room(&room_id).unwrap();
+    let Ok(room_id) = RoomId::parse(&room_id_str) else {
+        log::warn!("Not sending a message to an invalid room ID: {room_id_str}");
+        return;
+    };
+    let Some(room) = client.get_room(&room_id) else {
+        log::warn!("Not sending a message to room {room_id_str}: it is not known to this client");
+        return;
+    };
 
     match attachment_path {
         Some(path) => {

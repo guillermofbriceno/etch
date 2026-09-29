@@ -32,6 +32,10 @@ impl Drop for AbortOnDrop {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+    use tokio::time::Instant;
 
     #[tokio::test]
     async fn dropping_the_handle_aborts_the_task() {
@@ -44,5 +48,29 @@ mod tests {
         tokio::task::yield_now().await;
 
         assert!(abort_handle.is_finished(), "the task should have been aborted");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_task_that_finishes_within_the_grace_runs_to_completion() {
+        let finished = Arc::new(AtomicBool::new(false));
+        let flag = finished.clone();
+        let mut task = AbortOnDrop::new(tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            flag.store(true, Ordering::SeqCst);
+        }));
+
+        task.join_within(Duration::from_secs(5)).await;
+
+        assert!(finished.load(Ordering::SeqCst), "the task should have been allowed to finish");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn waiting_on_a_stuck_task_stops_once_the_grace_elapses() {
+        let mut task = AbortOnDrop::new(tokio::spawn(std::future::pending::<()>()));
+
+        let started = Instant::now();
+        task.join_within(Duration::from_secs(5)).await;
+
+        assert_eq!(started.elapsed(), Duration::from_secs(5), "shutdown must not wait past the grace");
     }
 }

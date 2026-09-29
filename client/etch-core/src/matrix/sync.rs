@@ -226,16 +226,10 @@ pub async fn find_voice_server(client: &Client, rooms: &[RoomInfo]) -> Option<Vo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::matrix::retry::SyncRetryPolicy;
-
-    /// A client pointed at a port nothing listens on, so every sync fails with a transport error.
-    async fn client_with_nowhere_to_sync() -> Client {
-        Client::builder()
-            .homeserver_url("http://127.0.0.1:1")
-            .build()
-            .await
-            .expect("client should build without contacting the server")
-    }
+    use crate::matrix::retry::{SyncRetryPolicy, SyncStep};
+    use crate::matrix::test_server::CannedHomeserver;
+    use matrix_sdk::config::RequestConfig;
+    use matrix_sdk::ruma::api::MatrixVersion;
 
     fn drain(rx: &mut mpsc::Receiver<InternalEvent>) -> Vec<InternalEvent> {
         let mut out = Vec::new();
@@ -245,13 +239,31 @@ mod tests {
         out
     }
 
-    /// Runs on a paused clock so the policy's real backoff costs nothing.
+    fn policy_backoff_total() -> Duration {
+        let mut policy = SyncRetryPolicy::new();
+        (0..SyncRetryPolicy::MAX_RETRIES).map(|_| match policy.observe(Some(SyncFailure::Transient)) {
+            SyncStep::Retry { delay, .. } => delay,
+            other => panic!("expected a retry, got {other:?}"),
+        }).sum()
+    }
+
+    /// Runs on a paused clock so the policy's real backoff costs nothing, with a client
+    /// that fails before any network I/O, since I/O lets the paused clock jump ahead.
     #[tokio::test(start_paused = true)]
-    async fn a_failing_sync_is_retried_to_the_ceiling_before_it_gives_up() {
-        let client = client_with_nowhere_to_sync().await;
-        let (tx, _rx) = mpsc::channel(16);
+    async fn a_failing_sync_is_retried_with_backoff_to_the_ceiling_and_reported_degraded_once() {
+        let client = Client::builder()
+            .homeserver_url("http://127.0.0.1:1")
+            .server_versions([MatrixVersion::V1_1])
+            .request_config(RequestConfig::new().disable_retry())
+            .build()
+            .await
+            .expect("client should build without contacting the server");
+        let (tx, mut rx) = mpsc::channel(16);
+        let started = tokio::time::Instant::now();
 
         let end = sync_loop(client, Duration::from_millis(1), tx).await;
+        let elapsed = started.elapsed();
+        let reported = drain(&mut rx);
 
         match &end {
             SyncEnd::RetriesExhausted { reason } => assert!(
@@ -261,17 +273,12 @@ mod tests {
                 )),
                 "the loop should have made every retry the policy allows, got {reason:?}",
             ),
-            other => panic!("a transport failure is not a session invalidation, got {other:?}"),
+            other => panic!("a failure without an errcode is not a session invalidation, got {other:?}"),
         }
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn retrying_reports_degradation_once_and_nothing_else() {
-        let client = client_with_nowhere_to_sync().await;
-        let (tx, mut rx) = mpsc::channel(16);
-
-        let end = sync_loop(client, Duration::from_millis(1), tx).await;
-        let reported = drain(&mut rx);
+        assert!(
+            elapsed >= policy_backoff_total(),
+            "the loop should have waited out the policy's backoff, took {elapsed:?}",
+        );
 
         let degraded = reported.iter().filter(|e| matches!(
             e, InternalEvent::Matrix(InternalMatrixEvent::SyncDegraded { .. })
@@ -280,7 +287,6 @@ mod tests {
             degraded, 1,
             "a degraded stretch is announced once, not once per retry; got {reported:?}",
         );
-
         assert!(
             !reported.iter().any(|e| matches!(
                 e, InternalEvent::Matrix(InternalMatrixEvent::SyncRecovered)
@@ -293,7 +299,35 @@ mod tests {
             )),
             "the driver reports the end by returning it, not on the channel; got {reported:?}",
         );
+    }
 
-        assert!(matches!(end, SyncEnd::RetriesExhausted { .. }));
+    /// On the real clock, because a paused one can time the request out before the
+    /// server's answer arrives.
+    #[tokio::test]
+    async fn a_rejected_token_ends_the_sync_loop_without_retrying() {
+        let server = CannedHomeserver::rejecting_the_token().await;
+        let client = server.client_for("@alice:example.com").await;
+        let (tx, mut rx) = mpsc::channel(16);
+
+        let end = tokio::time::timeout(
+            Duration::from_secs(10),
+            sync_loop(client, Duration::from_millis(1), tx),
+        ).await.expect("a rejected token should end the loop, not wait out a retry");
+        let reported = drain(&mut rx);
+
+        assert!(
+            matches!(end, SyncEnd::SessionInvalidated { .. }),
+            "a rejected token means the session is over, got {end:?}",
+        );
+        assert_eq!(
+            server.requests_to("/sync"), 1,
+            "a rejected token must not be retried; the server saw {:?}", server.requests(),
+        );
+        assert!(
+            !reported.iter().any(|e| matches!(
+                e, InternalEvent::Matrix(InternalMatrixEvent::SyncDegraded { .. })
+            )),
+            "a rejected token is not a degraded connection; got {reported:?}",
+        );
     }
 }

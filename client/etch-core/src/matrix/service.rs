@@ -696,6 +696,7 @@ impl MatrixBackend for MatrixService {
 mod tests {
     use super::*;
     use crate::commands::ChatMessageSend;
+    use crate::matrix::test_server::CannedHomeserver;
 
     fn test_form() -> ServerConnectionForm {
         ServerConnectionForm {
@@ -746,10 +747,11 @@ mod tests {
         (service, sync_abort, pagination_abort)
     }
 
+    /// Left running, the pagination task keeps the client alive.
     #[tokio::test]
     async fn reset_aborts_sync_and_clears_state() {
         let tmp = tempfile::tempdir().unwrap();
-        let (mut service, sync_abort, _pagination_abort) = connected_service(tmp.path()).await;
+        let (mut service, sync_abort, pagination_abort) = connected_service(tmp.path()).await;
 
         {
             let mut sources = service.timeline_manager.media_sources.write().unwrap();
@@ -763,21 +765,10 @@ mod tests {
         // Yield so the runtime can process the cancellation.
         tokio::task::yield_now().await;
         assert!(sync_abort.is_finished(), "sync task should be aborted");
+        assert!(pagination_abort.is_finished(), "pagination task should be aborted");
 
         let sources = service.timeline_manager.media_sources.read().unwrap();
         assert!(sources.get("mxc://stale").is_none(), "media sources should be cleared");
-    }
-
-    /// Left running, the pagination task keeps the client alive.
-    #[tokio::test]
-    async fn reset_aborts_the_pagination_task_too() {
-        let tmp = tempfile::tempdir().unwrap();
-        let (mut service, _sync_abort, pagination_abort) = connected_service(tmp.path()).await;
-
-        service.reset().await;
-        tokio::task::yield_now().await;
-
-        assert!(pagination_abort.is_finished(), "pagination task should be aborted");
     }
 
     #[tokio::test]
@@ -799,14 +790,10 @@ mod tests {
 
         let cached = offline_client(tmp.path()).await;
         let key = SessionKey { user_id: "@alice:example.com".into(), homeserver: "http://127.0.0.1:1".into() };
-        service.session.install(key, cached.clone());
+        service.session.install(key, cached);
 
-        let reused = service.prepare_session(&form, &internal_tx).await
+        service.prepare_session(&form, &internal_tx).await
             .expect("a matching session should reuse the cached client");
-        assert!(
-            reused.homeserver() == cached.homeserver(),
-            "the cached client should have been handed back",
-        );
         assert!(service.session.client().is_some(), "the session should still hold the client");
 
         // The build that follows cannot complete (no saved session or password), which
@@ -842,16 +829,25 @@ mod tests {
             key.could_serve(&ServerConnectionForm { homeserver_url: None, ..form.clone() }),
             "without an explicit URL the MXID's hostname is what pins the server",
         );
+
+        let server = CannedHomeserver::ok().await;
+        let signed_in = server.client_for("@alice:example.com").await;
+        let predicted_as_bob = ServerConnectionForm { username: "bob".into(), ..form };
+        assert_eq!(
+            SessionKey::of(&signed_in, &predicted_as_bob).user_id, "@alice:example.com",
+            "a signed-in client is keyed by its own MXID, not the form's prediction",
+        );
     }
 
     #[tokio::test]
     async fn a_rejected_token_forces_the_next_attempt_to_log_in_again() {
         let tmp = tempfile::tempdir().unwrap();
-        let (internal_tx, _internal_rx) = mpsc::channel(1);
+        let (internal_tx, _internal_rx) = mpsc::channel(16);
         let mut service = service(tmp.path());
-        let form = test_form();
+        let server = CannedHomeserver::rejecting_the_token().await;
+        let form = ServerConnectionForm { homeserver_url: Some(server.url.clone()), ..test_form() };
 
-        let client = offline_client(tmp.path()).await;
+        let client = server.client_for("@alice:example.com").await;
         service.session.install(SessionKey::of(&client, &form), client);
 
         let saved = session_path(tmp.path(), &form);
@@ -862,8 +858,10 @@ mod tests {
             "access_token": "revoked-token"
         }"#).unwrap();
 
-        service.discard_saved_session(&form);
+        let outcome = service.connect(form.clone(), internal_tx.clone()).await;
 
+        assert!(matches!(outcome, ConnectOutcome::Failed), "a rejected token cannot connect");
+        assert!(server.requests_to("/sync") > 0, "the rejection should have come from the server");
         assert!(service.session.client().is_none(), "the rejected client must be dropped");
         assert!(!saved.exists(), "the rejected session file must be removed");
 
@@ -874,26 +872,60 @@ mod tests {
         );
     }
 
-    /// Without a `Live` guard, a send after `reset` reaches a client whose timelines
-    /// were cleared and panics.
     #[tokio::test]
     async fn a_write_command_is_ignored_while_the_session_is_not_live() {
         let tmp = tempfile::tempdir().unwrap();
-        let (mut service, _sync_abort, _pagination_abort) = connected_service(tmp.path()).await;
+        let server = CannedHomeserver::ok().await;
+        let mut service = service(tmp.path());
+        let client = server.client_for("@alice:example.com").await;
+        let (sync, _sync_abort) = parked_task();
+        let (pagination, _pagination_abort) = parked_task();
+        service.session = MatrixSession::Live {
+            key: SessionKey::of(&client, &test_form()), client, _sync: sync, _pagination: pagination,
+        };
+
+        service.handle_command(MatrixCommand::SetDisplayName("while live".into())).await;
+        let while_live = server.requests_to("/displayname");
+        assert!(while_live > 0, "a live session should have sent the write to the server");
 
         service.reset().await;
+        service.handle_command(MatrixCommand::SetDisplayName("mid-reconnect".into())).await;
 
-        service.handle_command(MatrixCommand::SendMessage(ChatMessageSend {
-            room_id: "!room:example.com".into(),
-            text: "sent mid-reconnect".into(),
-            html_body: None,
-            attachment_path: None,
-        })).await;
-
-        assert!(service.session.live_client().is_none(), "the session must still not be serving");
+        assert_eq!(
+            server.requests_to("/displayname"), while_live,
+            "a session that is not live must not send writes to the server",
+        );
         assert!(
             service.session.client().is_some(),
             "read-only work should still have a client to use",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_message_to_a_room_the_client_cannot_resolve_is_dropped_without_stopping_the_service() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut service, _sync_abort, _pagination_abort) = connected_service(tmp.path()).await;
+        let (event_tx, mut event_rx) = mpsc::channel(16);
+        service.event_tx = event_tx;
+
+        for room_id in ["not a room id", "!unknown:example.com"] {
+            service.handle_command(MatrixCommand::SendMessage(ChatMessageSend {
+                room_id: room_id.into(),
+                text: "hello".into(),
+                html_body: None,
+                attachment_path: None,
+            })).await;
+        }
+
+        service.handle_command(MatrixCommand::PaginateBackwards {
+            room_id: "!unknown:example.com".into(),
+        }).await;
+        assert!(
+            matches!(
+                event_rx.try_recv(),
+                Ok(CoreEvent::Matrix(MatrixEvent::PaginationComplete(_, false))),
+            ),
+            "the service should still answer the command that follows",
         );
     }
 

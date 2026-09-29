@@ -3,6 +3,8 @@ pub(crate) mod retry;
 pub mod service;
 pub mod sync;
 pub mod timeline;
+#[cfg(test)]
+pub(crate) mod test_server;
 
 pub use sync::sync_loop;
 pub use sync::fetch_rooms;

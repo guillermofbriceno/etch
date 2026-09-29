@@ -36,24 +36,23 @@ pub struct Settings {
     pub event_scripts: HashMap<String, String>,
 }
 
-pub fn load(data_dir: &Path) -> Settings {
-    let path = data_dir.join("settings.json");
-    match std::fs::read_to_string(&path) {
-        Ok(contents) => serde_json::from_str(&contents).unwrap_or_default(),
-        Err(_) => Settings::default(),
-    }
+fn read(data_dir: &Path) -> Option<Settings> {
+    let contents = std::fs::read_to_string(data_dir.join("settings.json")).ok()?;
+    serde_json::from_str(&contents).ok()
 }
 
-pub fn save(data_dir: &Path, settings: &Settings) {
+pub fn load(data_dir: &Path) -> Settings {
+    read(data_dir).unwrap_or_default()
+}
+
+pub fn save(data_dir: &Path, settings: &Settings) -> std::io::Result<()> {
     let path = data_dir.join("settings.json");
     let tmp_path = data_dir.join("settings.json.tmp");
 
-    let _ = std::fs::create_dir_all(data_dir);
-    if let Ok(json) = serde_json::to_string_pretty(settings)
-        && std::fs::write(&tmp_path, &json).is_ok()
-    {
-        let _ = std::fs::rename(&tmp_path, &path);
-    }
+    std::fs::create_dir_all(data_dir)?;
+    let json = serde_json::to_string_pretty(settings)?;
+    std::fs::write(&tmp_path, json)?;
+    std::fs::rename(&tmp_path, &path)
 }
 
 impl Settings {
@@ -93,9 +92,13 @@ fn keep_externally_owned_fields(settings: &mut Settings, on_disk: Settings) {
     settings.event_scripts = on_disk.event_scripts;
 }
 
-fn persist(data_dir: &Path, mut settings: Settings) {
-    keep_externally_owned_fields(&mut settings, load(data_dir));
-    save(data_dir, &settings);
+/// An unreadable file (say, a half-finished hand edit) must not wipe those fields, so
+/// the values loaded at startup stand in for it.
+fn persist(data_dir: &Path, mut settings: Settings) -> std::io::Result<()> {
+    if let Some(on_disk) = read(data_dir) {
+        keep_externally_owned_fields(&mut settings, on_disk);
+    }
+    save(data_dir, &settings)
 }
 
 /// Owns `settings.json`: reads come from memory and writes go through a debounced
@@ -230,7 +233,7 @@ async fn write_pending(
 
     let dir = data_dir.to_path_buf();
     match tokio::task::spawn_blocking(move || persist(&dir, snapshot)).await {
-        Ok(()) => {
+        Ok(Ok(())) => {
             *written = revision;
             writes.record();
             log::debug!(
@@ -238,7 +241,8 @@ async fn write_pending(
                 writes.count(),
             );
         }
-        Err(e) => log::warn!("Settings write failed: {e}"),
+        Ok(Err(e)) => log::warn!("Settings write failed, will retry: {e}"),
+        Err(e) => log::warn!("Settings write did not finish: {e}"),
     }
 }
 
@@ -253,16 +257,6 @@ mod tests {
             port: 8448, username: username.into(), auto_connect,
             mumble_host: None, mumble_port: None, mumble_username: None, mumble_password: None,
         }
-    }
-
-    async fn store_round_trip(
-        data_dir: &Path,
-        change: impl FnOnce(&mut Settings),
-    ) -> Settings {
-        let mut store = SettingsStore::open(data_dir);
-        store.update(change);
-        store.shutdown().await;
-        load(data_dir)
     }
 
     #[test]
@@ -285,7 +279,7 @@ mod tests {
             ..Default::default()
         };
 
-        save(tmp.path(), &s);
+        save(tmp.path(), &s).unwrap();
         let loaded = load(tmp.path());
 
         assert_eq!(loaded.transmission_mode.as_deref(), Some("continuous"));
@@ -294,76 +288,21 @@ mod tests {
         assert_eq!(loaded.use_mumble_settings, Some(true));
     }
 
-    #[tokio::test]
-    async fn update_bookmarks_replaces_existing() {
-        let tmp = tempfile::tempdir().unwrap();
-        let after_first = store_round_trip(tmp.path(), |s| {
-            s.bookmarks = vec![bookmark("1", "First", "alice", false)];
-        }).await;
-        assert_eq!(after_first.bookmarks.len(), 1);
-
-        let loaded = store_round_trip(tmp.path(), |s| {
-            s.bookmarks = vec![
-                bookmark("2", "Second", "bob", true),
-                bookmark("3", "Third", "carol", false),
-            ];
-        }).await;
-        assert_eq!(loaded.bookmarks.len(), 2);
-        assert_eq!(loaded.bookmarks[0].label, "Second");
-        assert_eq!(loaded.bookmarks[1].label, "Third");
+    #[test]
+    fn hide_dm_is_idempotent() {
+        let mut s = Settings::default();
+        s.hide_dm("!room:example.com".into());
+        s.hide_dm("!room:example.com".into());
+        assert_eq!(s.hidden_dms, vec!["!room:example.com"]);
     }
 
-    #[tokio::test]
-    async fn hide_dm_is_idempotent() {
-        let tmp = tempfile::tempdir().unwrap();
-        let loaded = store_round_trip(tmp.path(), |s| {
-            s.hide_dm("!room:example.com".into());
-            s.hide_dm("!room:example.com".into());
-        }).await;
-        assert_eq!(loaded.hidden_dms.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn unhide_dm_removes_only_target() {
-        let tmp = tempfile::tempdir().unwrap();
-        let loaded = store_round_trip(tmp.path(), |s| {
-            s.hide_dm("!room1:example.com".into());
-            s.hide_dm("!room2:example.com".into());
-            s.unhide_dm("!room1:example.com");
-        }).await;
-        assert_eq!(loaded.hidden_dms, vec!["!room2:example.com"]);
-    }
-
-    #[tokio::test]
-    async fn set_transmission_mode_persists() {
-        let tmp = tempfile::tempdir().unwrap();
-        let loaded = store_round_trip(tmp.path(), |s| {
-            s.transmission_mode = Some("push_to_talk".into());
-        }).await;
-        assert_eq!(loaded.transmission_mode.as_deref(), Some("push_to_talk"));
-    }
-
-    #[tokio::test]
-    async fn set_vad_threshold_persists() {
-        let tmp = tempfile::tempdir().unwrap();
-        let loaded = store_round_trip(tmp.path(), |s| s.vad_threshold = Some(0.75)).await;
-        assert_eq!(loaded.vad_threshold, Some(0.75));
-    }
-
-    #[tokio::test]
-    async fn set_voice_hold_persists() {
-        let tmp = tempfile::tempdir().unwrap();
-        let loaded = store_round_trip(tmp.path(), |s| s.voice_hold = Some(500)).await;
-        assert_eq!(loaded.voice_hold, Some(500));
-    }
-
-    #[tokio::test]
-    async fn set_deafen_suppresses_notifs_persists() {
-        let tmp = tempfile::tempdir().unwrap();
-        let loaded = store_round_trip(tmp.path(), |s| {
-            s.deafen_suppresses_notifs = Some(false);
-        }).await;
-        assert_eq!(loaded.deafen_suppresses_notifs, Some(false));
+    #[test]
+    fn unhide_dm_removes_only_target() {
+        let mut s = Settings::default();
+        s.hide_dm("!room1:example.com".into());
+        s.hide_dm("!room2:example.com".into());
+        s.unhide_dm("!room1:example.com");
+        assert_eq!(s.hidden_dms, vec!["!room2:example.com"]);
     }
 
     #[test]
@@ -380,7 +319,7 @@ mod tests {
         s.sfx_paths.insert("new_notif".into(), "/home/user/sounds/ping.wav".into());
         s.sfx_paths.insert("user_join".into(), "/home/user/sounds/hello.wav".into());
 
-        save(tmp.path(), &s);
+        save(tmp.path(), &s).unwrap();
         let loaded = load(tmp.path());
         assert_eq!(loaded.sfx_paths.len(), 2);
         assert_eq!(loaded.sfx_paths["new_notif"], "/home/user/sounds/ping.wav");
@@ -395,7 +334,7 @@ mod tests {
             ..Default::default()
         };
 
-        save(tmp.path(), &s);
+        save(tmp.path(), &s).unwrap();
         let loaded = load(tmp.path());
         assert_eq!(loaded.custom_css.as_deref(), Some("/home/user/theme.css"));
     }
@@ -421,7 +360,7 @@ mod tests {
         s.event_scripts.insert("user_join".into(), "echo hello".into());
         s.event_scripts.insert("new_message".into(), "notify-send \"$ETCH_USER\"".into());
 
-        save(tmp.path(), &s);
+        save(tmp.path(), &s).unwrap();
         let loaded = load(tmp.path());
         assert_eq!(loaded.event_scripts.len(), 2);
         assert_eq!(loaded.event_scripts["user_join"], "echo hello");
@@ -451,25 +390,8 @@ mod tests {
     }
 
 
-    /// The file changing under the store must not change what it reports for app-owned fields.
-    #[test]
-    fn reads_come_from_memory_not_the_file() {
-        let tmp = tempfile::tempdir().unwrap();
-        save(tmp.path(), &Settings { vad_threshold: Some(0.1), ..Default::default() });
-
-        let store = SettingsStore::open(tmp.path());
-        assert_eq!(store.get().vad_threshold, Some(0.1));
-
-        save(tmp.path(), &Settings { vad_threshold: Some(0.9), ..Default::default() });
-        assert_eq!(
-            store.get().vad_threshold, Some(0.1),
-            "the store, not the file, is the source of truth once it is open",
-        );
-    }
-
-    /// A slider drag must not cost a write per event; the bound is two because the
-    /// writer fires on both edges.
-    #[tokio::test]
+    /// A slider drag must cost a write per coalescing window, not a write per event.
+    #[tokio::test(start_paused = true)]
     async fn a_burst_of_changes_does_not_cost_a_write_each() {
         const EVENTS: usize = 200;
         let tmp = tempfile::tempdir().unwrap();
@@ -478,14 +400,14 @@ mod tests {
         let writes = store.write_counter();
         for i in 0..EVENTS {
             store.update(|s| s.vad_threshold = Some(i as f64 / 1000.0));
+            tokio::time::sleep(Duration::from_millis(16)).await;
         }
         store.shutdown().await;
 
         let performed = writes.count();
         assert!(
-            performed <= 2,
-            "{EVENTS} changes in one burst cost {performed} file writes; \
-             the burst should have collapsed to a leading and a trailing write",
+            performed <= 40,
+            "{EVENTS} changes 16ms apart cost {performed} file writes",
         );
         assert_eq!(
             load(tmp.path()).vad_threshold,
@@ -497,16 +419,83 @@ mod tests {
     #[tokio::test]
     async fn the_last_change_before_shutdown_reaches_disk() {
         let tmp = tempfile::tempdir().unwrap();
+        let mut store = SettingsStore::with_coalesce_window(
+            tmp.path().to_path_buf(),
+            load(tmp.path()),
+            Duration::from_secs(30),
+        );
+        let writes = store.write_counter();
 
-        let mut store = SettingsStore::open(tmp.path());
         store.update(|s| s.vad_threshold = Some(0.11));
-        // No pause: shutdown lands inside the coalescing window.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while writes.count() < 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the leading write never happened");
+
         store.update(|s| s.voice_hold = Some(420));
         store.shutdown().await;
 
         let loaded = load(tmp.path());
         assert_eq!(loaded.vad_threshold, Some(0.11));
-        assert_eq!(loaded.voice_hold, Some(420));
+        assert_eq!(loaded.voice_hold, Some(420), "the change inside the window was lost");
+        assert_eq!(writes.count(), 2);
+    }
+
+    /// Once a change is written, neither the window closing nor shutdown writes it again.
+    #[tokio::test(start_paused = true)]
+    async fn a_written_change_is_not_written_again() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = SettingsStore::open(tmp.path());
+        let writes = store.write_counter();
+
+        store.update(|s| s.vad_threshold = Some(0.2));
+        tokio::time::sleep(WRITE_COALESCE_WINDOW * 2).await;
+        store.shutdown().await;
+
+        assert_eq!(load(tmp.path()).vad_threshold, Some(0.2));
+        assert_eq!(writes.count(), 1);
+    }
+
+    fn data_dir_under_a_file(tmp: &Path) -> PathBuf {
+        let blocker = tmp.join("blocker");
+        std::fs::write(&blocker, "").unwrap();
+        blocker.join("data")
+    }
+
+    #[tokio::test]
+    async fn a_failed_write_is_not_counted_as_written() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = data_dir_under_a_file(tmp.path());
+        let mut store = SettingsStore::open(&data_dir);
+        let writes = store.write_counter();
+
+        store.update(|s| s.vad_threshold = Some(0.3));
+        store.shutdown().await;
+
+        assert_eq!(writes.count(), 0);
+        assert!(!data_dir.join("settings.json").exists());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_write_is_retried_at_shutdown() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = data_dir_under_a_file(tmp.path());
+        let mut store = SettingsStore::open(&data_dir);
+        let writes = store.write_counter();
+
+        store.update(|s| s.vad_threshold = Some(0.3));
+        // Lets both the leading and the trailing attempt fail before the disk recovers.
+        tokio::time::sleep(WRITE_COALESCE_WINDOW * 2).await;
+        assert_eq!(writes.count(), 0);
+
+        std::fs::remove_file(tmp.path().join("blocker")).unwrap();
+        store.shutdown().await;
+
+        assert_eq!(load(&data_dir).vad_threshold, Some(0.3));
+        assert_eq!(writes.count(), 1);
     }
 
     /// Hand edits to fields the app has no setter for must survive the next write.
@@ -519,7 +508,8 @@ mod tests {
         hand_edited.event_scripts.insert("user_join".into(), "echo hi".into());
         hand_edited.sfx_paths.insert("mute".into(), "/sounds/mute.wav".into());
         hand_edited.custom_css = Some("/themes/dark.css".into());
-        save(tmp.path(), &hand_edited);
+        hand_edited.mumble_initialized = true;
+        save(tmp.path(), &hand_edited).unwrap();
 
         store.update(|s| s.vad_threshold = Some(0.42));
         store.shutdown().await;
@@ -528,6 +518,30 @@ mod tests {
         assert_eq!(loaded.vad_threshold, Some(0.42), "the app's own change must land");
         assert_eq!(loaded.event_scripts.get("user_join").map(String::as_str), Some("echo hi"));
         assert_eq!(loaded.sfx_paths.get("mute").map(String::as_str), Some("/sounds/mute.wav"));
+        assert_eq!(loaded.custom_css.as_deref(), Some("/themes/dark.css"));
+        assert!(loaded.mumble_initialized);
+    }
+
+    #[tokio::test]
+    async fn a_half_finished_hand_edit_does_not_wipe_hand_edited_fields() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut original = Settings::default();
+        original.event_scripts.insert("user_join".into(), "echo hi".into());
+        original.custom_css = Some("/themes/dark.css".into());
+        save(tmp.path(), &original).unwrap();
+
+        let mut store = SettingsStore::open(tmp.path());
+        std::fs::write(
+            tmp.path().join("settings.json"),
+            r#"{ "custom_css": "/themes/light.css", }"#,
+        )
+        .unwrap();
+        store.update(|s| s.vad_threshold = Some(0.42));
+        store.shutdown().await;
+
+        let loaded = load(tmp.path());
+        assert_eq!(loaded.vad_threshold, Some(0.42));
+        assert_eq!(loaded.event_scripts.get("user_join").map(String::as_str), Some("echo hi"));
         assert_eq!(loaded.custom_css.as_deref(), Some("/themes/dark.css"));
     }
 

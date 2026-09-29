@@ -22,7 +22,7 @@ const nested = import.meta.glob('../**/*.ts', {
 
 // Matches private stores too, since they can hold session state.
 const STORE_DEFINITION =
-    /^[ \t]*(?:export[ \t]+)?(?:const|let|var)[ \t]+([A-Za-z_$][\w$]*)[ \t]*(?::[^=\n]*)?=[ \t]*(?:writable|readable|derived)\b/gm;
+    /^[ \t]*(?:export[ \t]+)?(?:const|let|var)[ \t]+([A-Za-z_$][\w$]*)[ \t]*(?::[^=\n]*)?=\s*(?:writable|readable|derived)\b/gm;
 
 type FoundStore = { name: string; file: string };
 

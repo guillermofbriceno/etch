@@ -858,7 +858,7 @@ mod tests {
     ) {
         let mut s = settings::load(data_dir);
         change(&mut s);
-        settings::save(data_dir, &s);
+        settings::save(data_dir, &s).unwrap();
     }
 
     #[tokio::test]
@@ -1049,16 +1049,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_burst_of_media_requests_leaves_the_control_channel_usable() {
-        const CONTROL_CAPACITY: usize = 32;
-        const IMAGES: usize = CONTROL_CAPACITY * 4;
+    async fn a_media_request_that_does_not_fit_is_refused_rather_than_left_waiting() {
+        const ACTOR_QUEUE: usize = 256;
+        const OVERFLOW: usize = 4;
 
         let tmp = tempfile::tempdir().unwrap();
-        let (_gate_tx, gate_rx) = tokio::sync::oneshot::channel();
+        let (gate_tx, gate_rx) = tokio::sync::oneshot::channel();
         let matrix = MockMatrix::new().with_connect_gate(gate_rx);
 
-        let (cmd_tx, cmd_rx) = mpsc::channel(CONTROL_CAPACITY);
-        let (media_tx, media_rx) = mpsc::channel(256);
+        let (cmd_tx, cmd_rx) = mpsc::channel(32);
+        let (media_tx, media_rx) = mpsc::channel(ACTOR_QUEUE + OVERFLOW);
         let (event_tx, mut event_rx) = mpsc::channel(100);
         let engine = CoreEngine::new(
             cmd_rx, media_rx, event_tx, matrix, MockVoice::new(),
@@ -1066,38 +1066,37 @@ mod tests {
         );
         let engine_handle = tokio::spawn(async move { engine.run().await });
 
+        // The actor serves no media while a connect holds it, so its queue fills.
         cmd_tx.send(CoreCommand::System(SystemCommand::ConnectToServer(connect_form())))
             .await.unwrap();
-        timeout(Duration::from_secs(2), async {
-            while let Some(e) = event_rx.recv().await {
-                if matches!(
-                    e,
-                    CoreEvent::Matrix(MatrixEvent::ConnectionState(ConnectionState::Connecting))
-                ) {
-                    return;
-                }
-            }
-            panic!("engine never reported Connecting");
-        }).await.expect("engine never reported Connecting");
+        wait_for_connecting(&mut event_rx).await;
 
-        let mut pending = Vec::new();
-        for i in 0..IMAGES {
+        let mut replies = Vec::new();
+        for i in 0..ACTOR_QUEUE + OVERFLOW {
             let (tx, rx) = tokio::sync::oneshot::channel();
-            pending.push(rx);
-            media_tx.try_send(MediaRequest {
-                mxc_url: format!("mxc://example.com/{i}"),
-                respond: tx,
-            }).unwrap_or_else(|_| panic!("media request {i} was refused"));
+            replies.push(rx);
+            media_tx.send(MediaRequest { mxc_url: format!("mxc://example.com/{i}"), respond: tx })
+                .await.unwrap();
         }
 
-        let control = cmd_tx.try_send(CoreCommand::System(SystemCommand::MuteMic(true)));
+        let overflow = replies.split_off(ACTOR_QUEUE);
+        for reply in overflow {
+            let answer = timeout(Duration::from_secs(2), reply).await
+                .expect("a media request that did not fit was left waiting")
+                .expect("the reply was dropped unanswered");
+            assert!(answer.is_err(), "an overflowing request must be refused, got {answer:?}");
+        }
 
-        engine_handle.abort();
-        assert!(
-            control.is_ok(),
-            "{IMAGES} queued media requests blocked a UI command on a \
-             {CONTROL_CAPACITY}-slot control channel",
-        );
+        let _ = gate_tx.send(());
+        for reply in replies {
+            let answer = timeout(Duration::from_secs(2), reply).await
+                .expect("a queued media request was never served")
+                .expect("the reply was dropped unanswered");
+            assert_eq!(answer, Ok(vec![0xDE, 0xAD]));
+        }
+
+        drop(cmd_tx);
+        let _ = timeout(Duration::from_secs(5), engine_handle).await;
     }
 
     /// The bound is three, not two, because a burst can straddle a coalescing window on
@@ -1623,6 +1622,20 @@ mod tests {
         );
     }
 
+    async fn wait_for_connecting(event_rx: &mut mpsc::Receiver<CoreEvent>) {
+        timeout(Duration::from_secs(2), async {
+            while let Some(e) = event_rx.recv().await {
+                if matches!(
+                    e,
+                    CoreEvent::Matrix(MatrixEvent::ConnectionState(ConnectionState::Connecting))
+                ) {
+                    return;
+                }
+            }
+            panic!("engine never reported Connecting");
+        }).await.expect("engine never reported Connecting");
+    }
+
     fn conn_states(events: &[CoreEvent]) -> Vec<&ConnectionState> {
         events.iter().filter_map(|e| match e {
             CoreEvent::Matrix(MatrixEvent::ConnectionState(s)) => Some(s),
@@ -1926,65 +1939,17 @@ mod tests {
         assert_eq!(launches[1].host, "other.example.com");
     }
 
+    /// Matrix commands queue behind the connect in the Matrix actor, so the burst is
+    /// larger than that actor's queue as well as the engine's.
     #[tokio::test]
-    async fn engine_keeps_serving_commands_while_a_connect_is_in_flight() {
-        let tmp = tempfile::tempdir().unwrap();
-        let (gate_tx, gate_rx) = tokio::sync::oneshot::channel();
-        let matrix = MockMatrix::new().with_connect_gate(gate_rx);
-
-        let (cmd_tx, cmd_rx) = mpsc::channel(32);
-        let (_media_tx, media_rx) = mpsc::channel(32);
-        let (event_tx, mut event_rx) = mpsc::channel(100);
-        let engine = CoreEngine::new(
-            cmd_rx, media_rx, event_tx, matrix, MockVoice::new(),
-            tmp.path().to_path_buf(), settings::load(tmp.path()),
-        );
-        let engine_handle = tokio::spawn(async move { engine.run().await });
-
-        cmd_tx.send(CoreCommand::System(SystemCommand::ConnectToServer(connect_form())))
-            .await.unwrap();
-
-        let saw_connecting = timeout(Duration::from_secs(2), async {
-            while let Some(event) = event_rx.recv().await {
-                if matches!(
-                    event,
-                    CoreEvent::Matrix(MatrixEvent::ConnectionState(ConnectionState::Connecting))
-                ) {
-                    return true;
-                }
-            }
-            false
-        }).await.expect("engine never reported Connecting");
-        assert!(saw_connecting);
-
-        cmd_tx.send(CoreCommand::System(SystemCommand::LoadSettings)).await.unwrap();
-        let served = timeout(Duration::from_secs(2), async {
-            while let Some(event) = event_rx.recv().await {
-                if matches!(event, CoreEvent::System(SystemEvent::SettingsLoaded(_))) {
-                    return true;
-                }
-            }
-            false
-        }).await;
-
-        let _ = gate_tx.send(());
-        drop(cmd_tx);
-        let _ = timeout(Duration::from_secs(5), engine_handle).await;
-
-        assert!(
-            matches!(served, Ok(true)),
-            "engine stopped serving commands while a connect was in flight",
-        );
-    }
-
-    #[tokio::test]
-    async fn a_burst_of_commands_is_served_before_an_in_flight_connect_completes() {
+    async fn a_burst_of_commands_during_a_connect_neither_stalls_the_engine_nor_is_lost() {
         const CONTROL_CAPACITY: usize = 32;
         const BURST: usize = CONTROL_CAPACITY * 4;
 
         let tmp = tempfile::tempdir().unwrap();
         let (gate_tx, gate_rx) = tokio::sync::oneshot::channel();
         let matrix = MockMatrix::new().with_connect_gate(gate_rx);
+        let matrix_state = matrix.state.clone();
         let voice = MockVoice::new();
         let voice_state = voice.state.clone();
 
@@ -1999,52 +1964,49 @@ mod tests {
 
         cmd_tx.send(CoreCommand::System(SystemCommand::ConnectToServer(connect_form())))
             .await.unwrap();
-        timeout(Duration::from_secs(2), async {
-            while let Some(e) = event_rx.recv().await {
-                if matches!(
-                    e,
-                    CoreEvent::Matrix(MatrixEvent::ConnectionState(ConnectionState::Connecting))
-                ) {
-                    return;
-                }
-            }
-            panic!("engine never reported Connecting");
-        }).await.expect("engine never reported Connecting");
+        wait_for_connecting(&mut event_rx).await;
 
         let issued = timeout(Duration::from_secs(5), async {
             for i in 0..BURST {
+                cmd_tx.send(CoreCommand::Matrix(MatrixCommand::SendReadReceipt {
+                    room_id: "!room:example.com".into(),
+                    event_id: format!("${i}"),
+                })).await.unwrap();
                 cmd_tx.send(CoreCommand::Mumble(MumbleCommand::SetVadThreshold(i as f64 / 1000.0)))
                     .await.unwrap();
             }
+            cmd_tx.send(CoreCommand::System(SystemCommand::LoadSettings)).await.unwrap();
         }).await;
         assert!(
             issued.is_ok(),
-            "{BURST} commands could not even be enqueued on a {CONTROL_CAPACITY}-slot \
-             channel while a connect was in flight",
+            "the engine stopped taking commands while a connect was in flight",
         );
 
         let served = timeout(Duration::from_secs(5), async {
-            loop {
-                if voice_state.commands.lock().unwrap().len() >= BURST {
+            while let Some(event) = event_rx.recv().await {
+                if matches!(event, CoreEvent::System(SystemEvent::SettingsLoaded(_))) {
                     return;
                 }
-                tokio::task::yield_now().await;
             }
         }).await;
-        assert!(
-            served.is_ok(),
-            "only {} of {BURST} commands were served before the connect completed",
-            voice_state.commands.lock().unwrap().len(),
-        );
-
-        assert_eq!(
-            cmd_tx.capacity(), cmd_tx.max_capacity(),
-            "the control channel still had commands backed up behind the connect",
-        );
+        assert!(served.is_ok(), "a command behind the burst was not answered during the connect");
+        assert_eq!(voice_state.commands.lock().unwrap().len(), BURST);
 
         let _ = gate_tx.send(());
         drop(cmd_tx);
-        let _ = timeout(Duration::from_secs(5), engine_handle).await;
+        timeout(Duration::from_secs(5), engine_handle)
+            .await
+            .expect("engine did not shut down within 5s")
+            .expect("engine task panicked");
+
+        let receipts: Vec<String> = matrix_state.commands.lock().unwrap().iter()
+            .filter_map(|c| match c {
+                MatrixCommand::SendReadReceipt { event_id, .. } => Some(event_id.clone()),
+                _ => None,
+            })
+            .collect();
+        let expected: Vec<String> = (0..BURST).map(|i| format!("${i}")).collect();
+        assert_eq!(receipts, expected, "commands held during the connect must all be served, in order");
     }
 
     /// The first attempt is never released, so reaching Connected means the supersede stopped it.
@@ -2149,65 +2111,6 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn quitting_during_a_connect_does_not_start_a_voice_session() {
-        let tmp = tempfile::tempdir().unwrap();
-        let (gate_tx, gate_rx) = tokio::sync::oneshot::channel();
-        let matrix = MockMatrix::new().with_connect_gate(gate_rx);
-        let voice = MockVoice::new();
-        let voice_state = voice.state.clone();
-
-        let (engine, cmd_tx, mut event_rx) = build_engine(matrix, voice, tmp.path());
-        let engine_handle = tokio::spawn(async move { engine.run().await });
-
-        // No Mumble host in the form, so the launch is the one that follows the connect landing.
-        cmd_tx.send(CoreCommand::System(SystemCommand::ConnectToServer(connect_form())))
-            .await.unwrap();
-        timeout(Duration::from_secs(2), async {
-            while let Some(e) = event_rx.recv().await {
-                if matches!(
-                    e,
-                    CoreEvent::Matrix(MatrixEvent::ConnectionState(ConnectionState::Connecting))
-                ) {
-                    return;
-                }
-            }
-            panic!("engine never reported Connecting");
-        }).await.expect("engine never reported Connecting");
-
-        drop(cmd_tx);
-        // Yield until the engine is in the grace; the connect cannot complete before
-        // the gate opens.
-        for _ in 0..16 {
-            tokio::task::yield_now().await;
-        }
-
-        let _ = gate_tx.send(());
-        timeout(Duration::from_secs(5), engine_handle)
-            .await
-            .expect("engine did not shut down within 5s")
-            .expect("engine task panicked");
-
-        let mut events = Vec::new();
-        while let Ok(event) = event_rx.try_recv() {
-            events.push(event);
-        }
-
-        // The connect must land during shutdown, or the test proves nothing.
-        assert!(
-            events.iter().any(|e| matches!(e,
-                CoreEvent::Matrix(MatrixEvent::ConnectionState(ConnectionState::Connected))
-            )),
-            "the connect should still have been settled during the grace, got {:?}",
-            events,
-        );
-        assert!(
-            voice_state.launched_with.lock().unwrap().is_empty(),
-            "a connect landing during shutdown started a voice session for an \
-             app that was already quitting",
-        );
-    }
-
     /// Every route to a launch passes through `launch_voice`, and it must return before
     /// `pending_launch` is set or shutdown waits out the grace.
     #[tokio::test]
@@ -2236,6 +2139,138 @@ mod tests {
         assert_eq!(
             engine.launch_generation, 0,
             "nothing was dispatched, so no launch generation should have been spent",
+        );
+    }
+
+    /// Until a connect lands, a sync report can only come from the session it replaces.
+    #[tokio::test]
+    async fn a_sync_report_from_the_replaced_session_cannot_mark_a_connect_in_flight_connected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (gate_tx, gate_rx) = tokio::sync::oneshot::channel();
+        let matrix = MockMatrix::new()
+            .with_connect_result(ConnectOutcome::Failed)
+            .with_connect_gate(gate_rx);
+        let (engine, cmd_tx, mut event_rx) = build_engine(matrix, MockVoice::new(), tmp.path());
+        let internal_tx = engine.internal_sender();
+        let engine_handle = tokio::spawn(async move { engine.run().await });
+
+        cmd_tx.send(CoreCommand::System(SystemCommand::ConnectToServer(connect_form())))
+            .await.unwrap();
+        wait_for_connecting(&mut event_rx).await;
+
+        // Sent on the channel the connect reports on, so it is handled before the result.
+        internal_tx.send(InternalEvent::Matrix(InternalMatrixEvent::SyncRecovered)).await.unwrap();
+        let _ = gate_tx.send(());
+
+        drop(cmd_tx);
+        timeout(Duration::from_secs(5), engine_handle)
+            .await
+            .expect("engine did not shut down within 5s")
+            .expect("engine task panicked");
+        let mut events = Vec::new();
+        while let Ok(event) = event_rx.try_recv() {
+            events.push(event);
+        }
+
+        let states = conn_states(&events);
+        assert!(
+            matches!(states.as_slice(), [ConnectionState::Failed { .. }]),
+            "only the connect's own outcome may settle it, got Connecting then {states:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_result_from_a_superseded_connect_is_not_taken_for_the_current_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (gate_tx, gate_rx) = tokio::sync::oneshot::channel();
+        let matrix = MockMatrix::new()
+            .with_connect_result(ConnectOutcome::Failed)
+            .with_connect_gate(gate_rx);
+        let voice = MockVoice::new();
+        let voice_state = voice.state.clone();
+        let (engine, cmd_tx, mut event_rx) = build_engine(matrix, voice, tmp.path());
+        let internal_tx = engine.internal_sender();
+        let engine_handle = tokio::spawn(async move { engine.run().await });
+
+        cmd_tx.send(CoreCommand::System(SystemCommand::ConnectToServer(connect_form())))
+            .await.unwrap();
+        wait_for_connecting(&mut event_rx).await;
+
+        internal_tx.send(InternalEvent::Matrix(InternalMatrixEvent::ConnectFinished {
+            generation: 0,
+            outcome: ConnectOutcome::Connected(None),
+        })).await.unwrap();
+        let _ = gate_tx.send(());
+
+        drop(cmd_tx);
+        timeout(Duration::from_secs(5), engine_handle)
+            .await
+            .expect("engine did not shut down within 5s")
+            .expect("engine task panicked");
+        let mut events = Vec::new();
+        while let Ok(event) = event_rx.try_recv() {
+            events.push(event);
+        }
+
+        assert!(
+            matches!(conn_states(&events).as_slice(), [ConnectionState::Failed { .. }]),
+            "the stale success must be discarded and the real failure kept, got {:?}",
+            conn_states(&events),
+        );
+        assert!(
+            voice_state.launched_with.lock().unwrap().is_empty(),
+            "a stale success must not start voice",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_result_from_a_superseded_launch_leaves_the_current_one_outstanding() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut engine, _cmd_tx, _event_rx) =
+            build_engine(MockMatrix::new(), MockVoice::new(), tmp.path());
+        let creds = |host: &str| VoiceServerConfig {
+            host: host.into(),
+            port: 64738,
+            username: Some("alice".into()),
+            password: None,
+        };
+
+        engine.launch_voice(creds("first.example.com"), false, "").await;
+        engine.launch_voice(creds("second.example.com"), false, "").await;
+        engine.finish_launch(1, LaunchOutcome::Failed).await;
+
+        assert!(
+            matches!(&engine.pending_launch, Some(p) if p.generation == 2),
+            "the newer launch must still be awaited",
+        );
+        assert_eq!(
+            engine.voice.state_name(), "Idle",
+            "the superseded launch's failure must not be recorded against the session",
+        );
+    }
+
+    #[tokio::test]
+    async fn asking_to_connect_again_restarts_the_backoff() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (events, _, _) = run_commands(
+            MockMatrix::new().with_repeating_connect_result(ConnectOutcome::Failed),
+            MockVoice::new(),
+            tmp.path(),
+            vec![
+                CoreCommand::System(SystemCommand::ConnectToServer(connect_form())),
+                CoreCommand::System(SystemCommand::ConnectToServer(connect_form())),
+            ],
+        ).await;
+
+        let failures: Vec<_> = conn_states(&events).into_iter()
+            .filter_map(|s| match s {
+                ConnectionState::Failed { retries, retry_in_secs, .. } => Some((*retries, *retry_in_secs)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            failures, vec![(1, 2), (1, 2)],
+            "a connect the user asked for must not inherit the previous backoff",
         );
     }
 

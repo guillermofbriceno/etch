@@ -47,8 +47,9 @@ pub(crate) struct SyncRetryPolicy {
 }
 
 impl SyncRetryPolicy {
-    /// Six is where `backoff_secs` first reaches its 60s cap; about two minutes of
-    /// retrying is cheaper than the cold reconnect it defers.
+    /// Six is where `backoff_secs` first reaches its 60s cap; the policy's own backoff
+    /// totals about two minutes, not counting the retries the SDK makes inside each
+    /// request, and that is cheaper than the cold reconnect it defers.
     pub(crate) const MAX_RETRIES: u32 = 6;
 
     pub(crate) fn new() -> Self {
@@ -96,16 +97,6 @@ mod tests {
     }
 
     #[test]
-    fn one_transient_failure_is_retried_not_fatal() {
-        let mut policy = SyncRetryPolicy::new();
-        assert_eq!(
-            policy.observe(Some(SyncFailure::Transient)),
-            SyncStep::Retry { attempt: 1, delay: secs(2) },
-            "a single dropped request must be retried in place",
-        );
-    }
-
-    #[test]
     fn transient_failures_back_off_along_the_shared_curve() {
         let mut policy = SyncRetryPolicy::new();
         let steps = transient_run(&mut policy, SyncRetryPolicy::MAX_RETRIES);
@@ -122,12 +113,6 @@ mod tests {
             ],
             "the retry delays must follow backoff_secs up to its 60s cap",
         );
-
-        let total: Duration = steps.iter().map(|s| match s {
-            SyncStep::Retry { delay, .. } => *delay,
-            other => panic!("expected a retry, got {other:?}"),
-        }).sum();
-        assert_eq!(total, secs(122), "the retry window should come to about two minutes");
     }
 
     #[test]

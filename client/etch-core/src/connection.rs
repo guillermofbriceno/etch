@@ -103,13 +103,22 @@ mod tests {
     /// or the backoff never escalates.
     #[tokio::test]
     async fn consecutive_failures_escalate_backoff() {
-        let (event_tx, _event_rx) = mpsc::channel(100);
+        let (event_tx, mut event_rx) = mpsc::channel(100);
         let mut timer: Pin<Box<Sleep>> = Box::pin(sleep(Duration::from_secs(3600)));
         let mut conn = MatrixConnection::new();
 
         let mut observed = Vec::new();
         for _ in 0..4 {
             conn.begin(&event_tx).await;
+            let mut announced = Vec::new();
+            while let Ok(CoreEvent::Matrix(MatrixEvent::ConnectionState(s))) = event_rx.try_recv() {
+                announced.push(s);
+            }
+            assert!(
+                matches!(announced.last(), Some(ConnectionState::Connecting)),
+                "the frontend must be told the attempt started, got {announced:?}",
+            );
+
             conn.settle(ConnectOutcome::Failed, &mut timer, &event_tx).await;
             match &conn.state {
                 ConnectionState::Failed { retries, retry_in_secs, .. } => {
@@ -216,35 +225,6 @@ mod tests {
         assert!(
             event_rx.try_recv().is_err(),
             "an ignored report must not reach the frontend either",
-        );
-    }
-
-    #[tokio::test]
-    async fn beginning_an_attempt_reports_connecting_without_clearing_the_backoff() {
-        let (event_tx, mut event_rx) = mpsc::channel(100);
-        let mut timer: Pin<Box<Sleep>> = Box::pin(sleep(Duration::from_secs(3600)));
-        let mut conn = MatrixConnection::new();
-
-        conn.begin(&event_tx).await;
-        conn.settle(ConnectOutcome::Failed, &mut timer, &event_tx).await;
-        assert_eq!(conn.retries, 1);
-
-        conn.begin(&event_tx).await;
-        assert!(
-            matches!(conn.state, ConnectionState::Connecting),
-            "an attempt in flight must read as Connecting, got {:?}",
-            conn.state,
-        );
-        assert_eq!(conn.retries, 1, "beginning an attempt must not clear the backoff");
-
-        let mut announced = Vec::new();
-        while let Ok(CoreEvent::Matrix(MatrixEvent::ConnectionState(s))) = event_rx.try_recv() {
-            announced.push(s);
-        }
-        assert!(
-            matches!(announced.last(), Some(ConnectionState::Connecting)),
-            "the frontend must be told the attempt started, got {:?}",
-            announced,
         );
     }
 }

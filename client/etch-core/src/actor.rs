@@ -1,6 +1,7 @@
 //! Each subsystem lives in a task that owns it, so a slow connect or launch never
 //! blocks the engine's event loop.
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -109,28 +110,36 @@ async fn matrix_actor<M: MatrixBackend>(
     mut media_rx: mpsc::Receiver<MediaFetch>,
 ) {
     let mut media_open = true;
+    let mut control_open = true;
+    let mut deferred: VecDeque<MatrixRequest> = VecDeque::new();
     loop {
-        let request = tokio::select! {
-            // Control first so image loads cannot starve user commands.
-            biased;
+        let request = if let Some(request) = deferred.pop_front() {
+            request
+        } else if !control_open {
+            break;
+        } else {
+            tokio::select! {
+                // Control first so image loads cannot starve user commands.
+                biased;
 
-            request = control_rx.recv() => match request {
-                Some(request) => request,
-                None => break,
-            },
+                request = control_rx.recv() => match request {
+                    Some(request) => request,
+                    None => break,
+                },
 
-            fetch = media_rx.recv(), if media_open => {
-                match fetch {
-                    Some(fetch) => {
-                        service.spawn_media_fetch(fetch.mxc_url, fetch.respond);
-                        continue;
+                fetch = media_rx.recv(), if media_open => {
+                    match fetch {
+                        Some(fetch) => {
+                            service.spawn_media_fetch(fetch.mxc_url, fetch.respond);
+                            continue;
+                        }
+                        None => {
+                            media_open = false;
+                            continue;
+                        }
                     }
-                    None => {
-                        media_open = false;
-                        continue;
-                    }
-                }
-            },
+                },
+            }
         };
 
         match request {
@@ -140,12 +149,21 @@ async fn matrix_actor<M: MatrixBackend>(
                     service.connect(form, internal_tx.clone()).await
                 };
                 tokio::pin!(attempt);
+                tokio::pin!(cancel);
 
-                let outcome = tokio::select! {
-                    // Cancellation wins a tie: the engine has moved on to a newer attempt.
-                    biased;
-                    _ = cancel => None,
-                    outcome = &mut attempt => Some(outcome),
+                // Requests are taken off the queue while the attempt runs, or the engine's
+                // send parks once the queue fills; they are served after it, in order.
+                let outcome = loop {
+                    tokio::select! {
+                        // Cancellation wins a tie: the engine has moved on to a newer attempt.
+                        biased;
+                        _ = &mut cancel => break None,
+                        outcome = &mut attempt => break Some(outcome),
+                        request = control_rx.recv(), if control_open => match request {
+                            Some(request) => deferred.push_back(request),
+                            None => control_open = false,
+                        },
+                    }
                 };
 
                 match outcome {

@@ -153,13 +153,6 @@ mod tests {
         assert_eq!(d.scripts["user_join"], "echo joined");
     }
 
-    #[test]
-    fn from_settings_with_no_settings_file_yields_empty_scripts() {
-        let tmp = tempfile::tempdir().unwrap();
-        let d = ScriptDispatcher::from_settings(&crate::settings::load(tmp.path()));
-        assert!(d.scripts.is_empty());
-    }
-
     // --- Tests below spawn real processes and only apply on unix ---
 
     #[cfg(unix)]

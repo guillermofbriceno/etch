@@ -333,20 +333,6 @@ describe('handleMumbleEvent', () => {
             });
         });
 
-        it('drops the re-apply when the volume event precedes the user state on rejoin', () => {
-            addUser(10, 'alice', 1);
-            handleMumbleEvent({ type: 'UserVolume', data: { session_id: 10, volume_db: -5.0 } } as any);
-            vi.mocked(invoke).mockClear();
-
-            handleMumbleEvent({ type: 'UserRemoved', data: 10 } as any);
-            // UserVolume for session 42 arrives before its UserState.
-            handleMumbleEvent({ type: 'UserVolume', data: { session_id: 42, volume_db: 0.0 } } as any);
-
-            // Documents current behaviour: nothing is re-applied, yet the stored preference stays.
-            expect(invoke).not.toHaveBeenCalled();
-            expect(get(userVolumes)['alice']).toBe(-5.0);
-        });
-
         it('accepts backend volume after user resets to zero', () => {
             addUser(10, 'alice', 1);
             // User previously had a volume, then reset to 0

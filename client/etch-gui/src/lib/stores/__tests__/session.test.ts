@@ -20,8 +20,11 @@ import { isMuted, isDeafened } from '../audio';
 import { channels, dmLastActivity, initHiddenDms, unhideDm } from '../channels';
 import { replyingTo, editingMessage } from '../compose';
 import { activeWindow, setActiveChannel } from '../messages';
-import { mediaBaseUrl, passwordRequested, matrixConnecting } from '../servers';
+import { mediaBaseUrl, passwordRequested, matrixConnecting, serverBookmarks, selectedBookmarkId } from '../servers';
 import { currentUser } from '../user';
+import { activeOverlay } from '../overlay';
+import { transmissionMode } from '../voiceSettings';
+import { errorLog } from '../errors';
 import { userVolumes } from '../userVolumes';
 import { voiceChannels, voiceUsers, talkingUsers, mumbleStatus, certChangeRequest } from '../voiceState';
 
@@ -110,6 +113,10 @@ type SessionStoreProbe = {
     name: string;
     populate: () => void;
     expectCleared: () => void;
+};
+
+type VoiceStoreProbe = SessionStoreProbe & {
+    expectPopulated: () => void;
 };
 
 // Order matters: hiddenDmInfos populates via a ChannelList event that replaces the
@@ -209,26 +216,30 @@ const MATRIX_PROBES: SessionStoreProbe[] = [
 ];
 
 // mumbleStatus goes last: its probe adds a user to voiceUsers.
-const VOICE_PROBES: SessionStoreProbe[] = [
+const VOICE_PROBES: VoiceStoreProbe[] = [
     {
         name: 'userVolumes',
         populate: () => { userVolumes.set({ someone: -3.5 }); },
         expectCleared: () => { expect(get(userVolumes)).toEqual({}); },
+        expectPopulated: () => { expect(get(userVolumes)).toEqual({ someone: -3.5 }); },
     },
     {
         name: 'voiceChannels',
         populate: () => { voiceChannels.set(new Map([[1, { id: 1, name: 'Root', parent: 0 }]])); },
         expectCleared: () => { expect(get(voiceChannels).size).toBe(0); },
+        expectPopulated: () => { expect(get(voiceChannels).size).toBe(1); },
     },
     {
         name: 'voiceUsers',
         populate: () => { voiceUsers.set(new Map([[LOCAL_SESSION, makeVoiceUser(LOCAL_SESSION)]])); },
         expectCleared: () => { expect(get(voiceUsers).size).toBe(0); },
+        expectPopulated: () => { expect(get(voiceUsers).size).toBe(1); },
     },
     {
         name: 'talkingUsers',
         populate: () => { talkingUsers.set(new Set([LOCAL_SESSION])); },
         expectCleared: () => { expect(get(talkingUsers).size).toBe(0); },
+        expectPopulated: () => { expect(get(talkingUsers).size).toBe(1); },
     },
     {
         name: 'mumbleStatus',
@@ -243,6 +254,7 @@ const VOICE_PROBES: SessionStoreProbe[] = [
             fireMumbleEvent({ type: 'UserState', data: { ...makeVoiceUser(LOCAL_SESSION), self_mute: true } });
             expect(get(isMuted)).toBe(false);
         },
+        expectPopulated: () => { expect(get(mumbleStatus)).toBe('connected'); },
     },
 ];
 
@@ -294,11 +306,7 @@ describe('the voice session outlives a matrix reset', () => {
 
         fireServerReset();
 
-        expect(get(mumbleStatus)).toBe('connected');
-        expect(get(voiceChannels).size).toBe(1);
-        expect(get(voiceUsers).size).toBe(1);
-        expect(get(talkingUsers).size).toBe(1);
-        expect(get(userVolumes)).toEqual({ someone: -3.5 });
+        for (const probe of VOICE_PROBES) probe.expectPopulated();
 
         // The engine restores these itself.
         expect(get(isMuted)).toBe(true);
@@ -306,37 +314,29 @@ describe('the voice session outlives a matrix reset', () => {
     });
 });
 
-// Pins scope membership, but cannot see a store nobody registered;
-// storeClassification.test.ts covers that.
-const EXPECTED_MATRIX_STORES = [
-    'activeChannelId',
-    'certChangeRequest',
-    'channels',
-    'currentUser',
-    'dmLastActivity',
-    'editingMessage',
-    'hiddenDmInfos',
-    'matrixConnecting',
-    'mediaBaseUrl',
-    'messageWindows',
-    'passwordRequested',
-    'replyingTo',
-];
-
-const EXPECTED_VOICE_STORES = [
-    'mumbleStatus',
-    'talkingUsers',
-    'userVolumes',
-    'voiceChannels',
-    'voiceUsers',
-];
-
-describe('session store registry', () => {
-    it('registers exactly the stores on the matrix session list', () => {
-        expect(sessionStoreNames('matrix')).toEqual(EXPECTED_MATRIX_STORES);
+describe('a matrix reset leaves unscoped state alone', () => {
+    beforeEach(() => {
+        resetStores();
     });
 
-    it('registers exactly the stores on the voice session list', () => {
-        expect(sessionStoreNames('voice')).toEqual(EXPECTED_VOICE_STORES);
+    // A handler clearing one of these directly would bypass the registry, so no probe sees it.
+    it('keeps device and backend-owned stores on ServerReset', () => {
+        serverBookmarks.set([{
+            id: 'bk1', label: 'My Server', address: 'example.com', port: 443,
+            username: 'someone', auto_connect: true,
+            mumble_host: null, mumble_port: null, mumble_username: null, mumble_password: null,
+        }]);
+        selectedBookmarkId.set('bk1');
+        activeOverlay.set('settings');
+        transmissionMode.set('push_to_talk');
+        errorLog.set([{ message: 'old error', target: 'test', timestamp: new Date() }]);
+
+        fireServerReset();
+
+        expect(get(serverBookmarks).map(b => b.label)).toEqual(['My Server']);
+        expect(get(selectedBookmarkId)).toBe('bk1');
+        expect(get(activeOverlay)).toBe('settings');
+        expect(get(transmissionMode)).toBe('push_to_talk');
+        expect(get(errorLog)).toHaveLength(1);
     });
 });

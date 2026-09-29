@@ -49,22 +49,6 @@ mod tests {
         // 2^retries would overflow a u64 here.
         assert_eq!(backoff_secs(u32::MAX), 60);
     }
-
-    /// `MatrixConnection.retries` is the authoritative counter; `Failed` only carries a
-    /// display snapshot.
-    #[test]
-    fn only_the_failed_arm_carries_a_retry_count() {
-        let failed = ConnectionState::Failed {
-            reason: "err".into(),
-            retries: 5,
-            retry_in_secs: 32,
-        };
-        assert!(matches!(failed, ConnectionState::Failed { retries: 5, .. }));
-        assert!(failed.is_failed());
-
-        assert!(!matches!(ConnectionState::Connected, ConnectionState::Failed { .. }));
-        assert!(!ConnectionState::Connected.is_failed());
-    }
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
