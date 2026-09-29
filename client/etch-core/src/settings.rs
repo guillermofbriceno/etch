@@ -83,13 +83,27 @@ impl WriteCounter {
     }
 }
 
-/// The app has no setters for these fields, so a write carries forward the hand-edited
-/// file contents.
+/// The app has no setters for the fields taken from `on_disk`, so a write carries forward
+/// the hand-edited file contents. The destructuring is exhaustive so that a new `Settings`
+/// field must be classified here.
 fn keep_externally_owned_fields(settings: &mut Settings, on_disk: Settings) {
-    settings.mumble_initialized = on_disk.mumble_initialized;
-    settings.sfx_paths = on_disk.sfx_paths;
-    settings.custom_css = on_disk.custom_css;
-    settings.event_scripts = on_disk.event_scripts;
+    let Settings {
+        mumble_initialized,
+        sfx_paths,
+        custom_css,
+        event_scripts,
+        bookmarks: _,
+        transmission_mode: _,
+        vad_threshold: _,
+        voice_hold: _,
+        use_mumble_settings: _,
+        hidden_dms: _,
+        deafen_suppresses_notifs: _,
+    } = on_disk;
+    settings.mumble_initialized = mumble_initialized;
+    settings.sfx_paths = sfx_paths;
+    settings.custom_css = custom_css;
+    settings.event_scripts = event_scripts;
 }
 
 /// An unreadable file (say, a half-finished hand edit) must not wipe those fields, so
@@ -520,6 +534,56 @@ mod tests {
         assert_eq!(loaded.sfx_paths.get("mute").map(String::as_str), Some("/sounds/mute.wav"));
         assert_eq!(loaded.custom_css.as_deref(), Some("/themes/dark.css"));
         assert!(loaded.mumble_initialized);
+    }
+
+    #[test]
+    fn persist_takes_exactly_the_externally_owned_fields_from_disk() {
+        let tmp = tempfile::tempdir().unwrap();
+        let on_disk = serde_json::json!({
+            "bookmarks": [],
+            "mumble_initialized": true,
+            "transmission_mode": "disk",
+            "vad_threshold": 0.1,
+            "voice_hold": 1,
+            "use_mumble_settings": false,
+            "hidden_dms": ["!disk:example.com"],
+            "deafen_suppresses_notifs": false,
+            "sfx_paths": {"mute": "/disk.wav"},
+            "custom_css": "/disk.css",
+            "event_scripts": {"user_join": "echo disk"},
+        });
+        std::fs::write(tmp.path().join("settings.json"), on_disk.to_string()).unwrap();
+
+        let in_memory = Settings {
+            bookmarks: vec![bookmark("1", "Memory", "alice", true)],
+            mumble_initialized: false,
+            transmission_mode: Some("memory".into()),
+            vad_threshold: Some(0.9),
+            voice_hold: Some(9),
+            use_mumble_settings: Some(true),
+            hidden_dms: vec!["!memory:example.com".into()],
+            deafen_suppresses_notifs: Some(true),
+            sfx_paths: HashMap::from([("mute".into(), "/memory.wav".into())]),
+            custom_css: Some("/memory.css".into()),
+            event_scripts: HashMap::from([("user_join".into(), "echo memory".into())]),
+        };
+        persist(tmp.path(), in_memory).unwrap();
+
+        let mut written: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(tmp.path().join("settings.json")).unwrap())
+                .unwrap();
+        let from_disk = ["mumble_initialized", "sfx_paths", "custom_css", "event_scripts"];
+        for (key, value) in written.as_object_mut().unwrap().iter() {
+            let expected_from_disk = from_disk.contains(&key.as_str());
+            let disk_value = &on_disk[key];
+            assert_eq!(
+                value == disk_value,
+                expected_from_disk,
+                "{key} should come from {}",
+                if expected_from_disk { "disk" } else { "memory" },
+            );
+        }
+        assert_eq!(written.as_object().unwrap().len(), on_disk.as_object().unwrap().len());
     }
 
     #[tokio::test]
