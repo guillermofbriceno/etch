@@ -135,11 +135,8 @@ jobs:
 
       # Ratchet floor: overall etch-core line coverage may not drop below the
       # recorded baseline. Raise this number as coverage improves; never lower it.
-      # History: 55.62% (2026-06-15, introduced) -> 61.34% (bridge.rs tests)
-      #          -> 63.38% (timeline.rs) -> 64.81% (logger.rs)
-      #          -> 67.28% (process.rs URL/config/command extraction).
       - name: Enforce coverage floor
-        run: cargo llvm-cov report --fail-under-lines 67
+        run: cargo llvm-cov report --fail-under-lines 80
 
   changes:
     name: Detect changes

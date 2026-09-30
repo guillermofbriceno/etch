@@ -6,6 +6,7 @@ import { currentUser } from './user';
 import { playSfx } from './sfx';
 import { appFocused } from './eventRouter';
 import { activeChannelId, emitUnreadMessage } from './activeChannel';
+import { registerSessionStore, declareStores } from './session';
 
 let lastNotifTime = 0;
 const NOTIF_COOLDOWN_MS = 20_000;
@@ -18,17 +19,19 @@ type ChannelWindow = {
 
 const EMPTY_WINDOW: ChannelWindow = { entries: [], hasMore: true, loading: false };
 
-const windows = writable<Record<string, ChannelWindow>>({});
+const messageWindows = writable<Record<string, ChannelWindow>>({});
 
 // Active channel's window — what components subscribe to
 export const activeWindow = derived(
-    [windows, activeChannelId],
-    ([$windows, $id]) => ($id ? $windows[$id] : null) ?? EMPTY_WINDOW
+    [messageWindows, activeChannelId],
+    ([$messageWindows, $id]) => ($id ? $messageWindows[$id] : null) ?? EMPTY_WINDOW
 );
+
+declareStores('derived', 'activeWindow');
 
 // Ensure a message window exists for a room (does not change selection)
 function ensureWindowExists(room_id: string): void {
-    windows.update(w => ({
+    messageWindows.update(w => ({
         ...w,
         [room_id]: w[room_id] ?? { entries: [], hasMore: true, loading: false },
     }));
@@ -40,7 +43,7 @@ export function setActiveChannel(id: string): void {
     ensureWindowExists(id);
 
     // Send read receipt for the last message in the channel
-    const win = get(windows)[id];
+    const win = get(messageWindows)[id];
     if (win) {
         for (let i = win.entries.length - 1; i >= 0; i--) {
             const kind = win.entries[i].kind;
@@ -59,7 +62,7 @@ export function loadOlder(): void {
     const id = get(activeChannelId);
     if (!id) return;
 
-    windows.update(w => {
+    messageWindows.update(w => {
         const win = getWindow(w, id);
         return { ...w, [id]: { ...win, loading: true } };
     });
@@ -111,8 +114,10 @@ export async function toggleReaction(eventId: string, key: string): Promise<void
 }
 
 export function resetMessages(): void {
-    windows.set({});
+    messageWindows.set({});
 }
+
+registerSessionStore('matrix', 'messageWindows', resetMessages);
 
 // --- Handler called by eventRouter for Matrix timeline events ---
 
@@ -124,7 +129,7 @@ export function handleMatrixEvent(me: MatrixEvent): void {
     switch (me.type) {
         case 'TimelineAppend': {
             const [roomId, entries] = me.data;
-            windows.update(w => {
+            messageWindows.update(w => {
                 const win = getWindow(w, roomId);
                 return { ...w, [roomId]: { ...win, entries: [...win.entries, ...entries] } };
             });
@@ -132,7 +137,7 @@ export function handleMatrixEvent(me: MatrixEvent): void {
         }
         case 'TimelinePushBack': {
             const [roomId, entry] = me.data;
-            windows.update(w => {
+            messageWindows.update(w => {
                 const win = getWindow(w, roomId);
                 return { ...w, [roomId]: { ...win, entries: [...win.entries, entry] } };
             });
@@ -159,7 +164,7 @@ export function handleMatrixEvent(me: MatrixEvent): void {
         }
         case 'TimelinePushFront': {
             const [roomId, entry] = me.data;
-            windows.update(w => {
+            messageWindows.update(w => {
                 const win = getWindow(w, roomId);
                 return { ...w, [roomId]: { ...win, entries: [entry, ...win.entries] } };
             });
@@ -167,7 +172,7 @@ export function handleMatrixEvent(me: MatrixEvent): void {
         }
         case 'TimelineInsert': {
             const [roomId, index, entry] = me.data;
-            windows.update(w => {
+            messageWindows.update(w => {
                 const win = w[roomId];
                 if (!win) return w;
                 const entries = [...win.entries];
@@ -178,7 +183,7 @@ export function handleMatrixEvent(me: MatrixEvent): void {
         }
         case 'TimelineSet': {
             const [roomId, index, entry] = me.data;
-            windows.update(w => {
+            messageWindows.update(w => {
                 const win = w[roomId];
                 if (!win) return w;
                 const entries = [...win.entries];
@@ -191,7 +196,7 @@ export function handleMatrixEvent(me: MatrixEvent): void {
         }
         case 'TimelineRemove': {
             const [roomId, index] = me.data;
-            windows.update(w => {
+            messageWindows.update(w => {
                 const win = w[roomId];
                 if (!win) return w;
                 const entries = [...win.entries];
@@ -204,7 +209,7 @@ export function handleMatrixEvent(me: MatrixEvent): void {
         }
         case 'TimelineCleared': {
             const roomId = me.data;
-            windows.update(w => ({
+            messageWindows.update(w => ({
                 ...w,
                 [roomId]: { entries: [], hasMore: true, loading: false },
             }));
@@ -212,7 +217,7 @@ export function handleMatrixEvent(me: MatrixEvent): void {
         }
         case 'TimelineReset': {
             const [roomId, entries] = me.data;
-            windows.update(w => ({
+            messageWindows.update(w => ({
                 ...w,
                 [roomId]: { entries, hasMore: true, loading: false },
             }));
@@ -220,7 +225,7 @@ export function handleMatrixEvent(me: MatrixEvent): void {
         }
         case 'PaginationComplete': {
             const [roomId, hasMore] = me.data;
-            windows.update(w => {
+            messageWindows.update(w => {
                 const win = w[roomId];
                 if (!win) return w;
                 return { ...w, [roomId]: { ...win, loading: false, hasMore } };

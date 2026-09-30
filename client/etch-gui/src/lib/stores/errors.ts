@@ -1,5 +1,6 @@
 import { writable } from 'svelte/store';
 import type { SystemEvent } from '$lib/ipc';
+import { declareStores } from './session';
 
 export type ErrorEntry = {
     message: string;
@@ -7,8 +8,11 @@ export type ErrorEntry = {
     timestamp: Date;
 };
 
+// Kept across resets: the errors worth reading explain why the last session ended.
 export const errorLog = writable<ErrorEntry[]>([]);
 export const toastError = writable<string | null>(null);
+
+declareStores('device', 'errorLog', 'toastError');
 
 let toastTimer: ReturnType<typeof setTimeout> | null = null;
 

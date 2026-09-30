@@ -2,12 +2,15 @@ import { writable } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { relaunch } from '@tauri-apps/plugin-process';
+import { declareStores } from './session';
 
 export type UpdateStatus = 'idle' | 'checking' | 'available' | 'ready' | 'up_to_date' | 'error';
 
 export const updateStatus = writable<UpdateStatus>('idle');
 export const updateVersion = writable<string | null>(null);
 export const updateError = writable<string | null>(null);
+
+declareStores('device', 'updateStatus', 'updateVersion', 'updateError');
 
 listen<{ type: string; data?: any }>('update_event', (event) => {
     const payload = event.payload;

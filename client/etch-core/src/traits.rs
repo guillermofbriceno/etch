@@ -11,6 +11,7 @@ pub trait MatrixBackend: Send {
         &mut self,
         form: ServerConnectionForm,
         internal_tx: mpsc::Sender<InternalEvent>,
+        generation: u64,
     ) -> impl Future<Output = ConnectOutcome> + Send;
 
     fn handle_command(&mut self, cmd: MatrixCommand) -> impl Future<Output = ()> + Send;

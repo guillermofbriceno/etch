@@ -8,11 +8,13 @@ pub enum CoreCommand {
     Matrix(MatrixCommand),
     Mumble(MumbleCommand),
     System(SystemCommand),
-    #[serde(skip)]
-    FetchMedia {
-        mxc_url: String,
-        respond: tokio::sync::oneshot::Sender<Result<Vec<u8>, String>>,
-    },
+}
+
+/// Not a `CoreCommand`: it carries a `oneshot::Sender` and travels on its own channel,
+/// so images cannot crowd out control commands.
+pub struct MediaRequest {
+    pub mxc_url: String,
+    pub respond: tokio::sync::oneshot::Sender<Result<Vec<u8>, String>>,
 }
 
 #[derive(Debug, PartialEq, Deserialize)]

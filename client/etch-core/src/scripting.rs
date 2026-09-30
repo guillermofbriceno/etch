@@ -1,9 +1,8 @@
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use crate::settings;
+use crate::settings::Settings;
 
 /// Dispatches event scripts configured in settings.
 ///
@@ -16,11 +15,11 @@ pub struct ScriptDispatcher {
 }
 
 impl ScriptDispatcher {
-    /// Load event scripts from settings on disk. Call once at startup.
-    pub fn new(data_dir: &Path) -> Self {
-        let settings = settings::load(data_dir);
+    /// Snapshot of the settings loaded at startup; `event_scripts` is hand-edited and
+    /// applies on the next start.
+    pub fn from_settings(settings: &Settings) -> Self {
         Self {
-            scripts: settings.event_scripts,
+            scripts: settings.event_scripts.clone(),
             last_fired: Mutex::new(HashMap::new()),
             debounce: Duration::from_millis(500),
         }
@@ -137,9 +136,8 @@ mod tests {
     }
 
     #[test]
-    fn new_loads_scripts_from_settings() {
-        let tmp = tempfile::tempdir().unwrap();
-        let settings = crate::settings::Settings {
+    fn from_settings_takes_the_configured_scripts() {
+        let settings = Settings {
             event_scripts: [
                 ("new_message".to_string(), "echo hello".to_string()),
                 ("user_join".to_string(), "echo joined".to_string()),
@@ -148,19 +146,11 @@ mod tests {
             .collect(),
             ..Default::default()
         };
-        crate::settings::save(tmp.path(), &settings);
 
-        let d = ScriptDispatcher::new(tmp.path());
+        let d = ScriptDispatcher::from_settings(&settings);
         assert_eq!(d.scripts.len(), 2);
         assert_eq!(d.scripts["new_message"], "echo hello");
         assert_eq!(d.scripts["user_join"], "echo joined");
-    }
-
-    #[test]
-    fn new_with_no_settings_file_yields_empty_scripts() {
-        let tmp = tempfile::tempdir().unwrap();
-        let d = ScriptDispatcher::new(tmp.path());
-        assert!(d.scripts.is_empty());
     }
 
     // --- Tests below spawn real processes and only apply on unix ---

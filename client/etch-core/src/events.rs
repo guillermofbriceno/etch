@@ -66,11 +66,44 @@ pub enum InternalEvent {
     System(InternalSystemEvent),
 }
 
+/// Distinguishes a revoked session from transient failures the sync loop already retried through.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SyncEnd {
+    /// The session is over: the next attempt must log in again, not just re-sync.
+    SessionInvalidated { reason: String },
+    /// The network was out longer than the loop would wait; the session may still be valid.
+    RetriesExhausted { reason: String },
+}
+
+impl SyncEnd {
+    pub fn reason(&self) -> &str {
+        match self {
+            Self::SessionInvalidated { reason } | Self::RetriesExhausted { reason } => reason,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum InternalMatrixEvent {
     Connected,
-    Disconnected(String),
+    /// Nothing has been torn down; a later `SyncRecovered` may be all that follows.
+    /// Each sync report carries the generation of the connect that started its session.
+    SyncDegraded { generation: u64, reason: String },
+    SyncRecovered { generation: u64 },
+    Disconnected { generation: u64, end: SyncEnd },
     SubscribeToRoom(matrix_sdk::ruma::OwnedRoomId),
+    /// A result from a superseded attempt can still arrive and is discarded by `generation`.
+    ConnectFinished {
+        generation: u64,
+        outcome: crate::models::ConnectOutcome,
+    },
+    VoiceUserResolved {
+        session_id: u32,
+        name: String,
+        volume_db: f32,
+        display_name: Option<String>,
+        avatar_url: Option<String>,
+    },
 }
 
 #[derive(Debug)]
@@ -85,8 +118,27 @@ pub enum InternalMumbleEvent {
     LocalChannelChanged { channel_path: String },
     LocalMuteChanged(bool),
     LocalDeafChanged(bool),
+    /// Sent before the replacement so a `Connected` from the new process is credited to
+    /// this launch.
+    LaunchStarted { generation: u64 },
+    LaunchFinished {
+        generation: u64,
+        outcome: LaunchOutcome,
+    },
+}
+
+#[derive(Debug)]
+pub enum LaunchOutcome {
+    Launched,
+    Failed,
+    /// Mumble was left alone and the user has been prompted.
+    CertChanged,
 }
 
 #[derive(Debug)]
 pub enum InternalSystemEvent {
+    /// Answered once the engine has drained every earlier event; sent on the internal
+    /// channel so the answer is exact.
+    #[cfg(test)]
+    Barrier(tokio::sync::oneshot::Sender<()>),
 }

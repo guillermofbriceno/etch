@@ -7,10 +7,16 @@ import { closeOverlay } from './overlay';
 import { initHiddenDms } from './channels';
 import { transmissionMode, vadThreshold, voiceHold, useMumbleSettings, deafenSuppressesNotifs } from './voiceSettings';
 import type { TransmissionMode } from './voiceSettings';
+import { registerSessionStore, declareStores } from './session';
 
 export const serverBookmarks = writable<ServerBookmark[]>([]);
 export const selectedBookmarkId = writable<string | null>(null);
+
+// Set before ServerReset arrives as the reply to connecting, so a reset must not clear it.
 export const connectingBookmark = writable<ServerBookmark | null>(null);
+
+declareStores('device', 'serverBookmarks', 'selectedBookmarkId', 'connectingBookmark');
+
 export const passwordRequested = writable<boolean>(false);
 export const matrixConnecting = writable<boolean>(false);
 export const mediaBaseUrl = writable<string | null>(null);
@@ -86,10 +92,13 @@ export function removeBookmark(id: string): void {
     }
 }
 
-export function resetServerConnection(): void {
-    mediaBaseUrl.set(null);
-    passwordRequested.set(false);
-}
+const clearMediaBaseUrl = (): void => { mediaBaseUrl.set(null); };
+const clearPasswordRequested = (): void => { passwordRequested.set(false); };
+const clearMatrixConnecting = (): void => { matrixConnecting.set(false); };
+
+registerSessionStore('matrix', 'mediaBaseUrl', clearMediaBaseUrl);
+registerSessionStore('matrix', 'passwordRequested', clearPasswordRequested);
+registerSessionStore('matrix', 'matrixConnecting', clearMatrixConnecting);
 
 // Handlers called by eventRouter
 export function handleMatrixEvent(me: MatrixEvent): void {

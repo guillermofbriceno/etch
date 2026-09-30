@@ -5,6 +5,7 @@ import { isMuted, isDeafened } from './audio';
 import { userVolumes, setUserVolume } from './userVolumes';
 import { transmissionMode, vadThreshold, voiceHold, useMumbleSettings } from './voiceSettings';
 import type { TransmissionMode } from './voiceSettings';
+import { registerSessionStore, declareStores, resetVoiceSession } from './session';
 
 export type VoiceChannel = {
     id: number;
@@ -44,6 +45,8 @@ export const usersByChannel = derived(voiceUsers, ($users) => {
     }
     return grouped;
 });
+
+declareStores('derived', 'voiceConnected', 'usersByChannel');
 
 let settled = false;
 let localSession: number | null = null;
@@ -167,18 +170,31 @@ export function handleMumbleEvent(me: MumbleEvent): void {
             } else if (me.data.type === 'Connecting') {
                 mumbleStatus.set('connecting');
             } else if (me.data.type === 'Disconnected') {
-                settled = false;
-                localSession = null;
-                mumbleStatus.set('disconnected');
-                voiceChannels.set(new Map());
-                voiceUsers.set(new Map());
-                talkingUsers.set(new Set());
+                resetVoiceSession();
                 playSfx('server_disconnect');
             }
             break;
         }
     }
 }
+
+export function resetCertRequest(): void {
+    certChangeRequest.set(null);
+}
+
+registerSessionStore('voice', 'voiceChannels', () => { voiceChannels.set(new Map()); });
+registerSessionStore('voice', 'voiceUsers', () => { voiceUsers.set(new Map()); });
+registerSessionStore('voice', 'talkingUsers', () => { talkingUsers.set(new Set()); });
+registerSessionStore('voice', 'mumbleStatus', () => {
+    mumbleStatus.set('disconnected');
+    // A stale localSession could collide with a session ID the new server hands out.
+    settled = false;
+    localSession = null;
+});
+
+// Matrix scope: accepting a prompt left over from a server the user has since left
+// would trust the wrong server.
+registerSessionStore('matrix', 'certChangeRequest', resetCertRequest);
 
 export function handleSystemEvent(se: SystemEvent): void {
     if (se.type !== 'UserProfileChanged') return;

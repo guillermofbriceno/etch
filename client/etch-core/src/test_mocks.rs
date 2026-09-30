@@ -4,7 +4,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::commands::{MatrixCommand, MumbleCommand, ServerConnectionForm};
 use crate::error::CoreError;
-use crate::events::InternalEvent;
+use crate::events::{InternalEvent, InternalMatrixEvent};
 use crate::models::{ConnectOutcome, VoiceServerConfig};
 use crate::traits::{MatrixBackend, VoiceService};
 
@@ -30,10 +30,13 @@ pub struct MockMatrixState {
 pub struct MockMatrix {
     pub state: Arc<MockMatrixState>,
     pub connect_result: ConnectOutcome,
+    pub repeat_connect_result: bool,
     pub profile_response: (Option<String>, Option<String>),
     pub media_response: Result<Vec<u8>, String>,
-    /// Events sent through `internal_tx` during `connect()`.
-    pub internal_events: Vec<InternalEvent>,
+    /// Holds a connection in flight so a test can check the engine stays responsive.
+    pub connect_gate: Option<oneshot::Receiver<()>>,
+    /// Sent by the first connect before it returns, as a sync task it spawned would.
+    pub reports_during_connect: Vec<fn(u64) -> InternalMatrixEvent>,
 }
 
 impl MockMatrix {
@@ -45,9 +48,11 @@ impl MockMatrix {
                 call_log: Mutex::new(Vec::new()),
             }),
             connect_result: ConnectOutcome::Connected(None),
+            repeat_connect_result: false,
             profile_response: (None, None),
             media_response: Ok(vec![0xDE, 0xAD]),
-            internal_events: Vec::new(),
+            connect_gate: None,
+            reports_during_connect: Vec::new(),
         }
     }
 
@@ -56,13 +61,27 @@ impl MockMatrix {
         self
     }
 
+    pub fn with_repeating_connect_result(mut self, outcome: ConnectOutcome) -> Self {
+        self.connect_result = outcome;
+        self.repeat_connect_result = true;
+        self
+    }
+
     pub fn with_profile_response(mut self, display_name: Option<String>, avatar_url: Option<String>) -> Self {
         self.profile_response = (display_name, avatar_url);
         self
     }
 
-    pub fn with_internal_events(mut self, events: Vec<InternalEvent>) -> Self {
-        self.internal_events = events;
+    pub fn with_connect_gate(mut self, gate: oneshot::Receiver<()>) -> Self {
+        self.connect_gate = Some(gate);
+        self
+    }
+
+    pub fn with_reports_during_connect(
+        mut self,
+        reports: Vec<fn(u64) -> InternalMatrixEvent>,
+    ) -> Self {
+        self.reports_during_connect = reports;
         self
     }
 }
@@ -72,10 +91,17 @@ impl MatrixBackend for MockMatrix {
         &mut self,
         _form: ServerConnectionForm,
         internal_tx: mpsc::Sender<InternalEvent>,
+        generation: u64,
     ) -> ConnectOutcome {
         self.state.call_log.lock().unwrap().push(MockCall::Connect);
-        for event in self.internal_events.drain(..) {
-            let _ = internal_tx.send(event).await;
+        if let Some(gate) = self.connect_gate.take() {
+            let _ = gate.await;
+        }
+        for report in std::mem::take(&mut self.reports_during_connect) {
+            let _ = internal_tx.send(InternalEvent::Matrix(report(generation))).await;
+        }
+        if self.repeat_connect_result {
+            return self.connect_result.clone();
         }
         std::mem::replace(&mut self.connect_result, ConnectOutcome::Failed)
     }
@@ -124,6 +150,8 @@ pub struct MockVoice {
     pub state: Arc<MockVoiceState>,
     /// Event batches sent through `internal_tx` during successive `launch()` calls.
     launch_event_batches: VecDeque<Vec<InternalEvent>>,
+    failing_launch: Option<u32>,
+    launch_calls: u32,
 }
 
 impl MockVoice {
@@ -137,6 +165,8 @@ impl MockVoice {
                 launch_error: Mutex::new(false),
             }),
             launch_event_batches: VecDeque::new(),
+            failing_launch: None,
+            launch_calls: 0,
         }
     }
 
@@ -144,6 +174,11 @@ impl MockVoice {
     /// Call multiple times to queue events for successive launches.
     pub fn with_internal_events(mut self, events: Vec<InternalEvent>) -> Self {
         self.launch_event_batches.push_back(events);
+        self
+    }
+
+    pub fn with_failing_launch(mut self, nth: u32) -> Self {
+        self.failing_launch = Some(nth);
         self
     }
 }
@@ -157,7 +192,10 @@ impl VoiceService for MockVoice {
         _extra_args: &str,
         channel_path: Option<&str>,
     ) -> Result<(), CoreError> {
-        if *self.state.launch_error.lock().unwrap() {
+        self.launch_calls += 1;
+        if self.failing_launch == Some(self.launch_calls)
+            || *self.state.launch_error.lock().unwrap()
+        {
             return Err(CoreError::InvalidConfig { message: "mock launch failure".into() });
         }
         self.state.launched_with.lock().unwrap().push(creds);

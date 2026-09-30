@@ -1,9 +1,13 @@
 import { writable, get } from 'svelte/store';
 import { sendCoreCommand } from '$lib/ipc';
 import { playSfx, setSfxDeafened } from './sfx';
+import { declareStores } from './session';
 
+// Backend-owned: the engine restores them across Mumble restarts, so a reset must not clear them.
 export const isMuted = writable<boolean>(false);
 export const isDeafened = writable<boolean>(false);
+
+declareStores('backend', 'isMuted', 'isDeafened');
 
 export async function toggleMute(): Promise<void> {
     if (get(isDeafened)) {

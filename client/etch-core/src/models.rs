@@ -11,22 +11,15 @@ pub enum ConnectionState {
 }
 
 impl ConnectionState {
-    pub fn retries(&self) -> u32 {
-        match self {
-            ConnectionState::Failed { retries, .. } => *retries,
-            _ => 0,
-        }
-    }
-
     pub fn is_failed(&self) -> bool {
         matches!(self, ConnectionState::Failed { .. })
     }
+}
 
-    pub fn next_failure(&self, reason: String) -> ConnectionState {
-        let retries = self.retries() + 1;
-        let retry_in_secs = std::cmp::min(2u64.pow(retries), 60);
-        ConnectionState::Failed { reason, retries, retry_in_secs }
-    }
+/// The caller owns the retry count: `Connecting` carries none, so deriving it from
+/// state would pin the backoff at the first step.
+pub fn backoff_secs(retries: u32) -> u64 {
+    std::cmp::min(2u64.saturating_pow(retries), 60)
 }
 
 #[cfg(test)]
@@ -36,60 +29,25 @@ mod tests {
     #[test]
     fn connection_state_defaults() {
         let state = ConnectionState::Disconnected;
-        assert_eq!(state.retries(), 0);
         assert!(!state.is_failed());
     }
 
     #[test]
-    fn next_failure_exponential_backoff() {
-        let state = ConnectionState::Disconnected;
-
-        let s1 = state.next_failure("err".into());
-        assert!(matches!(s1, ConnectionState::Failed { retries: 1, retry_in_secs: 2, .. }));
-
-        let s2 = s1.next_failure("err".into());
-        assert!(matches!(s2, ConnectionState::Failed { retries: 2, retry_in_secs: 4, .. }));
-
-        let s3 = s2.next_failure("err".into());
-        assert!(matches!(s3, ConnectionState::Failed { retries: 3, retry_in_secs: 8, .. }));
-
-        let s4 = s3.next_failure("err".into());
-        assert!(matches!(s4, ConnectionState::Failed { retries: 4, retry_in_secs: 16, .. }));
-
-        let s5 = s4.next_failure("err".into());
-        assert!(matches!(s5, ConnectionState::Failed { retries: 5, retry_in_secs: 32, .. }));
+    fn backoff_doubles_per_retry() {
+        assert_eq!(backoff_secs(1), 2);
+        assert_eq!(backoff_secs(2), 4);
+        assert_eq!(backoff_secs(3), 8);
+        assert_eq!(backoff_secs(4), 16);
+        assert_eq!(backoff_secs(5), 32);
     }
 
     #[test]
-    fn next_failure_caps_at_60_seconds() {
-        let state = ConnectionState::Disconnected;
-        // 2^6 = 64, should be capped to 60
-        let mut s = state;
-        for _ in 0..6 {
-            s = s.next_failure("err".into());
-        }
-        assert!(matches!(s, ConnectionState::Failed { retries: 6, retry_in_secs: 60, .. }));
-
-        // Further retries stay at 60
-        let s7 = s.next_failure("err".into());
-        assert!(matches!(s7, ConnectionState::Failed { retries: 7, retry_in_secs: 60, .. }));
-    }
-
-    #[test]
-    fn connected_state_resets_retries() {
-        let failed = ConnectionState::Failed {
-            reason: "err".into(),
-            retries: 5,
-            retry_in_secs: 32,
-        };
-        assert_eq!(failed.retries(), 5);
-
-        let connected = ConnectionState::Connected;
-        assert_eq!(connected.retries(), 0);
-
-        // Starting fresh failures from non-failed state begins at retry 1
-        let new_fail = connected.next_failure("new err".into());
-        assert!(matches!(new_fail, ConnectionState::Failed { retries: 1, retry_in_secs: 2, .. }));
+    fn backoff_caps_at_60_seconds() {
+        assert_eq!(backoff_secs(6), 60);
+        assert_eq!(backoff_secs(7), 60);
+        assert_eq!(backoff_secs(50), 60);
+        // 2^retries would overflow a u64 here.
+        assert_eq!(backoff_secs(u32::MAX), 60);
     }
 }
 
@@ -160,7 +118,7 @@ pub struct ServerBookmark {
     pub mumble_password: Option<String>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VoiceServerConfig {
     pub host: String,
     pub port: u16,
@@ -168,7 +126,7 @@ pub struct VoiceServerConfig {
     pub password: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum ConnectOutcome {
     Connected(Option<VoiceServerConfig>),
     NeedsPassword,

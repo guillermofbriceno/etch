@@ -5,6 +5,7 @@ import { sendCoreCommand } from '$lib/ipc';
 import { activeChannelId, onUnreadMessage } from './activeChannel';
 import { setActiveChannel } from './messages';
 import { currentUser } from './user';
+import { registerSessionStore, declareStores } from './session';
 
 /** Return the timestamp of the last Message in a list of entries, or null. */
 function lastMessageTs(entries: TimelineEntry[]): number | null {
@@ -22,7 +23,11 @@ export const dmLastActivity = writable<Record<string, number>>({});
 
 // --- Hidden DM state (Etch-level, not Matrix) ---
 
+// SettingsLoaded does not fire again on reconnect, so this must survive a reset.
 const hiddenDmIds = writable<Set<string>>(new Set());
+
+declareStores('device', 'hiddenDmIds');
+
 const hiddenDmInfos = writable<Map<string, RoomInfo>>(new Map());
 
 export function initHiddenDms(ids: string[]): void {
@@ -64,11 +69,13 @@ export function unhideDm(roomId: string): void {
     sendCoreCommand({ type: 'System', data: { type: 'UnhideDm', data: { room_id: roomId } } });
 }
 
-export function resetChannels(): void {
-    channels.set([]);
-    hiddenDmInfos.set(new Map());
-    dmLastActivity.set({});
-}
+const clearChannels = (): void => { channels.set([]); };
+const clearHiddenDmInfos = (): void => { hiddenDmInfos.set(new Map()); };
+const clearDmLastActivity = (): void => { dmLastActivity.set({}); };
+
+registerSessionStore('matrix', 'channels', clearChannels);
+registerSessionStore('matrix', 'hiddenDmInfos', clearHiddenDmInfos);
+registerSessionStore('matrix', 'dmLastActivity', clearDmLastActivity);
 
 // --- Unread / active channel bookkeeping ---
 
@@ -93,6 +100,8 @@ export const activeChannel = derived(
     [channels, activeChannelId],
     ([$channels, $id]) => $channels.find(c => c.id === $id) ?? null
 );
+
+declareStores('derived', 'activeChannel');
 
 // --- Event handler called by eventRouter ---
 

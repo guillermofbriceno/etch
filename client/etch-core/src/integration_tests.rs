@@ -33,17 +33,46 @@ struct TestHarness {
     _data_dir: tempfile::TempDir,
 }
 
+/// Logs only `etch_core` targets to stderr; matrix-sdk is too chatty.
+fn init_test_logging() {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+
+    struct StderrLog;
+    impl log::Log for StderrLog {
+        fn enabled(&self, m: &log::Metadata) -> bool {
+            m.target().starts_with("etch_core")
+        }
+        fn log(&self, record: &log::Record) {
+            if self.enabled(record.metadata()) {
+                eprintln!("[{} {}] {}", record.level(), record.target(), record.args());
+            }
+        }
+        fn flush(&self) {}
+    }
+
+    ONCE.call_once(|| {
+        if log::set_boxed_logger(Box::new(StderrLog)).is_ok() {
+            log::set_max_level(log::LevelFilter::Info);
+        }
+    });
+}
+
 impl TestHarness {
     fn new() -> Self {
+        init_test_logging();
         let data_dir = tempfile::tempdir().expect("failed to create temp dir");
         let (cmd_tx, cmd_rx) = mpsc::channel(32);
+        let (_media_tx, media_rx) = mpsc::channel(256);
         let (event_tx, event_rx) = mpsc::channel(256);
 
-        let dispatcher = Arc::new(ScriptDispatcher::new(data_dir.path()));
+        let settings = crate::settings::load(data_dir.path());
+        let dispatcher = Arc::new(ScriptDispatcher::from_settings(&settings));
         let matrix = MatrixService::new(event_tx.clone(), data_dir.path().to_path_buf(), dispatcher);
         let voice = MockVoice::new();
         let engine = CoreEngine::new(
-            cmd_rx, event_tx, matrix, voice, data_dir.path().to_path_buf(),
+            cmd_rx, media_rx, event_tx, matrix, voice,
+            data_dir.path().to_path_buf(), settings,
         );
         let engine_handle = tokio::spawn(engine.run());
 
@@ -912,4 +941,95 @@ async fn redact_message_removes_from_timeline() {
     h.expect_timeline_message(&room.id, &body2).await;
 
     h.shutdown().await;
+}
+
+#[cfg(target_os = "linux")]
+fn open_fd_count() -> usize {
+    std::fs::read_dir("/proc/self/fd")
+        .expect("failed to read /proc/self/fd")
+        .count()
+}
+
+/// A background task left over from the previous connection pins the old client's
+/// sqlite and HTTP pools.
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+async fn repeated_reconnects_do_not_leak_file_descriptors() {
+    const WARMUP_CYCLES: usize = 2;
+    const MEASURED_CYCLES: usize = 6;
+    const MAX_FDS_PER_CYCLE: usize = 3;
+
+    async fn settle() {
+        tokio::time::sleep(Duration::from_secs(3)).await;
+    }
+
+    let mut h = TestHarness::new();
+
+    for _ in 0..WARMUP_CYCLES {
+        h.connect().await;
+    }
+    settle().await;
+    let baseline = open_fd_count();
+
+    let mut samples = Vec::new();
+    for _ in 0..MEASURED_CYCLES {
+        h.connect().await;
+        settle().await;
+        samples.push(open_fd_count());
+    }
+
+    let final_count = *samples.last().unwrap();
+    let growth = final_count.saturating_sub(baseline);
+    let budget = MAX_FDS_PER_CYCLE * MEASURED_CYCLES;
+
+    println!(
+        "fd baseline after {} warmup cycles: {}\nper-cycle samples: {:?}\ngrowth over {} cycles: {} (budget {})",
+        WARMUP_CYCLES, baseline, samples, MEASURED_CYCLES, growth, budget,
+    );
+    h.shutdown().await;
+
+    assert!(
+        growth <= budget,
+        "file descriptors grew by {} over {} reconnects (~{:.1}/cycle); \
+         expected no sustained growth. baseline={}, samples={:?}",
+        growth, MEASURED_CYCLES, growth as f64 / MEASURED_CYCLES as f64, baseline, samples,
+    );
+}
+
+
+/// A leftover diff task from a previous subscription would deliver each message once per reconnect.
+#[tokio::test(flavor = "multi_thread")]
+async fn reconnecting_does_not_duplicate_timeline_events() {
+    const RECONNECTS: usize = 2;
+
+    async fn deliveries(h: &mut TestHarness, room_id: &str, prefix: &str) -> usize {
+        let body = h.send_unique_message(room_id, prefix).await;
+        h.expect_timeline_message(room_id, &body).await;
+
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let mut bodies = Vec::new();
+        h.drain_timeline_messages(room_id, &mut bodies);
+
+        1 + bodies.iter().filter(|b| b.contains(&body)).count()
+    }
+
+    let mut h = TestHarness::new();
+    let rooms = h.connect().await;
+    let room_id = TestHarness::find_room(&rooms, "Test Text").id.clone();
+
+    let baseline = deliveries(&mut h, &room_id, "baseline").await;
+
+    for _ in 0..RECONNECTS {
+        h.connect().await;
+    }
+    let after_reconnects = deliveries(&mut h, &room_id, "reconnected").await;
+
+    h.shutdown().await;
+
+    assert_eq!(
+        after_reconnects, baseline,
+        "a message was delivered {} times after {} reconnects but {} times before; \
+         each reconnect left its predecessor's timeline subscription running",
+        after_reconnects, RECONNECTS, baseline,
+    );
 }

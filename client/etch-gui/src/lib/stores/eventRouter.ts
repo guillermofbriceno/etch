@@ -2,19 +2,22 @@ import { writable, get } from 'svelte/store';
 import { listen } from '@tauri-apps/api/event';
 import type { CoreEvent } from '$lib/ipc';
 
-import { handleMatrixEvent as messagesHandleMatrix, resetMessages } from './messages';
-import { handleMatrixEvent as channelsHandleMatrix, resetChannels } from './channels';
-import { handleMatrixEvent as serversHandleMatrix, resetServerConnection } from './servers';
-import { handleMatrixEvent as userHandleMatrix, handleSystemEvent as userHandleSystem, resetUser } from './user';
+import { handleMatrixEvent as messagesHandleMatrix } from './messages';
+import { handleMatrixEvent as channelsHandleMatrix } from './channels';
+import { handleMatrixEvent as serversHandleMatrix } from './servers';
+import { handleMatrixEvent as userHandleMatrix, handleSystemEvent as userHandleSystem } from './user';
 import { handleSystemEvent as serversHandleSystem } from './servers';
 import { handleSystemEvent as errorsHandleSystem } from './errors';
 import { handleMumbleEvent, handleSystemEvent as voiceHandleSystem } from './voiceState';
-import { resetActiveChannel } from './activeChannel';
-import { resetCompose } from './compose';
-import { resetUserVolumes } from './userVolumes';
+import { resetMatrixSession, declareStores } from './session';
+
+// Eager, so every store has registered its session scope before the first ServerReset can fire.
+import.meta.glob('./*.ts', { eager: true });
 
 // Track app focus state for notification sounds
 export const appFocused = writable(true);
+
+declareStores('device', 'appFocused');
 
 export function initEventRouter(): void {
     appFocused.set(document.hasFocus());
@@ -36,13 +39,8 @@ export function initEventRouter(): void {
                 break;
             case 'System':
                 if (ce.data.type === 'ServerReset') {
-                    resetMessages();
-                    resetChannels();
-                    resetActiveChannel();
-                    resetUser();
-                    resetServerConnection();
-                    resetCompose();
-                    resetUserVolumes();
+                    // Matrix only: the voice session survives a homeserver reconnect.
+                    resetMatrixSession();
                 }
                 serversHandleSystem(ce.data);
                 errorsHandleSystem(ce.data);

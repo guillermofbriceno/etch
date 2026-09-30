@@ -68,7 +68,7 @@ Before pushing, run the checks CI gates on:
 cd client/etch-gui && pnpm test && pnpm check
 
 # Rust: unit tests + coverage floor (CI fails the PR if coverage drops below it)
-cargo llvm-cov -p etch-core --fail-under-lines 67
+cargo llvm-cov -p etch-core --fail-under-lines 80
 
 # Rust: integration tests (starts containers, provisions, runs, tears down)
 bash tests/integration/run.sh

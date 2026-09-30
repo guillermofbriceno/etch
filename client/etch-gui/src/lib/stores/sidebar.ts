@@ -1,5 +1,6 @@
 import { writable, get } from 'svelte/store';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { declareStores } from './session';
 
 const STORAGE_KEY = 'sidebar-collapsed';
 const FADE_MS = 200;
@@ -48,6 +49,8 @@ export function toggleSidebar(): void {
  *  cursor has left the window. Only relevant on Linux where GTK cursor events
  *  drive this state. */
 export const peekSuppressed = writable<boolean>(false);
+
+declareStores('device', 'sidebarCollapsed', 'sidebarTransitioning', 'peekSuppressed');
 
 let unlistenLeave: UnlistenFn | undefined;
 let unlistenEnter: UnlistenFn | undefined;

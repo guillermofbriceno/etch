@@ -133,7 +133,7 @@ def invite_user(token, room_id, user_id):
 def join_room(token, room_id):
     url = f"{BASE_URL}/_matrix/client/v3/join/{room_id}"
     headers = {"Authorization": f"Bearer {token}"}
-    r = requests.post(url, headers=headers)
+    r = requests.post(url, json={}, headers=headers)
     r.raise_for_status()
 
 

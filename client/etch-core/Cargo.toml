@@ -36,6 +36,8 @@ integration-tests = []
 conduwuit-reaction-echo-fixed = []
 
 [dev-dependencies]
+# `test-util` lets tests drive the sync retry ceiling on a paused clock.
+tokio = { version = "1.50", features = ["full", "test-util"] }
 tempfile = "3"
 rcgen = "0.13"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { get } from 'svelte/store';
+import { invoke } from '@tauri-apps/api/core';
 import {
     voiceChannels, voiceUsers, talkingUsers, mumbleStatus, voiceConnected,
     usersByChannel, handleMumbleEvent, handleSystemEvent, certChangeRequest,
@@ -16,6 +17,7 @@ vi.mock('../sfx', () => ({
 
 beforeEach(() => {
     resetStores();
+    vi.mocked(invoke).mockClear();
 });
 
 function addUser(session_id: number, name: string, channel_id: number) {
@@ -312,6 +314,23 @@ describe('handleMumbleEvent', () => {
 
             // Our stored preference is kept, not overwritten
             expect(get(userVolumes)['alice']).toBe(-5.0);
+        });
+
+        it('re-applies the stored adjustment to the new session on rejoin', () => {
+            addUser(10, 'alice', 1);
+            handleMumbleEvent({ type: 'UserVolume', data: { session_id: 10, volume_db: -5.0 } } as any);
+            vi.mocked(invoke).mockClear();
+
+            handleMumbleEvent({ type: 'UserRemoved', data: 10 } as any);
+            addUser(42, 'alice', 1);
+            handleMumbleEvent({ type: 'UserVolume', data: { session_id: 42, volume_db: 0.0 } } as any);
+
+            expect(invoke).toHaveBeenCalledWith('core_command', {
+                command: {
+                    type: 'Mumble',
+                    data: { type: 'SetUserVolume', data: { session_id: 42, volume_db: -5.0 } },
+                },
+            });
         });
 
         it('accepts backend volume after user resets to zero', () => {

@@ -1,14 +1,27 @@
 use std::path::Path;
+use std::time::Duration;
 use sha1::{Sha1, Digest};
 use tokio::net::TcpStream;
 use crate::error::*;
+
+/// Ceiling on a whole probe: without it a black-holed peer stalls the voice actor and
+/// strands the launch in `Launching`.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// TLS-connect to host:port (accepting any cert), return SHA1 hex of the
 /// DER-encoded leaf certificate.
 pub async fn probe_server_cert(host: &str, port: u16) -> Result<String, CoreError> {
     let addr = format!("{}:{}", host, port);
 
-    let tcp = TcpStream::connect(&addr).await
+    tokio::time::timeout(PROBE_TIMEOUT, probe(host, &addr))
+        .await
+        .map_err(|_| CertProbeSnafu {
+            message: format!("Timed out after {:?} probing {}", PROBE_TIMEOUT, addr),
+        }.build())?
+}
+
+async fn probe(host: &str, addr: &str) -> Result<String, CoreError> {
+    let tcp = TcpStream::connect(addr).await
         .map_err(|e| CertProbeSnafu { message: format!("TCP connect to {}: {}", addr, e) }.build())?;
 
     let tls_connector = native_tls::TlsConnector::builder()
@@ -32,7 +45,7 @@ pub async fn probe_server_cert(host: &str, port: u16) -> Result<String, CoreErro
 }
 
 /// Read the stored fingerprint for a given host:port from mumble.sqlite's cert table.
-pub fn get_stored_cert(db_path: &Path, host: &str, port: u16) -> Option<String> {
+pub(crate) fn get_stored_cert(db_path: &Path, host: &str, port: u16) -> Option<String> {
     let conn = rusqlite::Connection::open(db_path).ok()?;
     conn.query_row(
         "SELECT digest FROM cert WHERE hostname = ?1 AND port = ?2",
@@ -42,7 +55,9 @@ pub fn get_stored_cert(db_path: &Path, host: &str, port: u16) -> Option<String> 
 }
 
 /// Insert or update the cert fingerprint in mumble.sqlite.
-pub fn store_cert(db_path: &Path, host: &str, port: u16, digest: &str) -> Result<(), CoreError> {
+///
+/// Blocks the calling thread on rusqlite's busy timeout; call only from the voice actor.
+pub(crate) fn store_cert(db_path: &Path, host: &str, port: u16, digest: &str) -> Result<(), CoreError> {
     let conn = rusqlite::Connection::open(db_path)
         .map_err(|e| CertProbeSnafu { message: format!("Opening {}: {}", db_path.display(), e) }.build())?;
 
@@ -113,6 +128,28 @@ mod tests {
         store_cert(db.path(), "example.com", 64739, "fp_other").unwrap();
         assert_eq!(get_stored_cert(db.path(), "example.com", 64738), Some("fp_default".to_string()));
         assert_eq!(get_stored_cert(db.path(), "example.com", 64739), Some("fp_other".to_string()));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn probe_gives_up_on_a_server_that_never_completes_the_handshake() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let _server = tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((stream, _)) = listener.accept().await {
+                held.push(stream);
+            }
+        });
+
+        let probe = probe_server_cert("127.0.0.1", port);
+        let outcome = tokio::time::timeout(PROBE_TIMEOUT * 2, probe).await;
+
+        let result = outcome
+            .expect("probe_server_cert must time out on its own rather than hang the caller");
+        assert!(
+            matches!(&result, Err(CoreError::CertProbe { message }) if message.starts_with("Timed out")),
+            "a stalled handshake should surface as a probe timeout, got {result:?}",
+        );
     }
 
     #[test]

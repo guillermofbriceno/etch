@@ -1,4 +1,5 @@
 import { writable } from 'svelte/store';
+import { declareStores } from './session';
 
 export type Theme = 'default' | 'oled';
 
@@ -19,6 +20,8 @@ function applyTheme(t: Theme): void {
 }
 
 export const theme = writable<Theme>(loadTheme());
+
+declareStores('device', 'theme');
 
 export function initTheme(): void {
     applyTheme(loadTheme());

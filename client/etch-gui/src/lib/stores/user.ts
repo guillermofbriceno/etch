@@ -1,5 +1,6 @@
 import { writable, get } from 'svelte/store';
 import type { MatrixEvent, SystemEvent } from '$lib/ipc';
+import { registerSessionStore } from './session';
 
 export type UserInfo = {
     username: string;
@@ -18,6 +19,8 @@ export const currentUser = writable<UserInfo>({
 export function resetUser(): void {
     currentUser.set({ username: '', matrixId: '', displayName: null, avatarUrl: null });
 }
+
+registerSessionStore('matrix', 'currentUser', resetUser);
 
 export function handleMatrixEvent(me: MatrixEvent): void {
     if (me.type === 'CurrentUser') {

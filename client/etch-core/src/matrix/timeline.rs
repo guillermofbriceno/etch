@@ -16,6 +16,7 @@ use crate::models::ChatMessageReceive;
 use crate::models::MediaInfo;
 use crate::models::SenderProfile;
 use crate::scripting::ScriptDispatcher;
+use crate::task::AbortOnDrop;
 use serde::{Deserialize, Serialize};
 
 /// Bounded cache for encrypted media source metadata (key material, IV, hashes).
@@ -59,8 +60,15 @@ impl BoundedMediaSources {
 
 pub type MediaSourceMap = Arc<RwLock<BoundedMediaSources>>;
 
+/// The diff task must be dropped with its timeline, or a resubscribe leaves a duplicate
+/// stream running.
+struct RoomTimeline {
+    timeline: Arc<Timeline>,
+    _diff_task: AbortOnDrop,
+}
+
 pub struct TimelineManager {
-    timelines: HashMap<OwnedRoomId, Arc<Timeline>>,
+    timelines: HashMap<OwnedRoomId, RoomTimeline>,
     event_tx: mpsc::Sender<CoreEvent>,
     pub media_sources: MediaSourceMap,
     dispatcher: Arc<ScriptDispatcher>,
@@ -115,7 +123,6 @@ impl TimelineManager {
     }
 
     /// Clear all timeline subscriptions and the media source cache.
-    /// Dropping the Arc<Timeline> handles causes their diff-stream tasks to end.
     pub fn clear(&mut self) {
         self.timelines.clear();
         let mut sources = self.media_sources.write().expect("media source lock");
@@ -148,9 +155,7 @@ impl TimelineManager {
             ).await;
         }
 
-        // Store timeline handle for pagination and reactions
         let timeline = Arc::new(timeline);
-        self.timelines.insert(room_id.to_owned(), timeline);
 
         // Spawn a task to process the diff stream
         let event_tx = self.event_tx.clone();
@@ -159,7 +164,7 @@ impl TimelineManager {
         let dispatcher = self.dispatcher.clone();
         let local_user_id = self.local_user_id.clone();
 
-        tokio::spawn(async move {
+        let diff_task = AbortOnDrop::new(tokio::spawn(async move {
             // Drain any buffered backfill diffs without firing scripts
             loop {
                 match stream.next().now_or_never() {
@@ -190,25 +195,28 @@ impl TimelineManager {
                 }
             }
             log::warn!("[timeline] Diff stream ended for room {}", rid);
-        });
+        }));
+
+        // Replacing an entry drops it, aborting its diff task.
+        self.timelines.insert(room_id.to_owned(), RoomTimeline { timeline, _diff_task: diff_task });
     }
 
     /// Returns cloned Arc handles for all subscribed timelines.
     /// Used to spawn background pagination without borrowing &self.
     pub fn timeline_arcs(&self) -> Vec<(OwnedRoomId, Arc<Timeline>)> {
-        self.timelines.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+        self.timelines.iter().map(|(k, v)| (k.clone(), v.timeline.clone())).collect()
     }
 
     // Request older messages for a room's timeline (triggered by user scrolling up).
     // Results arrive through the existing subscription stream as PushFront diffs.
     // Returns false if there are no more messages to load, or if the room isn't subscribed.
     pub async fn paginate_backwards(&self, room_id: &OwnedRoomId, count: u16) -> bool {
-        let Some(timeline) = self.timelines.get(room_id) else {
+        let Some(entry) = self.timelines.get(room_id) else {
             log::error!("No timeline subscription for room: {}", room_id);
             return false;
         };
 
-        match timeline.paginate_backwards(count).await {
+        match entry.timeline.paginate_backwards(count).await {
             Ok(hit_start) => !hit_start,
             Err(e) => {
                 log::error!("Pagination error for room {}: {:?}", room_id, e);
@@ -226,8 +234,8 @@ impl TimelineManager {
         content: matrix_sdk::ruma::events::AnyMessageLikeEventContent,
     ) -> bool {
         let Ok(room_id) = OwnedRoomId::try_from(room_id) else { return false };
-        let Some(timeline) = self.timelines.get(&room_id) else { return false };
-        if let Err(e) = timeline.send(content).await {
+        let Some(entry) = self.timelines.get(&room_id) else { return false };
+        if let Err(e) = entry.timeline.send(content).await {
             log::error!("Failed to send message via timeline: {:?}", e);
         }
         true
@@ -242,7 +250,7 @@ impl TimelineManager {
             log::error!("[{}] Invalid room_id: {}", op, room_id);
             return None;
         };
-        let Some(timeline) = self.timelines.get(&room_id) else {
+        let Some(entry) = self.timelines.get(&room_id) else {
             log::error!("[{}] No timeline subscription for room: {}", op, room_id);
             return None;
         };
@@ -250,7 +258,7 @@ impl TimelineManager {
             log::error!("[{}] Invalid event_id: {}", op, event_id);
             return None;
         };
-        Some((Arc::clone(timeline), TimelineEventItemId::EventId(event_id)))
+        Some((Arc::clone(&entry.timeline), TimelineEventItemId::EventId(event_id)))
     }
 
     pub async fn edit_message(&self, room_id: &str, event_id: &str, text: &str, html_body: Option<&str>) {
@@ -658,9 +666,9 @@ mod tests {
     #[test]
     fn clear_empties_media_sources_and_timelines() {
         // TimelineManager::clear() is the backend half of the ServerReset
-        // path. Dropping Arc<Timeline> handles terminates their spawned
-        // diff-stream tasks, and clearing media sources prevents stale
-        // encrypted-media metadata from leaking across sessions.
+        // path. Dropping each entry aborts the diff-stream task it owns, and
+        // clearing media sources prevents stale encrypted-media metadata from
+        // leaking across sessions.
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
         let mut mgr = TimelineManager::new(tx, Arc::new(ScriptDispatcher::empty()));
 

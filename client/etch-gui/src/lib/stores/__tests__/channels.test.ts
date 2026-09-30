@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, beforeAll, vi } from 'vitest';
 import { get } from 'svelte/store';
-import { channels, activeChannel, dmLastActivity, handleMatrixEvent, initChannels, initHiddenDms, hideDm, unhideDm, resetChannels } from '../channels';
+import { channels, activeChannel, dmLastActivity, handleMatrixEvent, initChannels, initHiddenDms, hideDm, unhideDm } from '../channels';
 import { activeChannelId } from '../activeChannel';
 import { currentUser } from '../user';
 import { resetStores } from './helpers';
@@ -501,16 +501,6 @@ describe('dmLastActivity', () => {
             } as any);
 
             expect(get(dmLastActivity)['dm1']).toBe(4000);
-        });
-    });
-
-    describe('resetChannels', () => {
-        it('clears dmLastActivity', () => {
-            dmLastActivity.set({ dm1: 1000, dm2: 2000 });
-
-            resetChannels();
-
-            expect(get(dmLastActivity)).toEqual({});
         });
     });
 });

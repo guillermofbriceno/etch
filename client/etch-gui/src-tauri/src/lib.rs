@@ -1,7 +1,7 @@
 mod sfx;
 
 use etch_core::init_core;
-use etch_core::commands::CoreCommand;
+use etch_core::commands::{CoreCommand, MediaRequest};
 use tauri::{AppHandle, Manager, State};
 use tauri::Emitter;
 use tauri_plugin_updater::UpdaterExt;
@@ -13,13 +13,33 @@ use time::macros::format_description;
 
 use sfx::SfxPlayer;
 
+/// The `Option` lets exit drop the sender, which is how the engine learns to flush
+/// settings and stop.
 pub struct TauriState {
-    pub core_tx: tokio::sync::mpsc::Sender<CoreCommand>,
+    core_tx: std::sync::Mutex<Option<tokio::sync::mpsc::Sender<CoreCommand>>>,
+}
+
+impl TauriState {
+    fn new(core_tx: tokio::sync::mpsc::Sender<CoreCommand>) -> Self {
+        Self { core_tx: std::sync::Mutex::new(Some(core_tx)) }
+    }
+
+    /// Cloned out so the lock is never held across the send's await.
+    fn sender(&self) -> Option<tokio::sync::mpsc::Sender<CoreCommand>> {
+        self.core_tx.lock().ok().and_then(|guard| guard.clone())
+    }
+
+    fn close(&self) {
+        if let Ok(mut guard) = self.core_tx.lock() {
+            *guard = None;
+        }
+    }
 }
 
 #[tauri::command]
 async fn core_command(command: CoreCommand, state: State<'_, TauriState>) -> Result<(), String> {
-    state.core_tx.send(command).await.map_err(|e| e.to_string())
+    let tx = state.sender().ok_or("core is shutting down")?;
+    tx.send(command).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -218,12 +238,18 @@ fn setup_cursor_events(app: &tauri::App) {
     }
 }
 
+/// Must cover the engine's own bounded drain.
+const ENGINE_SHUTDOWN_WAIT: std::time::Duration = std::time::Duration::from_secs(6);
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Create the command channel early so the protocol handler
-    // (registered on the Builder, before setup) can send FetchMedia.
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel::<CoreCommand>(32);
-    let core_tx_for_protocol = cmd_tx.clone();
+
+    // Signalled after the engine has flushed settings; exit waits on it.
+    let (engine_done_tx, engine_done_rx) = std::sync::mpsc::sync_channel::<()>(1);
+
+    // Created here because the protocol handler is registered before `setup` runs.
+    let (media_tx, media_rx) = tokio::sync::mpsc::channel::<MediaRequest>(256);
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -233,7 +259,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .register_asynchronous_uri_scheme_protocol("etch-media", move |_ctx, request, responder| {
-            let core_tx = core_tx_for_protocol.clone();
+            let media_tx = media_tx.clone();
             tauri::async_runtime::spawn(async move {
                 let uri = request.uri();
                 let raw_host = uri.host().unwrap_or_default();
@@ -249,7 +275,7 @@ pub fn run() {
                 };
 
                 let (tx, rx) = tokio::sync::oneshot::channel();
-                let _ = core_tx.send(CoreCommand::FetchMedia { mxc_url, respond: tx }).await;
+                let _ = media_tx.send(MediaRequest { mxc_url, respond: tx }).await;
 
                 match rx.await {
                     Ok(Ok(bytes)) => {
@@ -294,12 +320,16 @@ pub fn run() {
             let logger = build_logger(&log_path);
 
             let sfx_player = SfxPlayer::new(&data_dir);
-            let (mut core_handle, engine) = init_core(data_dir, resource_dir, cmd_tx, cmd_rx, logger);
-            app.manage(TauriState { core_tx: core_handle.cmd_tx });
+            // `setup` runs outside a Tokio context, and `init_core` spawns tasks.
+            let (mut core_handle, engine) = tauri::async_runtime::block_on(async {
+                init_core(data_dir, resource_dir, cmd_tx, cmd_rx, media_rx, logger)
+            });
+            app.manage(TauriState::new(core_handle.cmd_tx));
             app.manage(sfx_player);
 
             tauri::async_runtime::spawn(async move {
                 engine.run().await;
+                let _ = engine_done_tx.send(());
             });
 
             tauri::async_runtime::spawn(async move {
@@ -321,6 +351,22 @@ pub fn run() {
             load_custom_css,
             check_for_update
         ])
-        .run(tauri::generate_context!())
-        .expect("Error while running Tauri");
+        .build(tauri::generate_context!())
+        .expect("Error while building Tauri")
+        .run(move |app_handle, event| {
+            // Exit is the engine's last chance to write out in-memory settings.
+            if let tauri::RunEvent::Exit = event {
+                log::info!("Exiting: closing the core command channel");
+                app_handle.state::<TauriState>().close();
+                let waiting_since = std::time::Instant::now();
+                if engine_done_rx.recv_timeout(ENGINE_SHUTDOWN_WAIT).is_err() {
+                    log::warn!(
+                        "Engine did not shut down within {:?}; exiting anyway",
+                        ENGINE_SHUTDOWN_WAIT,
+                    );
+                } else {
+                    log::info!("Engine shut down in {:?}", waiting_since.elapsed());
+                }
+            }
+        });
 }

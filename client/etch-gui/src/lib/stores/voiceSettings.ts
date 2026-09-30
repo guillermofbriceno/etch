@@ -1,5 +1,6 @@
 import { writable } from 'svelte/store';
 import { sendCoreCommand } from '$lib/ipc';
+import { declareStores } from './session';
 
 export type TransmissionMode = 'voice_activation' | 'continuous' | 'push_to_talk';
 
@@ -8,6 +9,11 @@ export const vadThreshold = writable<number>(60);
 export const voiceHold = writable<number>(250);
 export const useMumbleSettings = writable<boolean>(false);
 export const deafenSuppressesNotifs = writable<boolean>(true);
+
+declareStores(
+    'device',
+    'transmissionMode', 'vadThreshold', 'voiceHold', 'useMumbleSettings', 'deafenSuppressesNotifs',
+);
 
 export function setTransmissionMode(mode: TransmissionMode): void {
     transmissionMode.set(mode);

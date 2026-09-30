@@ -1,5 +1,6 @@
 import { writable } from 'svelte/store';
 import type { ChatMessage } from '$lib/types';
+import { registerSessionStore } from './session';
 
 export const replyingTo = writable<ChatMessage | null>(null);
 export const editingMessage = writable<ChatMessage | null>(null);
@@ -22,7 +23,5 @@ export function clearEditing(): void {
     editingMessage.set(null);
 }
 
-export function resetCompose(): void {
-    clearReply();
-    clearEditing();
-}
+registerSessionStore('matrix', 'replyingTo', clearReply);
+registerSessionStore('matrix', 'editingMessage', clearEditing);
