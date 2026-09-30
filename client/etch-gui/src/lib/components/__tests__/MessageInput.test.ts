@@ -52,7 +52,7 @@ describe('MessageInput', () => {
                 type: 'Matrix',
                 data: {
                     type: 'SendMessage',
-                    data: { room_id: ROOM, text: 'hello', html_body: null, attachment_path: null },
+                    data: { room_id: ROOM, text: 'hello', html_body: null, attachment_path: null, media_info: null },
                 },
             },
         });
@@ -325,14 +325,16 @@ describe('MessageInput', () => {
             await vi.waitFor(() => {
                 expect(invoke).toHaveBeenCalledWith('compress_image', { path: '/tmp/etch-paste-123.png' });
             });
-            expect(invoke).toHaveBeenCalledWith('core_command', {
-                command: {
-                    type: 'Matrix',
-                    data: {
-                        type: 'SendMessage',
-                        data: { room_id: ROOM, text: '', html_body: null, attachment_path: '/tmp/etch-paste-123.jpg' },
+            await vi.waitFor(() => {
+                expect(invoke).toHaveBeenCalledWith('core_command', {
+                    command: {
+                        type: 'Matrix',
+                        data: {
+                            type: 'SendMessage',
+                            data: { room_id: ROOM, text: '', html_body: null, attachment_path: '/tmp/etch-paste-123.jpg', media_info: null },
+                        },
                     },
-                },
+                });
             });
         });
 
@@ -365,7 +367,7 @@ describe('MessageInput', () => {
                     type: 'Matrix',
                     data: {
                         type: 'SendMessage',
-                        data: { room_id: ROOM, text: '', html_body: null, attachment_path: '/tmp/etch-paste-123.png' },
+                        data: { room_id: ROOM, text: '', html_body: null, attachment_path: '/tmp/etch-paste-123.png', media_info: null },
                     },
                 },
             });

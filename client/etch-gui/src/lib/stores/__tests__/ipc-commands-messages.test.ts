@@ -25,13 +25,13 @@ describe('messages IPC commands', () => {
                 type: 'Matrix',
                 data: {
                     type: 'SendMessage',
-                    data: { room_id: 'room1', text: 'hello', html_body: '<p>hello</p>', attachment_path: '/tmp/file.png' },
+                    data: { room_id: 'room1', text: 'hello', html_body: '<p>hello</p>', attachment_path: '/tmp/file.png', media_info: null },
                 },
             },
         });
     });
 
-    it('sendMessage defaults html_body and attachment_path to null', async () => {
+    it('sendMessage defaults html_body, attachment_path and media_info to null', async () => {
         await sendMessage('room1', 'plain text');
 
         expect(invoke).toHaveBeenCalledWith('core_command', {
@@ -39,7 +39,23 @@ describe('messages IPC commands', () => {
                 type: 'Matrix',
                 data: {
                     type: 'SendMessage',
-                    data: { room_id: 'room1', text: 'plain text', html_body: null, attachment_path: null },
+                    data: { room_id: 'room1', text: 'plain text', html_body: null, attachment_path: null, media_info: null },
+                },
+            },
+        });
+    });
+
+    it('sendMessage carries the probed media_info with an attachment', async () => {
+        const mediaInfo = { width: 1280, height: 720, duration_ms: 4500 };
+
+        await sendMessage('room1', '', null, '/tmp/clip.mp4', mediaInfo);
+
+        expect(invoke).toHaveBeenCalledWith('core_command', {
+            command: {
+                type: 'Matrix',
+                data: {
+                    type: 'SendMessage',
+                    data: { room_id: 'room1', text: '', html_body: null, attachment_path: '/tmp/clip.mp4', media_info: mediaInfo },
                 },
             },
         });

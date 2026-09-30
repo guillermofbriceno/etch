@@ -136,7 +136,7 @@ jobs:
       # Ratchet floor: overall etch-core line coverage may not drop below the
       # recorded baseline. Raise this number as coverage improves; never lower it.
       - name: Enforce coverage floor
-        run: cargo llvm-cov report --fail-under-lines 80
+        run: cargo llvm-cov report --fail-under-lines 82
 
   changes:
     name: Detect changes

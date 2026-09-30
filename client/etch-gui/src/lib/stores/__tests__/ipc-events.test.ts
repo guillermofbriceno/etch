@@ -147,6 +147,35 @@ describe('Matrix event routing', () => {
 
         expect(get(mediaBaseUrl)).toBe('https://matrix.etch.gg');
     });
+
+    it('routes UploadLimits to the uploads store', async () => {
+        const { uploadLimits } = await import('../uploads');
+
+        routeCoreEvent({
+            payload: {
+                type: 'Matrix',
+                data: { type: 'UploadLimits', data: { image_bytes: 5_242_880, other_bytes: 2_097_152 } },
+            } satisfies CoreEvent,
+        });
+
+        expect(get(uploadLimits)).toEqual({ image_bytes: 5_242_880, other_bytes: 2_097_152 });
+    });
+
+    it('routes AttachmentFailed to a toast', async () => {
+        const { toastError } = await import('../errors');
+
+        routeCoreEvent({
+            payload: {
+                type: 'Matrix',
+                data: {
+                    type: 'AttachmentFailed',
+                    data: { room_id: '!a:example.org', file_name: 'clip.mp4', reason: 'the upload failed' },
+                },
+            } satisfies CoreEvent,
+        });
+
+        expect(get(toastError)).toBe("Couldn't send clip.mp4: the upload failed");
+    });
 });
 
 // -----------------------------------------------------------------------

@@ -1,3 +1,5 @@
+mod attachment;
+mod media;
 mod sfx;
 
 use etch_core::init_core;
@@ -67,16 +69,12 @@ async fn paste_clipboard_image() -> Result<Option<(String, u64)>, String> {
             img_data.bytes.into_owned(),
         ).ok_or("Failed to create image from clipboard data")?;
 
-        let path = std::env::temp_dir().join(format!("etch-paste-{}.png", std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis()));
-
         let mut buf = Cursor::new(Vec::new());
         img.write_to(&mut buf, image::ImageFormat::Png).map_err(|e| e.to_string())?;
         let bytes = buf.into_inner();
         let size = bytes.len() as u64;
-        std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+        let path = attachment::write_temp_file(&std::env::temp_dir(), "image.png", &bytes)
+            .map_err(|e| e.to_string())?;
 
         Ok(Some((path.to_string_lossy().into_owned(), size)))
     }).await.map_err(|e| e.to_string())?
@@ -85,36 +83,11 @@ async fn paste_clipboard_image() -> Result<Option<(String, u64)>, String> {
 #[tauri::command]
 async fn compress_image(path: String) -> Result<String, String> {
     tokio::task::spawn_blocking(move || {
-        let data = std::fs::read(&path).map_err(|e| e.to_string())?;
-
-        let img = image::ImageReader::new(Cursor::new(&data))
-            .with_guessed_format()
-            .map_err(|e| e.to_string())?
-            .decode()
-            .map_err(|e| e.to_string())?;
-
-        let stem = Path::new(&path)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("image");
-
-        let out_path = std::env::temp_dir().join(format!("etch-paste-{}.jpg", stem));
-
-        let mut buf = Cursor::new(Vec::new());
-        let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 80);
-        img.write_with_encoder(encoder).map_err(|e| e.to_string())?;
-        std::fs::write(&out_path, buf.into_inner()).map_err(|e| e.to_string())?;
-
-        // Clean up the original temp file if it was from a paste
-        if Path::new(&path)
-            .file_name()
-            .and_then(|f| f.to_str())
-            .is_some_and(|f| f.starts_with("etch-paste-"))
-        {
-            let _ = std::fs::remove_file(&path);
+        match attachment::compress_image_file(Path::new(&path), &std::env::temp_dir()) {
+            Ok(Some(out)) => Ok(out.to_string_lossy().into_owned()),
+            Ok(None) => Ok(path),
+            Err(e) => Err(e.to_string()),
         }
-
-        Ok(out_path.to_string_lossy().into_owned())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -261,31 +234,20 @@ pub fn run() {
         .register_asynchronous_uri_scheme_protocol("etch-media", move |_ctx, request, responder| {
             let media_tx = media_tx.clone();
             tauri::async_runtime::spawn(async move {
-                let uri = request.uri();
-                let raw_host = uri.host().unwrap_or_default();
-                let raw_path = uri.path().trim_start_matches('/');
-
-                // On Windows, wry reverts http://<scheme>.localhost/<path>
-                // back to <scheme>://localhost/<path>, so the URI host is
-                // "localhost" and the real Matrix server is the first path segment.
-                let mxc_url = if raw_host == "localhost" {
-                    format!("mxc://{}", raw_path)
-                } else {
-                    format!("mxc://{}/{}", raw_host, raw_path)
-                };
+                let mxc_url = media::mxc_url(request.uri(), cfg!(windows));
+                let content_type = media::content_type(media::mime_hint(request.uri().query()).as_deref());
+                let range = request
+                    .headers()
+                    .get(tauri::http::header::RANGE)
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_owned);
 
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 let _ = media_tx.send(MediaRequest { mxc_url, respond: tx }).await;
 
                 match rx.await {
                     Ok(Ok(bytes)) => {
-                        responder.respond(
-                            tauri::http::Response::builder()
-                                .header("content-type", "application/octet-stream")
-                                .header("access-control-allow-origin", "*")
-                                .body(bytes)
-                                .unwrap()
-                        );
+                        responder.respond(media::media_response(bytes, range.as_deref(), &content_type));
                     }
                     Ok(Err(e)) => {
                         let body = format!("Media fetch error: {e}").into_bytes();

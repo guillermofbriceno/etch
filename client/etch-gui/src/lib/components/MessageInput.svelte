@@ -4,25 +4,47 @@
     import { open } from '@tauri-apps/plugin-dialog';
     import { stat } from '@tauri-apps/plugin-fs';
     import { invoke } from '@tauri-apps/api/core';
-    import { sendMessage, editMessage, activeChannelId, activeChannel, activeWindow, replyingTo, clearReply, editingMessage, clearEditing } from '$lib/stores';
+    import { getCurrentWebview, type DragDropEvent } from '@tauri-apps/api/webview';
+    import type { Event as TauriEvent } from '@tauri-apps/api/event';
+    import { sendMessage, editMessage, activeChannelId, activeChannel, activeWindow, replyingTo, clearReply, editingMessage, clearEditing, activeOverlay, uploadLimits, showToast } from '$lib/stores';
     import { composeHtml, insertMentionLinks } from '$lib/markdown';
+    import {
+        COMPRESS_THRESHOLD_BYTES,
+        checkAttachment,
+        compressionFailedReason,
+        discardTempFile,
+        fileName,
+        isCompressible,
+        isTempPath,
+        limitFor,
+        overLimitReason,
+        probeMediaInfo,
+        writeTempAttachment,
+    } from '$lib/attachments';
+    import { formatMB, formatSize } from '$lib/media';
     import Icon from './Icon.svelte';
     import { customScrollbar } from '$lib/scrollbar';
+
+    type Attachment = { path: string; size: number };
 
     let messageText = '';
     let showEmojiPicker = false;
     let textareaEl: HTMLTextAreaElement;
     let pickerAnchorEl: HTMLDivElement;
-    let pendingAttachment: { path: string; temp: boolean; size: number } | null = null;
+    let pendingAttachment: Attachment | null = null;
     let compressAttachment = true;
     let processingPaste = false;
     let composeLock = false;
+    let dragActive = false;
 
-    const imageExtensions = ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'tiff', 'tif'];
-    function isImage(path: string): boolean {
-        const ext = path.split('.').pop()?.toLowerCase() ?? '';
-        return imageExtensions.includes(ext);
-    }
+    $: attachmentLimit = pendingAttachment ? limitFor(pendingAttachment.path, $uploadLimits) : null;
+    $: verdict = pendingAttachment ? checkAttachment(pendingAttachment.path, pendingAttachment.size, $uploadLimits) : null;
+    $: mustCompress = verdict !== null && verdict.accept && verdict.mustCompress;
+    $: if (mustCompress) compressAttachment = true;
+    $: showCompress = pendingAttachment !== null
+        && isCompressible(pendingAttachment.path)
+        && (mustCompress || pendingAttachment.size > COMPRESS_THRESHOLD_BYTES);
+    $: inputActive = $activeChannelId !== null && $activeOverlay === 'none' && !$editingMessage;
 
     // Tab-completion state
     let tabPrefix = '';
@@ -163,37 +185,100 @@
         textareaEl.style.overflowY = textareaEl.scrollHeight > max ? 'auto' : 'hidden';
     }
 
+    function setPending(next: Attachment | null) {
+        const previous = pendingAttachment;
+        pendingAttachment = next;
+        compressAttachment = true;
+        if (previous && previous.path !== next?.path) discardTempFile(previous.path);
+    }
+
+    function rejectedOverLimit(name: string, size: number): boolean {
+        const verdict = checkAttachment(name, size, get(uploadLimits));
+        if (verdict.accept) return false;
+        showToast(`Couldn't attach ${name}: ${verdict.reason}`);
+        return true;
+    }
+
+    // A slower attach that finishes after a newer one must not replace it.
+    let attachSeq = 0;
+    async function attach(path: string, knownSize?: number) {
+        const seq = ++attachSeq;
+        let size = knownSize;
+        if (size === undefined) {
+            try {
+                size = (await stat(path)).size;
+            } catch {
+                if (seq === attachSeq) showToast(`Couldn't attach ${fileName(path)}: the file could not be read`);
+                return;
+            }
+        }
+        if (seq !== attachSeq || rejectedOverLimit(fileName(path), size)) {
+            discardTempFile(path);
+            return;
+        }
+        setPending({ path, size });
+    }
+
+    async function attachPastedFile(file: File) {
+        const name = file.name || 'attachment';
+        if (rejectedOverLimit(name, file.size)) return;
+        let path: string;
+        try {
+            path = await writeTempAttachment(name, new Uint8Array(await file.arrayBuffer()));
+        } catch {
+            showToast(`Couldn't attach ${name}: the file could not be read`);
+            return;
+        }
+        await attach(path, file.size);
+    }
+
     async function pickFile() {
         const selected = await open({ multiple: false, directory: false });
-        if (selected) {
-            const meta = await stat(selected as string);
-            pendingAttachment = { path: selected as string, temp: false, size: meta.size };
-        }
+        if (selected) await attach(selected);
     }
 
     function clearAttachment() {
-        pendingAttachment = null;
-    }
-
-    function fileName(path: string): string {
-        return path.split('/').pop() ?? path;
+        setPending(null);
     }
 
     let pasteInFlight = false;
     async function handlePaste(event: ClipboardEvent) {
         if (pasteInFlight) return;
+        // The clipboard's file list is emptied once the event returns.
+        const files = Array.from(event.clipboardData?.files ?? []);
         pasteInFlight = true;
         const spinnerDelay = setTimeout(() => { processingPaste = true; }, 100);
         try {
-            const result = await invoke<[string, number] | null>('paste_clipboard_image');
-            if (result) {
-                const [path, size] = result;
-                pendingAttachment = { path, temp: true, size };
+            // The shell answers null when there is no image, and errors only when the clipboard or its image could not be read.
+            let failure: unknown = null;
+            const bitmap = await invoke<[string, number] | null>('paste_clipboard_image').catch((e) => {
+                failure = e;
+                return null;
+            });
+            if (bitmap) {
+                const [path, size] = bitmap;
+                await attach(path, size);
+            } else if (files.length > 0) {
+                await attachPastedFile(files[0]);
+            } else if (failure !== null) {
+                showToast(`Couldn't paste the image: ${failure}`);
             }
         } finally {
             clearTimeout(spinnerDelay);
             processingPaste = false;
             pasteInFlight = false;
+        }
+    }
+
+    function handleDragDrop(event: TauriEvent<DragDropEvent>) {
+        const drag = event.payload;
+        if (drag.type === 'enter') {
+            dragActive = inputActive && drag.paths.length > 0;
+        } else if (drag.type === 'leave') {
+            dragActive = false;
+        } else if (drag.type === 'drop') {
+            dragActive = false;
+            if (inputActive && drag.paths.length > 0) attach(drag.paths[0]);
         }
     }
 
@@ -203,10 +288,21 @@
         }
     }
 
+    let destroyed = false;
+    let stopDragDrop: (() => void) | null = null;
+
     onMount(() => {
         document.addEventListener('click', handleClickOutside, true);
+        getCurrentWebview().onDragDropEvent(handleDragDrop).then((unlisten) => {
+            if (destroyed) unlisten();
+            else stopDragDrop = unlisten;
+        });
     });
-    onDestroy(() => document.removeEventListener('click', handleClickOutside, true));
+    onDestroy(() => {
+        destroyed = true;
+        document.removeEventListener('click', handleClickOutside, true);
+        stopDragDrop?.();
+    });
 
     const EMOJI_CATEGORIES: { label: string; emojis: string[] }[] = [
         { label: 'Smileys', emojis: [
@@ -278,6 +374,61 @@
         autoResize();
     }
 
+    async function sendAttachment(roomId: string, attachment: Attachment, wantCompress: boolean, onPrepared: (prepared: Attachment) => void) {
+        const name = fileName(attachment.path);
+        const limit = limitFor(attachment.path, get(uploadLimits));
+        const shrinkTo = limit !== null && attachment.size > limit ? limit : null;
+        let path = attachment.path;
+        let size: number | null = attachment.size;
+
+        const abandon = (reason: string) => {
+            showToast(`Couldn't send ${name}: ${reason}`);
+            if (path !== attachment.path) discardTempFile(path);
+            discardTempFile(attachment.path);
+        };
+
+        if (isCompressible(path) && (shrinkTo !== null || (wantCompress && attachment.size > COMPRESS_THRESHOLD_BYTES))) {
+            try {
+                path = await invoke<string>('compress_image', { path: attachment.path });
+            } catch {
+                if (shrinkTo !== null) return abandon(compressionFailedReason(shrinkTo));
+            }
+            if (path !== attachment.path) {
+                // Null when the stat fails, which leaves the size check to core.
+                size = await stat(path).then(meta => meta.size, () => null);
+            } else if (shrinkTo !== null) {
+                return abandon(compressionFailedReason(shrinkTo));
+            }
+        }
+        if (limit !== null && size !== null && size > limit) {
+            return abandon(overLimitReason(size, limit, path !== attachment.path));
+        }
+
+        const prepared = { path, size: size ?? attachment.size };
+        onPrepared(prepared);
+        const mediaInfo = await probeMediaInfo(prepared.path, prepared.size);
+        await sendMessage(roomId, '', null, prepared.path, mediaInfo);
+    }
+
+    // Anything typed or attached while the send was in flight wins over the restored draft.
+    function restoreText(text: string, mentions: Map<string, string>) {
+        if (!text.trim() || messageText.trim() || get(editingMessage)) return;
+        messageText = text;
+        for (const [k, v] of mentions) mentionMap.set(k, v);
+        requestAnimationFrame(autoResize);
+    }
+
+    function restoreAttachment(original: Attachment, prepared: Attachment | null) {
+        let restored = original;
+        if (prepared && prepared.path !== original.path) {
+            // compress_image deletes a temp input it replaced, while a picked source still exists.
+            if (isTempPath(original.path)) restored = prepared;
+            else discardTempFile(prepared.path);
+        }
+        if (pendingAttachment === null) pendingAttachment = restored;
+        else discardTempFile(restored.path);
+    }
+
     async function submit() {
         const trimmed = messageText.trim();
         if (!trimmed && !pendingAttachment) return;
@@ -313,9 +464,7 @@
         const shouldCompress = compressAttachment;
         const mentions = new Map(mentionMap);
 
-        // Save state for recovery on failure
         const savedText = messageText;
-        const savedAttachment = pendingAttachment;
         const savedMentions = new Map(mentionMap);
 
         // Optimistic clear
@@ -326,26 +475,25 @@
         clearReply();
         requestAnimationFrame(autoResize);
 
+        let textSent = false;
+        let failing = 'your message';
+        let prepared = null as Attachment | null;
         try {
             if (body) {
                 const rawHtml = composeHtml(body);
                 const withMentions = insertMentionLinks(rawHtml, mentions);
                 const needsHtml = mentions.size > 0 || withMentions !== `<p>${body}</p>\n`;
                 await sendMessage(roomId, body, needsHtml ? withMentions : null, null);
+                textSent = true;
             }
             if (attachment) {
-                let attachPath = attachment.path;
-                if (shouldCompress && isImage(attachment.path) && attachment.size > 256_000) {
-                    attachPath = await invoke<string>('compress_image', { path: attachment.path });
-                }
-                await sendMessage(roomId, '', null, attachPath);
+                failing = fileName(attachment.path);
+                await sendAttachment(roomId, attachment, shouldCompress, (next) => { prepared = next; });
             }
-        } catch {
-            // Restore draft so the user doesn't lose their message
-            messageText = savedText;
-            pendingAttachment = savedAttachment;
-            for (const [k, v] of savedMentions) mentionMap.set(k, v);
-            requestAnimationFrame(autoResize);
+        } catch (e) {
+            showToast(`Couldn't send ${failing}: ${e}`);
+            if (!textSent) restoreText(savedText, savedMentions);
+            if (attachment) restoreAttachment(attachment, prepared);
         }
     }
 
@@ -406,7 +554,7 @@
     }
 </script>
 
-<div class="input-wrapper" class:compose-locked={composeLock}>
+<div class="input-wrapper" class:compose-locked={composeLock} class:drop-target={dragActive && inputActive}>
     {#if $editingMessage}
         <div class="reply-preview editing-preview">
             <div class="reply-info">
@@ -443,11 +591,15 @@
             <div class="attachment-info">
                 <Icon name="file" size={14} class="attachment-icon" />
                 <span class="attachment-name">{fileName(pendingAttachment.path)}</span>
+                <span class="attachment-size">{formatSize(pendingAttachment.size)}</span>
             </div>
             <div class="attachment-actions">
-                {#if isImage(pendingAttachment.path) && pendingAttachment.size > 256_000}
-                    <label class="compress-option">
-                        <input type="checkbox" bind:checked={compressAttachment} />
+                {#if showCompress}
+                    {#if mustCompress && attachmentLimit !== null}
+                        <span class="compress-note">Must be compressed to fit the {formatMB(attachmentLimit)} limit</span>
+                    {/if}
+                    <label class="compress-option" class:forced={mustCompress}>
+                        <input type="checkbox" bind:checked={compressAttachment} disabled={mustCompress} />
                         Compress
                     </label>
                 {/if}
@@ -559,6 +711,11 @@
         border-color: var(--accent);
     }
 
+    .input-wrapper.drop-target {
+        border-color: var(--accent);
+        border-style: dashed;
+    }
+
     .reply-preview {
         display: flex;
         align-items: center;
@@ -652,6 +809,21 @@
         height: 14px;
         margin: 0;
         cursor: pointer;
+    }
+
+    .compress-option.forced,
+    .compress-option.forced input[type="checkbox"] { cursor: default; }
+
+    .compress-note {
+        color: var(--text-muted);
+        font-size: 12px;
+        white-space: nowrap;
+    }
+
+    .attachment-size {
+        flex-shrink: 0;
+        color: var(--text-muted);
+        font-size: 12px;
     }
 
     .spinner {

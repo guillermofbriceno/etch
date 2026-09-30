@@ -29,6 +29,8 @@ pub enum MatrixEvent {
     PasswordRequest,
     PaginationComplete(String, bool),
     ConnectionState(ConnectionState),
+    UploadLimits { image_bytes: u64, other_bytes: u64 },
+    AttachmentFailed { room_id: String, file_name: String, reason: String },
 }
 
 #[derive(Debug, Serialize)]
@@ -104,6 +106,9 @@ pub enum InternalMatrixEvent {
         display_name: Option<String>,
         avatar_url: Option<String>,
     },
+    /// Forwarded only while `generation` is the latest connect, so it cannot follow a newer
+    /// `ServerReset`.
+    UploadLimits { generation: u64, image_bytes: u64, other_bytes: u64 },
 }
 
 #[derive(Debug)]
@@ -141,4 +146,31 @@ pub enum InternalSystemEvent {
     /// channel so the answer is exact.
     #[cfg(test)]
     Barrier(tokio::sync::oneshot::Sender<()>),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn upload_limits_reach_the_frontend_in_the_agreed_shape() {
+        let event = CoreEvent::Matrix(MatrixEvent::UploadLimits { image_bytes: 5_242_880, other_bytes: 2_097_152 });
+        assert_eq!(
+            serde_json::to_string(&event).unwrap(),
+            r#"{"type":"Matrix","data":{"type":"UploadLimits","data":{"image_bytes":5242880,"other_bytes":2097152}}}"#,
+        );
+    }
+
+    #[test]
+    fn a_failed_attachment_reaches_the_frontend_in_the_agreed_shape() {
+        let event = CoreEvent::Matrix(MatrixEvent::AttachmentFailed {
+            room_id: "!a:b".into(),
+            file_name: "clip.mp4".into(),
+            reason: "it is 3.4 MB and the limit for this kind of file is 2 MB".into(),
+        });
+        assert_eq!(
+            serde_json::to_string(&event).unwrap(),
+            r#"{"type":"Matrix","data":{"type":"AttachmentFailed","data":{"room_id":"!a:b","file_name":"clip.mp4","reason":"it is 3.4 MB and the limit for this kind of file is 2 MB"}}}"#,
+        );
+    }
 }

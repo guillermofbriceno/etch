@@ -1,5 +1,5 @@
 use tokio::sync::{mpsc, oneshot};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use matrix_sdk::Client;
 use matrix_sdk::config::SyncSettings;
@@ -8,8 +8,9 @@ use matrix_sdk::ruma::api::client::room::create_room::v3::{Request as CreateRoom
 use matrix_sdk::ruma::api::client::{account::change_password, uiaa};
 use matrix_sdk::ruma::events::room::MediaSource;
 use matrix_sdk::ruma::UserId;
-use crate::commands::{MatrixCommand, ServerConnectionForm};
+use crate::commands::{MatrixCommand, OutgoingMediaInfo, ServerConnectionForm};
 use crate::events::{CoreEvent, MatrixEvent, InternalEvent, InternalMatrixEvent};
+use crate::matrix::attachment::{self, UploadLimits};
 use crate::matrix::client::{session_path, start_matrix_client, ConnectionResult};
 use crate::matrix::retry::credentials_rejected;
 use crate::matrix::timeline::TimelineManager;
@@ -147,12 +148,37 @@ impl MatrixSession {
     }
 }
 
+/// Each session fetches into a cell of its own, so a fetch that outlives its session
+/// writes where nobody reads.
+struct UploadLimitsFetch {
+    limits: Arc<OnceLock<UploadLimits>>,
+    _task: AbortOnDrop,
+}
+
+impl UploadLimitsFetch {
+    fn spawn(client: Client, internal_tx: mpsc::Sender<InternalEvent>, generation: u64) -> Self {
+        let limits = Arc::new(OnceLock::new());
+        let cell = limits.clone();
+        let task = AbortOnDrop::new(tokio::spawn(async move {
+            let fetched = attachment::fetch_upload_limits(&client).await;
+            let _ = cell.set(fetched);
+            let _ = internal_tx.send(InternalEvent::Matrix(InternalMatrixEvent::UploadLimits {
+                generation,
+                image_bytes: fetched.image_bytes,
+                other_bytes: fetched.other_bytes,
+            })).await;
+        }));
+        Self { limits, _task: task }
+    }
+}
+
 pub struct MatrixService {
     session: MatrixSession,
     timeline_manager: TimelineManager,
     event_tx: mpsc::Sender<CoreEvent>,
     data_dir: PathBuf,
     dispatcher: Arc<ScriptDispatcher>,
+    limits_fetch: Option<UploadLimitsFetch>,
 }
 
 impl MatrixService {
@@ -164,7 +190,35 @@ impl MatrixService {
             event_tx,
             data_dir,
             dispatcher,
+            limits_fetch: None,
         }
+    }
+
+    /// The Etch caps until the homeserver's own limit has been fetched.
+    fn upload_limits(&self) -> UploadLimits {
+        self.limits_fetch.as_ref()
+            .and_then(|fetch| fetch.limits.get().copied())
+            .unwrap_or(UploadLimits::ETCH_CAPS)
+    }
+
+    async fn send_attachment(&self, room_id: String, path: PathBuf, media_info: Option<OutgoingMediaInfo>) {
+        let outcome = match self.serving_client("SendMessage") {
+            Some(client) => match attachment::load(&path, self.upload_limits(), media_info.as_ref()).await {
+                Ok(loaded) => attachment::send(&client, &room_id, loaded).await,
+                Err(reason) => Err(reason),
+            },
+            None => {
+                attachment::discard_if_temp(&path).await;
+                Err(attachment::NOT_CONNECTED.into())
+            }
+        };
+        let Err(reason) = outcome else { return };
+
+        let file_name = attachment::display_name(&path);
+        log::warn!("Did not send {file_name} to {room_id}: {reason}");
+        let _ = self.event_tx.send(CoreEvent::Matrix(MatrixEvent::AttachmentFailed {
+            room_id, file_name, reason,
+        })).await;
     }
 
     async fn find_existing_dm(client: &Client, target: &UserId) -> Option<String> {
@@ -424,6 +478,7 @@ impl MatrixBackend for MatrixService {
         }));
 
         self.session.go_live(sync, pagination);
+        self.limits_fetch = Some(UploadLimitsFetch::spawn(client, internal_tx, generation));
 
         ConnectOutcome::Connected(voice_server)
     }
@@ -432,21 +487,20 @@ impl MatrixBackend for MatrixService {
         match cmd {
             MatrixCommand::SendMessage(msg) => {
                 log::debug!("[MATRIX] TX -> {}: {}", msg.room_id, msg.text);
+                if let Some(path) = msg.attachment_path {
+                    self.send_attachment(msg.room_id, PathBuf::from(path), msg.media_info).await;
+                    return;
+                }
                 let Some(client) = self.serving_client("SendMessage") else { return };
-                if msg.attachment_path.is_some() {
-                    // Attachments still go through Room::send_attachment
-                    matrix::send_message(msg.text, msg.html_body, msg.room_id, msg.attachment_path, &client).await;
-                } else {
-                    // Text messages go through Timeline::send for immediate local echo
-                    use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
-                    let content: matrix_sdk::ruma::events::AnyMessageLikeEventContent = match &msg.html_body {
-                        Some(html) => RoomMessageEventContent::text_html(&msg.text, html).into(),
-                        None => RoomMessageEventContent::text_plain(&msg.text).into(),
-                    };
-                    if !self.timeline_manager.send_message(&msg.room_id, content).await {
-                        log::warn!("No timeline for room {}, falling back to Room::send", msg.room_id);
-                        matrix::send_message(msg.text, msg.html_body, msg.room_id, None, &client).await;
-                    }
+                // Text messages go through Timeline::send for immediate local echo
+                use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
+                let content: matrix_sdk::ruma::events::AnyMessageLikeEventContent = match &msg.html_body {
+                    Some(html) => RoomMessageEventContent::text_html(&msg.text, html).into(),
+                    None => RoomMessageEventContent::text_plain(&msg.text).into(),
+                };
+                if !self.timeline_manager.send_message(&msg.room_id, content).await {
+                    log::warn!("No timeline for room {}, falling back to Room::send", msg.room_id);
+                    matrix::send_message(msg.text, msg.html_body, msg.room_id, &client).await;
                 }
             }
             MatrixCommand::EditMessage { room_id, event_id, text, html_body } => {
@@ -690,6 +744,7 @@ impl MatrixBackend for MatrixService {
 
     async fn reset(&mut self) {
         self.session.stand_down();
+        self.limits_fetch = None;
         self.timeline_manager.clear();
     }
 }
@@ -916,6 +971,7 @@ mod tests {
                 text: "hello".into(),
                 html_body: None,
                 attachment_path: None,
+                media_info: None,
             })).await;
         }
 
@@ -944,5 +1000,157 @@ mod tests {
 
         assert!(sync_abort.is_finished(), "the previous sync task should be aborted");
         assert!(pagination_abort.is_finished(), "the previous pagination task should be aborted");
+    }
+
+    fn send_attachment_command(room_id: &str, path: &std::path::Path) -> MatrixCommand {
+        MatrixCommand::SendMessage(ChatMessageSend {
+            room_id: room_id.into(),
+            text: String::new(),
+            html_body: None,
+            attachment_path: Some(path.to_string_lossy().into_owned()),
+            media_info: None,
+        })
+    }
+
+    fn temp_upload(root: &std::path::Path, name: &str, len: usize) -> std::path::PathBuf {
+        let dir = root.join("etch-paste-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(name);
+        std::fs::write(&path, vec![0u8; len]).unwrap();
+        path
+    }
+
+    fn attachment_failure(event_rx: &mut mpsc::Receiver<CoreEvent>) -> (String, String, String) {
+        loop {
+            match event_rx.try_recv() {
+                Ok(CoreEvent::Matrix(MatrixEvent::AttachmentFailed { room_id, file_name, reason })) => {
+                    return (room_id, file_name, reason);
+                }
+                Ok(_) => continue,
+                Err(e) => panic!("no AttachmentFailed was emitted: {e:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn an_attachment_over_the_limit_is_reported_and_its_temp_directory_removed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut service, _sync_abort, _pagination_abort) = connected_service(tmp.path()).await;
+        let (event_tx, mut event_rx) = mpsc::channel(16);
+        service.event_tx = event_tx;
+        let path = temp_upload(tmp.path(), "clip.mp4", 3_565_158);
+
+        service.handle_command(send_attachment_command("!a:b", &path)).await;
+
+        assert_eq!(
+            attachment_failure(&mut event_rx),
+            ("!a:b".into(), "clip.mp4".into(), "it is 3.4 MB and the limit for this kind of file is 2 MB".into()),
+        );
+        assert!(!path.parent().unwrap().exists(), "the temp directory should be removed");
+    }
+
+    #[tokio::test]
+    async fn an_image_exactly_at_its_limit_gets_past_the_size_check() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut service, _sync_abort, _pagination_abort) = connected_service(tmp.path()).await;
+        let (event_tx, mut event_rx) = mpsc::channel(16);
+        service.event_tx = event_tx;
+        let path = temp_upload(tmp.path(), "photo.png", 5_242_880);
+
+        service.handle_command(send_attachment_command("!unknown:example.com", &path)).await;
+
+        let (_, file_name, reason) = attachment_failure(&mut event_rx);
+        assert_eq!((file_name.as_str(), reason.as_str()), ("photo.png", "the room could not be found"));
+        assert!(!path.parent().unwrap().exists(), "the temp directory should be removed");
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_attachment_is_reported() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut service, _sync_abort, _pagination_abort) = connected_service(tmp.path()).await;
+        let (event_tx, mut event_rx) = mpsc::channel(16);
+        service.event_tx = event_tx;
+
+        service.handle_command(send_attachment_command("!a:b", &tmp.path().join("missing.pdf"))).await;
+
+        let (_, file_name, reason) = attachment_failure(&mut event_rx);
+        assert_eq!((file_name.as_str(), reason.as_str()), ("missing.pdf", "the file could not be read"));
+    }
+
+    #[tokio::test]
+    async fn an_attachment_is_refused_and_cleaned_up_while_the_session_is_not_live() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut service, _sync_abort, _pagination_abort) = connected_service(tmp.path()).await;
+        let (event_tx, mut event_rx) = mpsc::channel(16);
+        service.event_tx = event_tx;
+        service.reset().await;
+        let path = temp_upload(tmp.path(), "photo.png", 10);
+
+        service.handle_command(send_attachment_command("!a:b", &path)).await;
+
+        let (_, _, reason) = attachment_failure(&mut event_rx);
+        assert_eq!(reason, "not connected to the server");
+        assert!(!path.parent().unwrap().exists(), "the temp directory should be removed");
+    }
+
+    #[tokio::test]
+    async fn an_upload_the_sdk_rejects_is_reported_and_its_temp_file_removed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let server = CannedHomeserver::start(
+            "200 OK", r#"{"next_batch":"s1","rooms":{"leave":{"!left:example.com":{}}}}"#,
+        ).await;
+        let client = server.client_for("@alice:example.com").await;
+        client.sync_once(SyncSettings::default().timeout(Duration::ZERO)).await
+            .expect("the canned sync should make the room known");
+        let mut service = service(tmp.path());
+        let (event_tx, mut event_rx) = mpsc::channel(16);
+        service.event_tx = event_tx;
+        let (sync, _sync_abort) = parked_task();
+        let (pagination, _pagination_abort) = parked_task();
+        service.session = MatrixSession::Live {
+            key: SessionKey::of(&client, &test_form()), client, _sync: sync, _pagination: pagination,
+        };
+        let path = temp_upload(tmp.path(), "photo.png", 10);
+
+        service.handle_command(send_attachment_command("!left:example.com", &path)).await;
+
+        let (room_id, _, reason) = attachment_failure(&mut event_rx);
+        assert_eq!((room_id.as_str(), reason.as_str()), ("!left:example.com", "the upload failed"));
+        assert!(!path.parent().unwrap().exists(), "the temp directory should be removed");
+    }
+
+    #[tokio::test]
+    async fn a_connect_publishes_the_effective_upload_limits_and_enforces_them() {
+        let tmp = tempfile::tempdir().unwrap();
+        let server = CannedHomeserver::start("200 OK", r#"{"next_batch":"s1","m.upload.size":1048576}"#).await;
+        let form = ServerConnectionForm { homeserver_url: Some(server.url.clone()), ..test_form() };
+        let mut service = service(tmp.path());
+        let (event_tx, mut event_rx) = mpsc::channel(64);
+        service.event_tx = event_tx;
+        let (internal_tx, mut internal_rx) = mpsc::channel(64);
+        let client = server.client_for("@alice:example.com").await;
+        service.session.install(SessionKey::of(&client, &form), client);
+
+        let outcome = service.connect(form, internal_tx, 7).await;
+        assert!(matches!(outcome, ConnectOutcome::Connected(_)), "the canned server should accept the connect");
+
+        let limits = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(InternalEvent::Matrix(InternalMatrixEvent::UploadLimits {
+                    generation, image_bytes, other_bytes,
+                })) = internal_rx.recv().await {
+                    return (generation, image_bytes, other_bytes);
+                }
+            }
+        }).await.expect("UploadLimits should follow a successful connect");
+        assert_eq!(limits, (7, 1_048_576, 1_048_576), "the limits should carry the connect's generation");
+
+        let path = temp_upload(tmp.path(), "photo.png", 1_572_864);
+        service.handle_command(send_attachment_command("!a:b", &path)).await;
+        let (_, _, reason) = attachment_failure(&mut event_rx);
+        assert_eq!(reason, "it is 1.5 MB and the limit for this kind of file is 1 MB");
+
+        service.reset().await;
+        assert_eq!(service.upload_limits(), UploadLimits::ETCH_CAPS, "a reset must not carry the old server's limits");
     }
 }

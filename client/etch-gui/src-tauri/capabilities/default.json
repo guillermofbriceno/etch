@@ -17,6 +17,7 @@
     "core:window:allow-toggle-maximize",
     "core:window:allow-close",
     "fs:default",
+    "fs:allow-stat",
     "fs:allow-app-write",
     "fs:allow-temp-write-recursive",
     {

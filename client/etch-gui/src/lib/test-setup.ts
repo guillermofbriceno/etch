@@ -36,6 +36,11 @@ vi.mock('@tauri-apps/api/window', () => ({
     }),
 }));
 
+vi.mock('@tauri-apps/api/webview', () => {
+    const webview = { onDragDropEvent: vi.fn().mockResolvedValue(vi.fn()) };
+    return { getCurrentWebview: vi.fn().mockReturnValue(webview) };
+});
+
 vi.mock('@tauri-apps/api/app', () => ({
     getVersion: vi.fn().mockResolvedValue('0.0.0-test'),
 }));
@@ -52,7 +57,10 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({
 
 vi.mock('@tauri-apps/plugin-fs', () => ({
     writeFile: vi.fn(),
-    remove: vi.fn(),
+    remove: vi.fn().mockResolvedValue(undefined),
+    mkdir: vi.fn(),
+    // There is no filesystem under jsdom; a test that needs file contents supplies them.
+    readFile: vi.fn().mockRejectedValue(new Error('no such file')),
     stat: vi.fn().mockResolvedValue({ size: 0, isFile: true, isDirectory: false }),
 }));
 

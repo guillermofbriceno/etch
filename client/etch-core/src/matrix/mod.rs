@@ -1,3 +1,4 @@
+pub(crate) mod attachment;
 pub mod client;
 pub(crate) mod retry;
 pub mod service;

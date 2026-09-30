@@ -27,6 +27,8 @@ export type { Theme } from './theme';
 export { updateStatus, updateVersion, updateError, checkForUpdate, restartApp } from './updater';
 export type { UpdateStatus } from './updater';
 export { initTray, destroyTray } from './tray';
+export { uploadLimits } from './uploads';
+export type { UploadLimits } from './uploads';
 
 export function initStores(): void {
     initEventRouter();

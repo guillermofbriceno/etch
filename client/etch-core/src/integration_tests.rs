@@ -220,6 +220,7 @@ impl TestHarness {
             text: unique_body.clone(),
             html_body: None,
             attachment_path: None,
+            media_info: None,
         }))).await;
         unique_body
     }
@@ -735,6 +736,7 @@ async fn send_html_message_appears_in_timeline() {
         text: unique_tag.clone(),
         html_body: Some(html_body),
         attachment_path: None,
+        media_info: None,
     }))).await;
 
     h.expect_timeline_message(&room.id, &unique_tag).await;

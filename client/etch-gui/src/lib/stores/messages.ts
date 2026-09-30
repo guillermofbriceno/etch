@@ -1,6 +1,6 @@
 import { writable, derived, get } from 'svelte/store';
 import type { TimelineEntry } from '$lib/types';
-import type { MatrixEvent } from '$lib/ipc';
+import type { MatrixEvent, OutgoingMediaInfo } from '$lib/ipc';
 import { sendCoreCommand } from '$lib/ipc';
 import { currentUser } from './user';
 import { playSfx } from './sfx';
@@ -73,12 +73,18 @@ export function loadOlder(): void {
     });
 }
 
-export async function sendMessage(room_id: string, text: string, htmlBody: string | null = null, attachmentPath: string | null = null): Promise<void> {
+export async function sendMessage(
+    room_id: string,
+    text: string,
+    htmlBody: string | null = null,
+    attachmentPath: string | null = null,
+    mediaInfo: OutgoingMediaInfo | null = null,
+): Promise<void> {
     await sendCoreCommand({
         type: 'Matrix',
         data: {
             type: 'SendMessage',
-            data: { room_id, text, html_body: htmlBody, attachment_path: attachmentPath },
+            data: { room_id, text, html_body: htmlBody, attachment_path: attachmentPath, media_info: mediaInfo },
         },
     });
 }
