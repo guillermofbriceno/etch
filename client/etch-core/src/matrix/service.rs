@@ -202,7 +202,6 @@ pub struct MatrixService {
     timeline_manager: TimelineManager,
     event_tx: mpsc::Sender<CoreEvent>,
     data_dir: PathBuf,
-    dispatcher: Arc<ScriptDispatcher>,
     limits_fetch: Option<UploadLimitsFetch>,
     temp_files: TempFiles,
 }
@@ -214,13 +213,12 @@ impl MatrixService {
         dispatcher: Arc<ScriptDispatcher>,
         temp_files: TempFiles,
     ) -> Self {
-        let timeline_manager = TimelineManager::new(event_tx.clone(), dispatcher.clone());
+        let timeline_manager = TimelineManager::new(event_tx.clone(), dispatcher);
         Self {
             session: MatrixSession::None,
             timeline_manager,
             event_tx,
             data_dir,
-            dispatcher,
             limits_fetch: None,
             temp_files,
         }
@@ -725,20 +723,11 @@ impl MatrixBackend for MatrixService {
                         let _ = client.encryption()
                             .request_user_identity(&target).await;
 
-                        // Subscribe to the new room's timeline in the background
                         if let Ok(rid) = matrix_sdk::ruma::RoomId::parse(&room_id)
                             && let Some(room) = client.get_room(&rid)
                         {
-                            let event_tx = self.event_tx.clone();
-                            let media_sources = self.timeline_manager.media_sources.clone();
-                            let dispatcher = self.dispatcher.clone();
-                            let local_user_id = self.timeline_manager.local_user_id().map(|s| s.to_string());
-                            tokio::spawn(async move {
-                                TimelineManager::subscribe_and_paginate(
-                                    event_tx, &room, &rid, 20, media_sources,
-                                    dispatcher, local_user_id,
-                                ).await;
-                            });
+                            // Manager-owned, so a reconnect cannot double the stream.
+                            self.timeline_manager.subscribe_to_room(&room).await;
                         }
                     }
                     Err(e) => {

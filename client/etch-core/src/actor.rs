@@ -295,7 +295,7 @@ async fn launch<V: VoiceService>(
     let creds = &request.creds;
     let db_path = mumble_db_path(data_dir);
 
-    match crate::mumble::cert::probe_server_cert(&creds.host, creds.port).await {
+    match service.probe_cert(&creds.host, creds.port).await {
         Ok(fingerprint) => match crate::mumble::cert::get_stored_cert(&db_path, &creds.host, creds.port) {
             None => {
                 // TOFU: first sight of this server, trust and store.

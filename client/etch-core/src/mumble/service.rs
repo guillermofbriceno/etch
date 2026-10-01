@@ -59,6 +59,10 @@ impl VoiceService for MumbleVoiceService {
         Ok(())
     }
 
+    async fn probe_cert(&self, host: &str, port: u16) -> Result<String, CoreError> {
+        super::cert::probe_server_cert(host, port).await
+    }
+
     async fn send_command(&mut self, cmd: MumbleCommand) {
         let Some(ref proc) = self.process else { return };
 

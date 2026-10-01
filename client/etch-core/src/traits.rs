@@ -44,5 +44,8 @@ pub trait VoiceService: Send {
 
     fn send_command(&mut self, cmd: MumbleCommand) -> impl Future<Output = ()> + Send;
 
+    /// SHA1 fingerprint of the certificate the voice server presents.
+    fn probe_cert(&self, host: &str, port: u16) -> impl Future<Output = Result<String, CoreError>> + Send;
+
     fn shutdown(&mut self) -> impl Future<Output = ()> + Send;
 }

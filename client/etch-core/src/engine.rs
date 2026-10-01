@@ -2449,44 +2449,15 @@ mod tests {
 
     // --- Certificate check tests ---
 
-    /// Helper: start a local TLS server on a random port using a self-signed cert.
-    /// Returns (port, SHA1 fingerprint of the cert's DER).
-    async fn start_tls_server() -> (u16, String) {
-        use sha1::{Sha1, Digest};
-        use std::sync::Arc;
+    /// A voice server address and the fingerprint `voice_presenting` makes it present.
+    fn fake_cert(port: u16) -> (u16, String) {
+        (port, format!("fingerprint-of-{port}"))
+    }
 
-        let _ = rustls::crypto::ring::default_provider().install_default();
-
-        let key_pair = rcgen::KeyPair::generate().unwrap();
-        let params = rcgen::CertificateParams::new(vec!["127.0.0.1".into()]).unwrap();
-        let cert = params.self_signed(&key_pair).unwrap();
-        let cert_der = cert.der().to_vec();
-        let key_der = key_pair.serialize_der();
-        let fingerprint = format!("{:x}", Sha1::digest(&cert_der));
-
-        let server_config = rustls::ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(
-                vec![rustls_pki_types::CertificateDer::from(cert_der)],
-                rustls_pki_types::PrivateKeyDer::try_from(key_der).unwrap(),
-            ).unwrap();
-
-        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-
-        tokio::spawn(async move {
-            // Accept connections in a loop until the test ends
-            while let Ok((stream, _)) = listener.accept().await {
-                let acc = acceptor.clone();
-                tokio::spawn(async move {
-                    // Complete the TLS handshake, then drop
-                    let _ = acc.accept(stream).await;
-                });
-            }
-        });
-
-        (port, fingerprint)
+    fn voice_presenting(certs: &[(u16, &str)]) -> MockVoice {
+        certs.iter().fold(MockVoice::new(), |voice, (port, fingerprint)| {
+            voice.presenting_cert("127.0.0.1", *port, fingerprint)
+        })
     }
 
     /// Helper: create a mumble.sqlite with the cert table in a temp dir.
@@ -2507,7 +2478,7 @@ mod tests {
 
     #[tokio::test]
     async fn cert_mismatch_blocks_launch_and_emits_event() {
-        let (port, _real_fp) = start_tls_server().await;
+        let (port, real_fp) = fake_cert(64001);
         let tmp = tempfile::tempdir().unwrap();
         seed_cert_db(tmp.path(), "127.0.0.1", port, "wrong_fingerprint");
 
@@ -2525,7 +2496,7 @@ mod tests {
 
         let (events, _, voice_state) = run_commands(
             MockMatrix::new(),
-            MockVoice::new(),
+            voice_presenting(&[(port, &real_fp)]),
             tmp.path(),
             vec![CoreCommand::System(SystemCommand::ConnectToServer(form))],
         ).await;
@@ -2548,7 +2519,7 @@ mod tests {
 
     #[tokio::test]
     async fn accept_cert_stores_and_launches_voice() {
-        let (port, real_fp) = start_tls_server().await;
+        let (port, real_fp) = fake_cert(64001);
         let tmp = tempfile::tempdir().unwrap();
         seed_cert_db(tmp.path(), "127.0.0.1", port, "wrong_fingerprint");
 
@@ -2566,7 +2537,7 @@ mod tests {
 
         let (events, _, voice_state) = run_commands(
             MockMatrix::new(),
-            MockVoice::new(),
+            voice_presenting(&[(port, &real_fp)]),
             tmp.path(),
             vec![
                 CoreCommand::System(SystemCommand::ConnectToServer(form)),
@@ -2595,7 +2566,7 @@ mod tests {
 
     #[tokio::test]
     async fn cert_first_use_stores_and_launches() {
-        let (port, real_fp) = start_tls_server().await;
+        let (port, real_fp) = fake_cert(64001);
         let tmp = tempfile::tempdir().unwrap();
         // Create DB with cert table but NO entry for this host
         seed_cert_db(tmp.path(), "other.host", 9999, "irrelevant");
@@ -2614,7 +2585,7 @@ mod tests {
 
         let (events, _, voice_state) = run_commands(
             MockMatrix::new(),
-            MockVoice::new(),
+            voice_presenting(&[(port, &real_fp)]),
             tmp.path(),
             vec![CoreCommand::System(SystemCommand::ConnectToServer(form))],
         ).await;
@@ -2635,7 +2606,7 @@ mod tests {
 
     #[tokio::test]
     async fn cert_match_launches_without_event() {
-        let (port, real_fp) = start_tls_server().await;
+        let (port, real_fp) = fake_cert(64001);
         let tmp = tempfile::tempdir().unwrap();
         // Pre-store the CORRECT fingerprint
         seed_cert_db(tmp.path(), "127.0.0.1", port, &real_fp);
@@ -2654,7 +2625,7 @@ mod tests {
 
         let (events, _, voice_state) = run_commands(
             MockMatrix::new(),
-            MockVoice::new(),
+            voice_presenting(&[(port, &real_fp)]),
             tmp.path(),
             vec![CoreCommand::System(SystemCommand::ConnectToServer(form))],
         ).await;
@@ -2669,8 +2640,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_pending_cert_prompt_does_not_count_as_a_live_session() {
-        let (first_port, first_fp) = start_tls_server().await;
-        let (second_port, _second_fp) = start_tls_server().await;
+        let (first_port, first_fp) = fake_cert(64001);
+        let (second_port, second_fp) = fake_cert(64002);
         let tmp = tempfile::tempdir().unwrap();
         seed_cert_db(tmp.path(), "127.0.0.1", first_port, &first_fp);
         seed_cert_db(tmp.path(), "127.0.0.1", second_port, "wrong_fingerprint");
@@ -2688,7 +2659,7 @@ mod tests {
         };
 
         let matrix = MockMatrix::new().with_repeating_connect_result(ConnectOutcome::Connected(None));
-        let voice = MockVoice::new().with_internal_events(vec![
+        let voice = voice_presenting(&[(first_port, &first_fp), (second_port, &second_fp)]).with_internal_events(vec![
             InternalEvent::Mumble(InternalMumbleEvent::Connected),
         ]);
 
@@ -2720,8 +2691,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_voice_connect_while_awaiting_a_cert_does_not_mark_the_session_live() {
-        let (first_port, first_fp) = start_tls_server().await;
-        let (second_port, _second_fp) = start_tls_server().await;
+        let (first_port, first_fp) = fake_cert(64001);
+        let (second_port, second_fp) = fake_cert(64002);
         let tmp = tempfile::tempdir().unwrap();
         seed_cert_db(tmp.path(), "127.0.0.1", first_port, &first_fp);
         seed_cert_db(tmp.path(), "127.0.0.1", second_port, "wrong_fingerprint");
@@ -2739,7 +2710,7 @@ mod tests {
         };
 
         // Connected events are injected, so it is clear which one the engine reacts to.
-        let voice = MockVoice::new();
+        let voice = voice_presenting(&[(first_port, &first_fp), (second_port, &second_fp)]);
         let voice_state = voice.state.clone();
         let matrix = MockMatrix::new().with_repeating_connect_result(ConnectOutcome::Connected(None));
         let (engine, cmd_tx, event_rx) = build_engine(matrix, voice, tmp.path());

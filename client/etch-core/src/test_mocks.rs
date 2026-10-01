@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot};
 
@@ -152,6 +152,7 @@ pub struct MockVoice {
     launch_event_batches: VecDeque<Vec<InternalEvent>>,
     failing_launch: Option<u32>,
     launch_calls: u32,
+    certs: HashMap<(String, u16), String>,
 }
 
 impl MockVoice {
@@ -167,6 +168,7 @@ impl MockVoice {
             launch_event_batches: VecDeque::new(),
             failing_launch: None,
             launch_calls: 0,
+            certs: HashMap::new(),
         }
     }
 
@@ -179,6 +181,12 @@ impl MockVoice {
 
     pub fn with_failing_launch(mut self, nth: u32) -> Self {
         self.failing_launch = Some(nth);
+        self
+    }
+
+    /// The fingerprint a probe of `host:port` returns; an unlisted server fails the probe.
+    pub fn presenting_cert(mut self, host: &str, port: u16, fingerprint: &str) -> Self {
+        self.certs.insert((host.to_string(), port), fingerprint.to_string());
         self
     }
 }
@@ -210,6 +218,12 @@ impl VoiceService for MockVoice {
 
     async fn send_command(&mut self, cmd: MumbleCommand) {
         self.state.commands.lock().unwrap().push(cmd);
+    }
+
+    async fn probe_cert(&self, host: &str, port: u16) -> Result<String, CoreError> {
+        self.certs.get(&(host.to_string(), port)).cloned().ok_or_else(|| CoreError::CertProbe {
+            message: format!("mock has no cert for {host}:{port}"),
+        })
     }
 
     async fn shutdown(&mut self) {

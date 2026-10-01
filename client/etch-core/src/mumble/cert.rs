@@ -152,6 +152,50 @@ mod tests {
         );
     }
 
+    async fn start_tls_server() -> (u16, String) {
+        use sha1::{Sha1, Digest};
+        use std::sync::Arc;
+
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
+        let key_pair = rcgen::KeyPair::generate().unwrap();
+        let params = rcgen::CertificateParams::new(vec!["127.0.0.1".into()]).unwrap();
+        let cert = params.self_signed(&key_pair).unwrap();
+        let cert_der = cert.der().to_vec();
+        let key_der = key_pair.serialize_der();
+        let fingerprint = format!("{:x}", Sha1::digest(&cert_der));
+
+        let server_config = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![rustls_pki_types::CertificateDer::from(cert_der)],
+                rustls_pki_types::PrivateKeyDer::try_from(key_der).unwrap(),
+            ).unwrap();
+
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        tokio::spawn(async move {
+            // Accept connections in a loop until the test ends
+            while let Ok((stream, _)) = listener.accept().await {
+                let acc = acceptor.clone();
+                tokio::spawn(async move {
+                    // Complete the TLS handshake, then drop
+                    let _ = acc.accept(stream).await;
+                });
+            }
+        });
+
+        (port, fingerprint)
+    }
+
+    #[tokio::test]
+    async fn probe_returns_the_sha1_of_the_presented_cert() {
+        let (port, fingerprint) = start_tls_server().await;
+        assert_eq!(probe_server_cert("127.0.0.1", port).await.unwrap(), fingerprint);
+    }
+
     #[test]
     fn get_stored_cert_returns_none_for_missing_db() {
         let result = get_stored_cert(Path::new("/nonexistent/path/mumble.sqlite"), "x", 1);

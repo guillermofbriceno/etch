@@ -118,10 +118,6 @@ impl TimelineManager {
         self.local_user_id = Some(id);
     }
 
-    pub fn local_user_id(&self) -> Option<&str> {
-        self.local_user_id.as_deref()
-    }
-
     /// Clear all timeline subscriptions and the media source cache.
     pub fn clear(&mut self) {
         self.timelines.clear();
@@ -294,80 +290,6 @@ impl TimelineManager {
             log::error!("Failed to toggle reaction: {:?}", e);
         }
     }
-
-    /// Self-contained subscribe + paginate that can run in a spawned task
-    /// without borrowing &mut self. The diff stream keeps the timeline alive.
-    pub async fn subscribe_and_paginate(
-        event_tx: mpsc::Sender<CoreEvent>,
-        room: &Room,
-        room_id: &OwnedRoomId,
-        back_count: u16,
-        media_sources: MediaSourceMap,
-        dispatcher: Arc<ScriptDispatcher>,
-        local_user_id: Option<String>,
-    ) {
-        let Ok(timeline) = room.timeline().await else {
-            log::error!("Failed to get timeline for room: {}", room_id);
-            return;
-        };
-        let (initial_items, mut stream) = timeline.subscribe().await;
-
-        let room_id_str = room_id.to_string();
-        let messages: Vec<TimelineEntry> = initial_items
-            .iter()
-            .map(|item| timeline_item_to_entry(item, &media_sources))
-            .collect();
-
-        if !messages.is_empty() {
-            let _ = event_tx.send(
-                CoreEvent::Matrix(MatrixEvent::TimelineAppend(room_id_str.clone(), messages))
-            ).await;
-        }
-
-        // Paginate before spawning the diff listener so initial history arrives first
-        if let Err(e) = timeline.paginate_backwards(back_count).await {
-            log::error!("Pagination error for room {}: {:?}", room_id, e);
-        }
-
-        // Spawn diff stream listener; moves `timeline` to keep it alive
-        let tx = event_tx.clone();
-        let rid = room_id_str.clone();
-        let sources = media_sources.clone();
-        tokio::spawn(async move {
-            let _timeline = timeline; // prevent drop
-            // Drain buffered pagination diffs without firing scripts
-            loop {
-                match stream.next().now_or_never() {
-                    Some(Some(diffs)) => {
-                        for diff in diffs {
-                            if let Some(entry) = map_diff(diff, &rid, &sources)
-                                && tx.send(entry).await.is_err()
-                            {
-                                log::warn!("[timeline] Event channel closed for room {}, stopping diff task", rid);
-                                return;
-                            }
-                        }
-                    }
-                    Some(None) => return,
-                    None => break,
-                }
-            }
-            // Live events: fire scripts for new messages
-            while let Some(diffs) = stream.next().await {
-                for diff in diffs {
-                    if let Some(entry) = map_diff(diff, &rid, &sources) {
-                        maybe_fire_new_message(&entry, &rid, &dispatcher, local_user_id.as_deref());
-                        if tx.send(entry).await.is_err() {
-                            log::warn!("[timeline] Event channel closed for room {}, stopping diff task", rid);
-                            return;
-                        }
-                    }
-                }
-            }
-            log::warn!("[timeline] Diff stream ended for room {}", rid);
-        });
-    }
-
 }
 
 // Convert a TimelineItem into our ChatMessageReceive model.

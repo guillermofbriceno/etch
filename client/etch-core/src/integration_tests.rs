@@ -1140,3 +1140,43 @@ async fn reconnecting_does_not_duplicate_timeline_events() {
         after_reconnects, RECONNECTS, baseline,
     );
 }
+
+/// The DM is created with admin so no earlier test has made it and the create path runs.
+#[tokio::test(flavor = "multi_thread")]
+async fn reconnecting_does_not_duplicate_events_in_a_created_dm() {
+    async fn deliveries(h: &mut TestHarness, room_id: &str, prefix: &str) -> usize {
+        let body = h.send_unique_message(room_id, prefix).await;
+        h.expect_timeline_message(room_id, &body).await;
+
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let mut bodies = Vec::new();
+        h.drain_timeline_messages(room_id, &mut bodies);
+
+        1 + bodies.iter().filter(|b| b.contains(&body)).count()
+    }
+
+    let mut h = TestHarness::new();
+    h.connect().await;
+
+    let server_name = std::env::var("ETCH_INTEG_SERVER_NAME")
+        .unwrap_or_else(|_| "localhost".into());
+    h.send(CoreCommand::Matrix(MatrixCommand::CreateDirectMessage {
+        target_user_id: format!("@admin:{server_name}"),
+    })).await;
+    let dm = h.expect_event(|e| match e {
+        CoreEvent::Matrix(MatrixEvent::DmCreated(room)) => Some(room.clone()),
+        _ => None,
+    }, EVENT_TIMEOUT).await;
+
+    let baseline = deliveries(&mut h, &dm.id, "dm-baseline").await;
+    h.connect().await;
+    let after_reconnect = deliveries(&mut h, &dm.id, "dm-reconnected").await;
+
+    h.shutdown().await;
+
+    assert_eq!(
+        after_reconnect, baseline,
+        "a message in a DM created this session was delivered {after_reconnect} times after a \
+         reconnect but {baseline} before; the DM has more than one timeline stream",
+    );
+}
