@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use matrix_sdk::{
     Client, LoopCtrl, config::SyncSettings,
-    ruma::events::StateEventType,
+    ruma::{OwnedRoomId, api::client::membership::joined_rooms, events::StateEventType},
 };
 use serde_json::Value;
 use matrix_sdk::deserialized_responses::RawAnySyncOrStrippedState;
@@ -47,11 +47,31 @@ pub async fn build_room_info(room: &Room) -> anyhow::Result<RoomInfo> {
 }
 
 pub async fn fetch_rooms(client: &Client) -> anyhow::Result<Vec<RoomInfo>> {
+    let on_server = server_joined_rooms(client).await;
     let mut rooms_model: Vec<RoomInfo> = vec![];
     for room in client.joined_rooms() {
+        if on_server.as_ref().is_some_and(|ids| !ids.iter().any(|id| id == room.room_id())) {
+            log::info!(
+                "Leaving room {} out of the room list: the server no longer has us joined to it",
+                room.room_id(),
+            );
+            continue;
+        }
         rooms_model.push(build_room_info(&room).await?);
     }
     Ok(rooms_model)
+}
+
+/// A homeserver can end a membership without reporting the leave over sync, as a
+/// server-side room ban does, which leaves the room joined in the local store for good.
+async fn server_joined_rooms(client: &Client) -> Option<Vec<OwnedRoomId>> {
+    match client.send(joined_rooms::v3::Request::new()).await {
+        Ok(response) => Some(response.joined_rooms),
+        Err(e) => {
+            log::warn!("Could not check the room list against the server; using the local one: {e}");
+            None
+        }
+    }
 }
 
 /// Keeps syncing through transient errors, which `Client::sync` would propagate and end
@@ -238,6 +258,45 @@ mod tests {
             out.push(event);
         }
         out
+    }
+
+    /// The canned server answers every request alike, so one body serves as both the
+    /// sync response that fills the local store and the answer to `/joined_rooms`.
+    async fn rooms_listed_after_syncing(body: &'static str) -> (usize, Vec<String>) {
+        let server = CannedHomeserver::start("200 OK", body).await;
+        let client = server.client_for("@alice:example.com").await;
+        client.sync_once(SyncSettings::default().timeout(Duration::ZERO)).await
+            .expect("the canned body should be a valid sync response");
+
+        let listed = fetch_rooms(&client).await.expect("the room list should build");
+        let mut ids: Vec<String> = listed.into_iter().map(|room| room.id).collect();
+        ids.sort();
+        (client.joined_rooms().len(), ids)
+    }
+
+    #[tokio::test]
+    async fn a_room_the_server_no_longer_has_us_joined_to_is_left_out_of_the_room_list() {
+        let (in_store, listed) = rooms_listed_after_syncing(r#"{
+            "next_batch": "s1",
+            "rooms": { "join": { "!kept:example.com": {}, "!banned:example.com": {} } },
+            "joined_rooms": ["!kept:example.com"]
+        }"#).await;
+
+        assert_eq!(in_store, 2, "the local store should still hold both rooms as joined");
+        assert_eq!(listed, ["!kept:example.com"], "only the room the server lists should be shown");
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_answer_from_the_server_keeps_the_local_room_list() {
+        let (_, listed) = rooms_listed_after_syncing(r#"{
+            "next_batch": "s1",
+            "rooms": { "join": { "!one:example.com": {}, "!two:example.com": {} } }
+        }"#).await;
+
+        assert_eq!(
+            listed, ["!one:example.com", "!two:example.com"],
+            "a failed check must not empty the room list",
+        );
     }
 
     fn policy_backoff_total() -> Duration {
