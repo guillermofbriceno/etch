@@ -1,0 +1,141 @@
+name: "Release"
+
+# Builds both platforms, then tags the commit and publishes a draft release with latest.json.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release, without the v (e.g. 0.3.1, or 0.3.1-beta.1 for a prerelease)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      prerelease: ${{ steps.check.outputs.prerelease }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate version
+        id: check
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          bash .github/scripts/version.sh release "$VERSION" "$GITHUB_REF"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if [[ $VERSION == *-* ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Releasing Etch v$VERSION from $GITHUB_REF_NAME ($GITHUB_SHA)" >> "$GITHUB_STEP_SUMMARY"
+
+  linux:
+    needs: prepare
+    uses: ./.github/workflows/linux-release.yaml
+    with:
+      version: ${{ needs.prepare.outputs.version }}
+    secrets: inherit
+
+  windows:
+    needs: prepare
+    uses: ./.github/workflows/windows-release.yaml
+    with:
+      version: ${{ needs.prepare.outputs.version }}
+    secrets: inherit
+
+  publish:
+    needs: [prepare, linux, windows]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      TAG: v${{ needs.prepare.outputs.version }}
+      PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: etch-*
+          path: dist
+          merge-multiple: true
+
+      - name: Generate updater JSON
+        run: |
+          one() {
+            local matches=(dist/$1)
+            if [ ${#matches[@]} -ne 1 ] || [ ! -f "${matches[0]}" ] || [ ! -f "${matches[0]}.sig" ]; then
+              echo "::error::Expected exactly one $1 with a .sig next to it in dist/" >&2
+              exit 1
+            fi
+            echo "${matches[0]}"
+          }
+          entry() {
+            jq -n --arg url "https://github.com/$GH_REPO/releases/download/$TAG/$(basename "$1")" \
+              --arg sig "$(cat "$1.sig")" '{signature: $sig, url: $url}'
+          }
+          APPIMAGE=$(one '*.AppImage')
+          DEB=$(one '*.deb')
+          RPM=$(one '*.rpm')
+          MSI=$(one '*.msi')
+
+          # The updater tries "<os>-<arch>-<bundle>" first and falls back to "<os>-<arch>",
+          # so the bare Linux key must point at the AppImage, never the deb or rpm.
+          jq -n \
+            --arg version "$VERSION" \
+            --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --argjson appimage "$(entry "$APPIMAGE")" \
+            --argjson deb "$(entry "$DEB")" \
+            --argjson rpm "$(entry "$RPM")" \
+            --argjson msi "$(entry "$MSI")" \
+            '{
+              version: $version,
+              notes: "See the assets below to download this version.",
+              pub_date: $date,
+              platforms: {
+                "linux-x86_64": $appimage,
+                "linux-x86_64-appimage": $appimage,
+                "linux-x86_64-deb": $deb,
+                "linux-x86_64-rpm": $rpm,
+                "windows-x86_64": $msi,
+                "windows-x86_64-msi": $msi
+              }
+            }' > dist/latest.json
+          cat dist/latest.json
+
+      - name: Tag the release commit
+        run: |
+          EXISTING=$(git ls-remote --tags origin "refs/tags/$TAG" | cut -f1)
+          if [ -z "$EXISTING" ]; then
+            git tag "$TAG" "$GITHUB_SHA"
+            git push origin "refs/tags/$TAG"
+          elif [ "$EXISTING" != "$GITHUB_SHA" ]; then
+            echo "::error::$TAG already exists on $EXISTING, not on $GITHUB_SHA" >&2
+            exit 1
+          fi
+
+      - name: Create draft release
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            FLAGS=(--draft --verify-tag --title "Etch $TAG" --notes "See the assets below to download this version.")
+            if [ "$PRERELEASE" = "true" ]; then FLAGS+=(--prerelease); fi
+            gh release create "$TAG" "${FLAGS[@]}" dist/*
+          fi
+          echo "Draft release created for $TAG. Review and publish it from the Releases page." >> "$GITHUB_STEP_SUMMARY"

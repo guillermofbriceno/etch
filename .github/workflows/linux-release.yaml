@@ -1,13 +1,21 @@
-name: "Linux Release"
+name: "Linux Build"
 
+# Run on its own for a test build (artifacts only), or called by release.yaml.
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version for this test build, without the v (e.g. 0.3.1-test.1). Leave blank for an automatic dev version.'
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   MUMBLE_RELEASE_URL: https://github.com/guillermofbriceno/mumble/releases/download/etch-mumble-patch/mumble-linux-x86_64.tar.gz
@@ -21,6 +29,22 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set app version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ -n "$INPUT_VERSION" ]; then
+            bash .github/scripts/version.sh check "$INPUT_VERSION"
+            VERSION="$INPUT_VERSION"
+          else
+            VERSION=$(bash .github/scripts/version.sh dev "$GITHUB_RUN_NUMBER" "$GITHUB_SHA")
+          fi
+          CONF=client/etch-gui/src-tauri/tauri.conf.json
+          jq --arg v "$VERSION" '.version = $v' "$CONF" > "$CONF.tmp" && mv "$CONF.tmp" "$CONF"
+          echo "Building Etch $VERSION" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install Linux dependencies
         run: |
@@ -107,26 +131,16 @@ jobs:
           echo "=== Bridge plugin ==="
           file client/etch-gui/src-tauri/bundled/libetch_bridge.so
 
-      - name: Get app version
-        id: version
-        run: echo "tag=v$(jq -r .version client/etch-gui/src-tauri/tauri.conf.json)" >> "$GITHUB_OUTPUT"
-
       # ---- Build deb/rpm ----
 
       - name: Build deb/rpm (GitHub CI)
         if: ${{ !env.ACT }}
         uses: tauri-apps/tauri-action@v0
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: client/etch-gui
-          tagName: v__VERSION__
-          releaseName: 'Etch v__VERSION__'
-          releaseBody: 'See the assets below to download this version.'
-          releaseDraft: true
-          prerelease: false
           args: --bundles deb,rpm
 
       - name: Build deb/rpm (local/act)
@@ -184,45 +198,26 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: cargo tauri signer sign target/release/bundle/appimage/etch-gui-x86_64.AppImage
 
-      - name: Generate updater JSON
-        if: ${{ !env.ACT }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          VERSION=$(jq -r .version client/etch-gui/src-tauri/tauri.conf.json)
-          SIGNATURE=$(cat target/release/bundle/appimage/etch-gui-x86_64.AppImage.sig)
-          RELEASE_URL="https://github.com/guillermofbriceno/etch/releases/download/v${VERSION}"
-
-          # Download existing latest.json from the release (Windows may have uploaded it first)
-          EXISTING=$(gh release download "v${VERSION}" -p "latest.json" -O - 2>/dev/null || echo '{"version":"","platforms":{}}')
-
-          echo "$EXISTING" | jq \
-            --arg ver "$VERSION" \
-            --arg sig "$SIGNATURE" \
-            --arg url "${RELEASE_URL}/etch-gui-x86_64.AppImage" \
-            '.version = $ver | .platforms["linux-x86_64"] = {signature: $sig, url: $url}' \
-            > latest.json
-
-      - name: Upload AppImage and updater JSON to release (GitHub CI)
-        if: ${{ !env.ACT }}
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.version.outputs.tag }}
-          files: |
-            target/release/bundle/appimage/etch-gui-x86_64.AppImage
-            latest.json
-
+      # The .sig files are consumed by release.yaml when it writes latest.json.
       - name: Upload AppImage artifact
         uses: actions/upload-artifact@v4
         with:
           name: etch-linux-appimage
-          path: target/release/bundle/appimage/etch-gui-x86_64.AppImage
+          path: |
+            target/release/bundle/appimage/etch-gui-x86_64.AppImage
+            target/release/bundle/appimage/etch-gui-x86_64.AppImage.sig
 
       - name: Upload RPM artifact
         uses: actions/upload-artifact@v4
         with:
           name: etch-linux-rpm
-          path: target/release/bundle/rpm/*.rpm
+          path: target/release/bundle/rpm/*.rpm*
+
+      - name: Upload DEB artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: etch-linux-deb
+          path: target/release/bundle/deb/*.deb*
 
       - name: Preserve artifacts (local/act)
         if: ${{ env.ACT == 'true' }}
