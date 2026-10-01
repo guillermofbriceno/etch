@@ -163,6 +163,23 @@ describe('Matrix event routing', () => {
 
         expect(get(toastError)).toBe("Couldn't send clip.mp4: the upload failed");
     });
+
+    it('routes NameColors and Capabilities to nameColors store', async () => {
+        const { nameColors, canSetNameColor } = await import('../nameColors');
+
+        routeCoreEvent({
+            payload: {
+                type: 'Matrix',
+                data: { type: 'NameColors', data: [{ user_id: '@alice:example.org', color: { color: '#ff8800' } }] },
+            } satisfies CoreEvent,
+        });
+        routeCoreEvent({
+            payload: { type: 'Matrix', data: { type: 'Capabilities', data: { name_color: true } } } satisfies CoreEvent,
+        });
+
+        expect(get(nameColors).get('@alice:example.org')).toEqual({ color: '#ff8800' });
+        expect(get(canSetNameColor)).toBe(true);
+    });
 });
 
 // -----------------------------------------------------------------------

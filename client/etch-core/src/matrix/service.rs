@@ -14,6 +14,7 @@ use crate::events::{CoreEvent, MatrixEvent, InternalEvent, InternalMatrixEvent};
 use crate::matrix::attachment;
 use crate::temp_files::TempFiles;
 use crate::matrix::client::{session_path, start_matrix_client, ConnectionResult};
+use crate::matrix::name_colors::{self, NameColorResolver, NameColorSender};
 use crate::matrix::retry::credentials_rejected;
 use crate::matrix::timeline::TimelineManager;
 use crate::models::{ConnectOutcome, RoomInfo, RoomType};
@@ -78,12 +79,13 @@ impl std::fmt::Display for SessionKey {
 /// An `Idle` client may serve reads but nothing that writes.
 enum MatrixSession {
     None,
-    Idle { key: SessionKey, client: Client },
+    Idle { key: SessionKey, client: Client, name_colors: NameColorResolver },
     /// Owning its tasks means leaving `Live` aborts them instead of stranding them
     /// against a replaced client.
     Live {
         key: SessionKey,
         client: Client,
+        name_colors: NameColorResolver,
         _sync: AbortOnDrop,
         _pagination: AbortOnDrop,
         _send_errors: AbortOnDrop,
@@ -96,6 +98,13 @@ impl MatrixSession {
         match self {
             Self::None => None,
             Self::Idle { client, .. } | Self::Live { client, .. } => Some(client),
+        }
+    }
+
+    fn name_colors(&self) -> Option<&NameColorSender> {
+        match self {
+            Self::None => None,
+            Self::Idle { name_colors, .. } | Self::Live { name_colors, .. } => Some(name_colors.sender()),
         }
     }
 
@@ -124,24 +133,29 @@ impl MatrixSession {
         self.client().cloned()
     }
 
-    fn install(&mut self, key: SessionKey, client: Client) {
-        *self = Self::Idle { key, client };
+    fn install(&mut self, key: SessionKey, client: Client, event_tx: mpsc::Sender<CoreEvent>) {
+        let name_colors = NameColorResolver::spawn(client.clone(), event_tx);
+        *self = Self::Idle { key, client, name_colors };
     }
 
     fn go_live(&mut self, sync: AbortOnDrop, pagination: AbortOnDrop, send_errors: AbortOnDrop) {
-        let (key, client) = match std::mem::replace(self, Self::None) {
-            Self::Idle { key, client } | Self::Live { key, client, .. } => (key, client),
+        let (key, client, name_colors) = match std::mem::replace(self, Self::None) {
+            Self::Idle { key, client, name_colors }
+            | Self::Live { key, client, name_colors, .. } => (key, client, name_colors),
             Self::None => {
                 log::error!("No Matrix session to bring live; stopping the tasks just started");
                 return;
             }
         };
-        *self = Self::Live { key, client, _sync: sync, _pagination: pagination, _send_errors: send_errors };
+        *self = Self::Live {
+            key, client, name_colors,
+            _sync: sync, _pagination: pagination, _send_errors: send_errors,
+        };
     }
 
     fn stand_down(&mut self) {
         match std::mem::replace(self, Self::None) {
-            Self::Live { key, client, .. } => *self = Self::Idle { key, client },
+            Self::Live { key, client, name_colors, .. } => *self = Self::Idle { key, client, name_colors },
             other => *self = other,
         }
     }
@@ -311,7 +325,7 @@ impl MatrixService {
             Ok(ConnectionResult::Ok(client)) => {
                 let key = SessionKey::of(&client, form);
                 log::debug!("Built a new Matrix client for {}", key);
-                self.session.install(key, client.clone());
+                self.session.install(key, client.clone(), self.event_tx.clone());
                 Ok(client)
             }
 
@@ -357,6 +371,14 @@ impl MatrixService {
         {
             log::error!("Failed to remove the rejected session file {}: {e}", path.display());
         }
+    }
+
+    async fn subscribe(&mut self, room: &matrix_sdk::Room) {
+        let Some(name_colors) = self.session.name_colors().cloned() else {
+            log::warn!("Not subscribing to {}: there is no Matrix session", room.room_id());
+            return;
+        };
+        self.timeline_manager.subscribe_to_room(room, name_colors).await;
     }
 
     fn serving_client(&self, command: &str) -> Option<Client> {
@@ -408,6 +430,11 @@ impl MatrixBackend for MatrixService {
                 CoreEvent::Matrix(MatrixEvent::CurrentUser { username, matrix_id, display_name, avatar_url })
             ).await;
         }
+
+        let name_color = name_colors::settable_on(&client).await;
+        let _ = self.event_tx.send(
+            CoreEvent::Matrix(MatrixEvent::Capabilities { name_color })
+        ).await;
 
         // Enable the event cache BEFORE syncing so events from
         // sync_once are captured even without active Timeline subscriptions.
@@ -461,7 +488,7 @@ impl MatrixBackend for MatrixService {
             if let Ok(room_id) = matrix_sdk::ruma::RoomId::parse(&room_info.id)
                 && let Some(room) = client.get_room(&room_id)
             {
-                self.timeline_manager.subscribe_to_room(&room).await;
+                self.subscribe(&room).await;
             }
         }
 
@@ -550,6 +577,26 @@ impl MatrixBackend for MatrixService {
                     log::error!("Failed to upload avatar: {:?}", e);
                 }
             }
+            MatrixCommand::SetNameColor(color) => {
+                let Some(client) = self.serving_client("SetNameColor") else { return };
+                let written = match color {
+                    Some(color) => client.account().set_profile_field(color.to_profile()).await,
+                    None => client.account().delete_profile_field(name_colors::field_name()).await,
+                };
+                if let Err(e) = written {
+                    log::error!("Failed to set name color: {:?}", e);
+                    return;
+                }
+                if let Some(user_id) = client.user_id()
+                    && let Some(resolver) = self.session.name_colors()
+                {
+                    resolver.learned(user_id.to_string(), color);
+                }
+            }
+            MatrixCommand::ResolveNameColors(user_ids) => match self.session.name_colors() {
+                Some(resolver) => resolver.lookup(user_ids),
+                None => log::warn!("Ignoring ResolveNameColors: there is no Matrix session"),
+            },
             MatrixCommand::ChangePassword { current_password, new_password } => {
                 let Some(client) = self.serving_client("ChangePassword") else { return };
                 let user_id = client.user_id().map(|u| u.to_string()).unwrap_or_default();
@@ -696,7 +743,7 @@ impl MatrixBackend for MatrixService {
                             && let Some(room) = client.get_room(&rid)
                         {
                             // Manager-owned, so a reconnect cannot double the stream.
-                            self.timeline_manager.subscribe_to_room(&room).await;
+                            self.subscribe(&room).await;
                         }
                     }
                     Err(e) => {
@@ -745,7 +792,7 @@ impl MatrixBackend for MatrixService {
         let Some(client) = self.session.client().cloned() else { return };
         let Ok(rid) = matrix_sdk::ruma::RoomId::parse(room_id) else { return };
         let Some(room) = client.get_room(&rid) else { return };
-        self.timeline_manager.subscribe_to_room(&room).await;
+        self.subscribe(&room).await;
     }
 
     async fn reset(&mut self) {
@@ -760,7 +807,10 @@ mod tests {
 
     use super::*;
     use crate::commands::ChatMessageSend;
+    use crate::matrix::name_colors::{NameColor, UserNameColor};
     use crate::matrix::test_server::CannedHomeserver;
+    use matrix_sdk::ruma::api::MatrixVersion;
+    use serde_json::json;
 
     fn test_form() -> ServerConnectionForm {
         ServerConnectionForm {
@@ -808,9 +858,8 @@ mod tests {
         let (sync, sync_abort) = parked_task();
         let (pagination, pagination_abort) = parked_task();
         let (send_errors, _) = parked_task();
-        service.session = MatrixSession::Live {
-            key, client, _sync: sync, _pagination: pagination, _send_errors: send_errors,
-        };
+        service.session.install(key, client, service.event_tx.clone());
+        service.session.go_live(sync, pagination, send_errors);
         (service, sync_abort, pagination_abort)
     }
 
@@ -857,7 +906,7 @@ mod tests {
 
         let cached = offline_client(tmp.path()).await;
         let key = SessionKey { user_id: "@alice:example.com".into(), homeserver: "http://127.0.0.1:1".into() };
-        service.session.install(key, cached);
+        service.session.install(key, cached, service.event_tx.clone());
 
         service.prepare_session(&form, &internal_tx).await
             .expect("a matching session should reuse the cached client");
@@ -915,7 +964,7 @@ mod tests {
         let form = ServerConnectionForm { homeserver_url: Some(server.url.clone()), ..test_form() };
 
         let client = server.client_for("@alice:example.com").await;
-        service.session.install(SessionKey::of(&client, &form), client);
+        service.session.install(SessionKey::of(&client, &form), client, service.event_tx.clone());
 
         let saved = session_path(tmp.path(), &form);
         std::fs::create_dir_all(saved.parent().unwrap()).unwrap();
@@ -948,10 +997,8 @@ mod tests {
         let (sync, _sync_abort) = parked_task();
         let (pagination, _pagination_abort) = parked_task();
         let (send_errors, _) = parked_task();
-        service.session = MatrixSession::Live {
-            key: SessionKey::of(&client, &test_form()), client,
-            _sync: sync, _pagination: pagination, _send_errors: send_errors,
-        };
+        service.session.install(SessionKey::of(&client, &test_form()), client, service.event_tx.clone());
+        service.session.go_live(sync, pagination, send_errors);
 
         service.handle_command(MatrixCommand::SetDisplayName("while live".into())).await;
         let while_live = server.requests_to("/displayname");
@@ -1048,10 +1095,8 @@ mod tests {
         let (sync, _sync_abort) = parked_task();
         let (pagination, _pagination_abort) = parked_task();
         let (send_errors, _) = parked_task();
-        service.session = MatrixSession::Live {
-            key: SessionKey::of(&client, &test_form()), client,
-            _sync: sync, _pagination: pagination, _send_errors: send_errors,
-        };
+        service.session.install(SessionKey::of(&client, &test_form()), client, service.event_tx.clone());
+        service.session.go_live(sync, pagination, send_errors);
         let path = temp_upload(&service, "clip.mp4", 3_565_158);
 
         service.handle_command(send_attachment_command("!a:b", &path)).await;
@@ -1122,10 +1167,8 @@ mod tests {
         let (sync, _sync_abort) = parked_task();
         let (pagination, _pagination_abort) = parked_task();
         let (send_errors, _) = parked_task();
-        service.session = MatrixSession::Live {
-            key: SessionKey::of(&client, &test_form()), client,
-            _sync: sync, _pagination: pagination, _send_errors: send_errors,
-        };
+        service.session.install(SessionKey::of(&client, &test_form()), client, service.event_tx.clone());
+        service.session.go_live(sync, pagination, send_errors);
         let path = temp_upload(&service, "photo.png", 10);
 
         service.handle_command(send_attachment_command("!left:example.com", &path)).await;
@@ -1163,7 +1206,7 @@ mod tests {
         service.event_tx = event_tx;
         let (internal_tx, _internal_rx) = mpsc::channel(64);
         let client = server.client_for("@alice:example.com").await;
-        service.session.install(SessionKey::of(&client, &form), client);
+        service.session.install(SessionKey::of(&client, &form), client, service.event_tx.clone());
         let outcome = service.connect(form, internal_tx, 1).await;
         assert!(matches!(outcome, ConnectOutcome::Connected(_)), "the canned server should accept the connect");
 
@@ -1220,7 +1263,7 @@ mod tests {
         service.event_tx = event_tx;
         let (internal_tx, _internal_rx) = mpsc::channel(64);
         let client = server.client_for("@alice:example.com").await;
-        service.session.install(SessionKey::of(&client, &form), client);
+        service.session.install(SessionKey::of(&client, &form), client, service.event_tx.clone());
         let outcome = service.connect(form, internal_tx, 1).await;
         assert!(matches!(outcome, ConnectOutcome::Connected(_)), "the canned server should accept the connect");
         // Asked while the server still answers, so the next request to meet the outage is the upload itself.
@@ -1268,4 +1311,60 @@ mod tests {
         );
     }
 
+    fn name_color(hex: &str) -> NameColor {
+        serde_json::from_value(json!({ "color": hex })).expect("a valid color")
+    }
+
+    #[tokio::test]
+    async fn a_name_color_is_written_to_the_profile_only_while_live() {
+        let tmp = tempfile::tempdir().unwrap();
+        let server = CannedHomeserver::ok().await;
+        let mut service = service(tmp.path());
+        let client = server.client_for("@alice:example.com").await;
+        let (sync, _sync_abort) = parked_task();
+        let (pagination, _pagination_abort) = parked_task();
+        let (send_errors, _) = parked_task();
+        service.session.install(SessionKey::of(&client, &test_form()), client, service.event_tx.clone());
+        service.session.go_live(sync, pagination, send_errors);
+
+        service.handle_command(MatrixCommand::SetNameColor(Some(name_color("#62baf7")))).await;
+        service.handle_command(MatrixCommand::SetNameColor(None)).await;
+        let writes: Vec<String> = server.requests().iter()
+            .filter(|line| line.contains("/profile/") && line.contains("etch.name_color"))
+            .map(|line| line.split(' ').next().unwrap_or_default().to_string())
+            .collect();
+        assert_eq!(writes, ["PUT", "DELETE"], "setting writes the field and clearing deletes it");
+
+        service.reset().await;
+        service.handle_command(MatrixCommand::SetNameColor(Some(name_color("#c7b14d")))).await;
+        assert_eq!(
+            server.requests_to("etch.name_color"), 2,
+            "a session that is not live must not send writes to the server",
+        );
+    }
+
+    #[tokio::test]
+    async fn name_color_lookups_are_answered_while_the_session_is_idle() {
+        let tmp = tempfile::tempdir().unwrap();
+        let server = CannedHomeserver::start("200 OK", r##"{"etch.name_color":{"color":"#51caa4"}}"##).await;
+        let mut service = service(tmp.path());
+        let (event_tx, mut event_rx) = mpsc::channel(16);
+        service.event_tx = event_tx;
+        let client = server.client_with_version("@alice:example.com", MatrixVersion::V1_16).await;
+        service.session.install(SessionKey::of(&client, &test_form()), client, service.event_tx.clone());
+
+        service.handle_command(MatrixCommand::ResolveNameColors(vec!["@bob:example.com".into()])).await;
+
+        let event = tokio::time::timeout(Duration::from_secs(10), event_rx.recv())
+            .await
+            .expect("the name color resolver should have answered")
+            .expect("the event channel closed");
+        let CoreEvent::Matrix(MatrixEvent::NameColors(answers)) = event else {
+            panic!("expected name colors, got {event:?}");
+        };
+        assert_eq!(
+            answers,
+            vec![UserNameColor { user_id: "@bob:example.com".into(), color: Some(name_color("#51caa4")) }],
+        );
+    }
 }

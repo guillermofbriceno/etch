@@ -5,6 +5,7 @@ import { channels, dmLastActivity } from '../channels';
 import { activeChannelId } from '../activeChannel';
 import { isMuted, isDeafened } from '../audio';
 import { currentUser } from '../user';
+import { resetNameColors, canSetNameColor } from '../nameColors';
 import { errorLog, toastError } from '../errors';
 import { userVolumes } from '../userVolumes';
 import { transmissionMode, vadThreshold, voiceHold, useMumbleSettings, deafenSuppressesNotifs } from '../voiceSettings';
@@ -37,6 +38,10 @@ export function resetStores(): void {
 
     // User
     currentUser.set({ username: '', matrixId: '', displayName: null, avatarUrl: null });
+
+    // Name colors -- also clears the private record of requests awaiting an answer
+    resetNameColors();
+    canSetNameColor.set(false);
 
     // Errors
     errorLog.set([]);

@@ -3,6 +3,7 @@ import { render, screen, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { resetStores } from '$lib/stores/__tests__/helpers';
 import { compactChat } from '$lib/stores/layout';
+import { handleMatrixEvent } from '$lib/stores/nameColors';
 import MessageGroup from '../MessageGroup.svelte';
 import type { ChatMessage, SenderProfile } from '$lib/types';
 
@@ -279,5 +280,20 @@ describe('MessageGroup media', () => {
         }).container;
         expect(video.querySelector('.file-download')).toBeInTheDocument();
         expect(video.querySelector('video')).not.toBeInTheDocument();
+    });
+});
+
+describe('MessageGroup sender name', () => {
+    it('recolors when the sender\'s color arrives', async () => {
+        const msg = makeMsg();
+        const { container } = render(MessageGroup, {
+            props: { msg, sender, continuation: false, roomId: '!room:test' },
+        });
+        expect(container.querySelector('.sender')).not.toHaveStyle({ color: '#ff8800' });
+
+        handleMatrixEvent({ type: 'NameColors', data: [{ user_id: msg.sender, color: { color: '#ff8800' } }] });
+        await tick();
+
+        expect(container.querySelector('.sender')).toHaveStyle({ color: '#ff8800' });
     });
 });

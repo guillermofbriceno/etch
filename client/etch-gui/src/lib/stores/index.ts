@@ -7,6 +7,7 @@ export { activeChannelId } from './activeChannel';
 export { activeWindow, setActiveChannel, loadOlder, sendMessage, sendAttachment, editMessage, redactMessage, createDirectMessage, toggleReaction } from './messages';
 export { channels, activeChannel, hideDm, dmLastActivity } from './channels';
 export { currentUser } from './user';
+export { nameColors, canSetNameColor, colorOf, chosenColorOf } from './nameColors';
 export { isMuted, isDeafened, toggleMute, toggleDeafen } from './audio';
 export { activeOverlay, overlayImageUrl, settingsTab, showRoomIds, openSettings, openImage, openConnect, closeOverlay } from './overlay';
 export { serverBookmarks, selectedBookmarkId, connectingBookmark, passwordRequested, matrixConnecting, mediaBaseUrl, loadSettings, addBookmark, updateBookmark, removeBookmark, connectToServer } from './servers';

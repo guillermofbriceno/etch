@@ -62,16 +62,20 @@ impl CannedHomeserver {
     }
 
     pub async fn client_for(&self, user_id: &str) -> Client {
-        logged_in_client(&self.url, user_id).await
+        self.client_with_version(user_id, MatrixVersion::V1_1).await
+    }
+
+    pub async fn client_with_version(&self, user_id: &str, version: MatrixVersion) -> Client {
+        logged_in_client(&self.url, user_id, version).await
     }
 }
 
 /// Pins the versions so the client never probes `/versions`, and disables the SDK's own
 /// retries so each call is one request.
-async fn logged_in_client(homeserver: &str, user_id: &str) -> Client {
+async fn logged_in_client(homeserver: &str, user_id: &str, version: MatrixVersion) -> Client {
     let client = Client::builder()
         .homeserver_url(homeserver)
-        .server_versions([MatrixVersion::V1_1])
+        .server_versions([version])
         .request_config(RequestConfig::new().disable_retry())
         .build()
         .await
