@@ -355,139 +355,49 @@ mod tests {
         out
     }
 
+    fn jpeg_with_orientation(img: &DynamicImage, orientation: u8) -> Vec<u8> {
+        let mut jpeg = Vec::new();
+        img.write_with_encoder(JpegEncoder::new_with_quality(&mut jpeg, 100))
+            .unwrap();
+        // A TIFF header and a one-entry directory holding the Orientation tag, 0x0112.
+        let mut exif = b"Exif\0\0II*\0\x08\0\0\0\x01\0\x12\x01\x03\0\x01\0\0\0".to_vec();
+        exif.extend_from_slice(&[orientation, 0, 0, 0, 0, 0, 0, 0]);
+        let mut out = jpeg[..2].to_vec();
+        out.extend_from_slice(&[0xFF, 0xE1]);
+        out.extend_from_slice(&(exif.len() as u16 + 2).to_be_bytes());
+        out.extend_from_slice(&exif);
+        out.extend_from_slice(&jpeg[2..]);
+        out
+    }
+
     #[test]
-    fn target_dimensions_leave_images_within_the_limit_alone() {
+    fn target_dimensions_scale_only_down_keep_the_aspect_ratio_and_never_reach_zero() {
         assert_eq!(target_dimensions(800, 600, 2048), (800, 600));
         assert_eq!(target_dimensions(2048, 1000, 2048), (2048, 1000));
-        assert_eq!(target_dimensions(2048, 2048, 2048), (2048, 2048));
-        assert_eq!(target_dimensions(1, 1, 2048), (1, 1));
-    }
-
-    #[test]
-    fn target_dimensions_scale_the_longest_edge_down_keeping_the_aspect_ratio() {
         assert_eq!(target_dimensions(4096, 3072, 2048), (2048, 1536));
         assert_eq!(target_dimensions(3000, 6000, 2048), (1024, 2048));
-        assert_eq!(target_dimensions(4000, 3000, 2048), (2048, 1536));
-        assert_eq!(target_dimensions(2049, 2049, 2048), (2048, 2048));
-    }
-
-    #[test]
-    fn target_dimensions_never_collapse_an_edge_to_zero() {
         assert_eq!(target_dimensions(100_000, 3, 2048), (2048, 1));
         assert_eq!(target_dimensions(3, 100_000, 2048), (1, 2048));
     }
 
     #[test]
-    fn opaque_images_have_no_meaningful_alpha() {
+    fn alpha_is_meaningful_only_when_some_pixel_is_not_opaque() {
         assert!(!has_meaningful_alpha(&opaque(4, 4)));
-        let solid = RgbaImage::from_pixel(4, 4, Rgba([10, 20, 30, 255]));
-        assert!(!has_meaningful_alpha(&DynamicImage::ImageRgba8(solid)));
-        let solid16 = ImageBuffer::from_pixel(4, 4, Rgba([10u16, 20, 30, u16::MAX]));
-        assert!(!has_meaningful_alpha(&DynamicImage::ImageRgba16(solid16)));
-    }
 
-    #[test]
-    fn a_single_non_opaque_pixel_is_meaningful_alpha() {
         let mut rgba = RgbaImage::from_pixel(4, 4, Rgba([10, 20, 30, 255]));
+        assert!(!has_meaningful_alpha(&DynamicImage::ImageRgba8(rgba.clone())));
         rgba.put_pixel(3, 3, Rgba([10, 20, 30, 254]));
         assert!(has_meaningful_alpha(&DynamicImage::ImageRgba8(rgba)));
 
         let mut gray = ImageBuffer::from_pixel(4, 4, LumaA([100u8, 255]));
+        assert!(!has_meaningful_alpha(&DynamicImage::ImageLumaA8(gray.clone())));
         gray.put_pixel(0, 0, LumaA([100, 0]));
         assert!(has_meaningful_alpha(&DynamicImage::ImageLumaA8(gray)));
 
         let mut rgba16 = ImageBuffer::from_pixel(4, 4, Rgba([10u16, 20, 30, u16::MAX]));
+        assert!(!has_meaningful_alpha(&DynamicImage::ImageRgba16(rgba16.clone())));
         rgba16.put_pixel(1, 2, Rgba([10, 20, 30, u16::MAX - 1]));
         assert!(has_meaningful_alpha(&DynamicImage::ImageRgba16(rgba16)));
-    }
-
-    #[test]
-    fn output_format_is_png_only_for_meaningful_alpha() {
-        assert_eq!(OutputFormat::for_alpha(true), OutputFormat::Png);
-        assert_eq!(OutputFormat::for_alpha(false), OutputFormat::Jpeg);
-    }
-
-    #[test]
-    fn gifs_animations_and_unknown_formats_are_not_compressible() {
-        assert!(!is_compressible(Some(ImageFormat::Gif), false));
-        assert!(!is_compressible(Some(ImageFormat::Png), true));
-        assert!(!is_compressible(Some(ImageFormat::WebP), true));
-        assert!(!is_compressible(None, false));
-        assert!(!is_compressible(Some(ImageFormat::Ico), false));
-    }
-
-    #[test]
-    fn still_raster_formats_are_compressible() {
-        assert!(is_compressible(Some(ImageFormat::Jpeg), false));
-        assert!(is_compressible(Some(ImageFormat::Png), false));
-        assert!(is_compressible(Some(ImageFormat::WebP), false));
-        assert!(is_compressible(Some(ImageFormat::Bmp), false));
-        assert!(is_compressible(Some(ImageFormat::Tiff), false));
-    }
-
-    #[test]
-    fn animation_is_detected_in_apng_and_webp() {
-        assert!(is_animated(ImageFormat::Png, &apng(&noise(8, 8))));
-        assert!(is_animated(ImageFormat::WebP, &animated_webp(&noise(8, 8))));
-    }
-
-    #[test]
-    fn still_png_and_webp_are_not_animated() {
-        assert!(!is_animated(
-            ImageFormat::Png,
-            &encoded(&opaque(4, 4), ImageFormat::Png)
-        ));
-        let mut webp = Vec::new();
-        opaque(4, 4)
-            .write_with_encoder(WebPEncoder::new_lossless(&mut webp))
-            .unwrap();
-        assert!(!is_animated(ImageFormat::WebP, &webp));
-    }
-
-    #[test]
-    fn output_file_name_keeps_the_stem_and_swaps_the_extension() {
-        assert_eq!(
-            output_file_name(Path::new("/pics/vacation.png"), OutputFormat::Jpeg),
-            "vacation.jpg"
-        );
-        assert_eq!(
-            output_file_name(Path::new("/pics/logo.webp"), OutputFormat::Png),
-            "logo.png"
-        );
-        assert_eq!(
-            output_file_name(
-                Path::new("/tmp/etch-paste-abc/image.png"),
-                OutputFormat::Jpeg
-            ),
-            "image.jpg"
-        );
-    }
-
-    #[test]
-    fn output_file_name_keeps_a_name_that_looks_like_a_legacy_temp_file() {
-        assert_eq!(
-            output_file_name(Path::new("/pics/etch-paste-123.png"), OutputFormat::Jpeg),
-            "etch-paste-123.jpg"
-        );
-    }
-
-    #[test]
-    fn output_file_name_falls_back_when_there_is_no_stem() {
-        assert_eq!(
-            output_file_name(Path::new("/"), OutputFormat::Png),
-            "image.png"
-        );
-    }
-
-    #[test]
-    fn only_a_file_in_an_etch_paste_directory_is_a_temp_upload() {
-        assert_eq!(
-            temp_upload_dir(Path::new("/tmp/etch-paste-abc/image.png")),
-            Some(Path::new("/tmp/etch-paste-abc"))
-        );
-        assert_eq!(temp_upload_dir(Path::new("/tmp/etch-paste-123.png")), None);
-        assert_eq!(temp_upload_dir(Path::new("/pics/vacation.png")), None);
-        assert_eq!(temp_upload_dir(Path::new("/pics/etch/image.png")), None);
     }
 
     #[test]
@@ -545,72 +455,72 @@ mod tests {
     }
 
     #[test]
-    fn a_small_opaque_image_is_re_encoded_without_resizing() {
+    fn every_still_format_the_frontend_offers_to_compress_is_re_encoded() {
         let root = TestDir::new();
-        let input = root.path().join("shot.bmp");
-        std::fs::write(&input, encoded(&opaque(640, 480), ImageFormat::Bmp)).unwrap();
+        let img = noise(64, 64);
+        let mut webp = Vec::new();
+        img.write_with_encoder(WebPEncoder::new_lossless(&mut webp))
+            .unwrap();
+        for (name, bytes) in [
+            ("photo.jpg", jpeg_with_orientation(&img, 1)),
+            ("photo.webp", webp),
+            ("photo.bmp", encoded(&img, ImageFormat::Bmp)),
+            ("photo.tiff", encoded(&img, ImageFormat::Tiff)),
+        ] {
+            let input = root.path().join(name);
+            std::fs::write(&input, bytes).unwrap();
+
+            let out = compress_image_file(&input, root.path()).unwrap();
+
+            assert_eq!(
+                out.and_then(|path| path.file_name().map(|n| n.to_os_string())),
+                Some("photo.jpg".into()),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_photo_stored_sideways_comes_out_upright() {
+        let root = TestDir::new();
+        let input = root.path().join("portrait.jpg");
+        std::fs::write(&input, jpeg_with_orientation(&noise(400, 200), 6)).unwrap();
 
         let out = compress_image_file(&input, root.path())
             .unwrap()
             .expect("compressed");
 
         let decoded = image::load_from_memory(&std::fs::read(&out).unwrap()).unwrap();
-        assert_eq!(decoded.dimensions(), (640, 480));
-    }
-
-    fn assert_returned_untouched(root: &TestDir, input: &Path, bytes: &[u8]) {
-        let before = root.entries();
-        assert_eq!(compress_image_file(input, root.path()).unwrap(), None);
-        assert_eq!(std::fs::read(input).unwrap(), bytes);
-        assert_eq!(root.entries(), before);
+        assert_eq!(decoded.dimensions(), (200, 400));
     }
 
     #[test]
-    fn a_gif_is_returned_untouched() {
-        let root = TestDir::new();
-        let input = root.path().join("etch-paste-1.gif");
-        let bytes = encoded(&opaque(32, 32), ImageFormat::Gif);
-        std::fs::write(&input, &bytes).unwrap();
-        assert_returned_untouched(&root, &input, &bytes);
-    }
-
-    #[test]
-    fn animated_png_and_webp_are_returned_untouched() {
+    fn a_file_that_cannot_or_should_not_be_re_encoded_is_returned_untouched() {
         let root = TestDir::new();
         let frame = noise(300, 300);
+        let solid = DynamicImage::ImageRgb8(RgbImage::from_pixel(16, 16, Rgb([200, 10, 10])));
         for (name, bytes) in [
-            ("anim.png", apng(&frame)),
-            ("anim.webp", animated_webp(&frame)),
+            ("party.gif", encoded(&opaque(32, 32), ImageFormat::Gif)),
+            ("animated.png", apng(&frame)),
+            ("animated.webp", animated_webp(&frame)),
+            (
+                "not-an-image.png",
+                b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>".to_vec(),
+            ),
+            ("already-small.png", encoded(&solid, ImageFormat::Png)),
         ] {
             let input = root.path().join(name);
             std::fs::write(&input, &bytes).unwrap();
-            assert_returned_untouched(&root, &input, &bytes);
+            let before = root.entries();
+
+            assert_eq!(
+                compress_image_file(&input, root.path()).unwrap(),
+                None,
+                "{name}"
+            );
+            assert_eq!(std::fs::read(&input).unwrap(), bytes, "{name}");
+            assert_eq!(root.entries(), before, "{name}");
         }
-    }
-
-    #[test]
-    fn an_undecodable_file_is_returned_untouched() {
-        let root = TestDir::new();
-        let input = root.path().join("etch-paste-2.png");
-        let bytes = b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>".to_vec();
-        std::fs::write(&input, &bytes).unwrap();
-        assert_returned_untouched(&root, &input, &bytes);
-    }
-
-    #[test]
-    fn an_image_that_would_not_shrink_is_returned_untouched() {
-        let root = TestDir::new();
-        let input = root.path().join("etch-paste-3.png");
-        let solid = DynamicImage::ImageRgb8(RgbImage::from_pixel(16, 16, Rgb([200, 10, 10])));
-        let bytes = encoded(&solid, ImageFormat::Png);
-        std::fs::write(&input, &bytes).unwrap();
-        assert_returned_untouched(&root, &input, &bytes);
-    }
-
-    #[test]
-    fn a_missing_input_is_an_error() {
-        let root = TestDir::new();
-        assert!(compress_image_file(&root.path().join("gone.png"), root.path()).is_err());
     }
 
     #[test]

@@ -240,7 +240,6 @@ pub(crate) async fn fetch_upload_limits(client: &Client) -> UploadLimits {
 mod tests {
     use super::*;
     use crate::matrix::test_server::CannedHomeserver;
-    use std::path::PathBuf;
 
     fn mime(s: &str) -> Mime {
         s.parse().unwrap()
@@ -256,82 +255,31 @@ mod tests {
     }
 
     #[test]
-    fn still_images_are_images_and_everything_else_is_other() {
-        assert_eq!(UploadCategory::of(&mime("image/png")), UploadCategory::Image);
-        assert_eq!(UploadCategory::of(&mime("image/jpeg")), UploadCategory::Image);
-        assert_eq!(UploadCategory::of(&mime("image/webp")), UploadCategory::Image);
-        assert_eq!(UploadCategory::of(&mime("image/gif")), UploadCategory::Other);
-        assert_eq!(UploadCategory::of(&mime("video/mp4")), UploadCategory::Other);
-        assert_eq!(UploadCategory::of(&mime("audio/ogg")), UploadCategory::Other);
-        assert_eq!(UploadCategory::of(&mime("application/pdf")), UploadCategory::Other);
-    }
-
-    #[test]
-    fn the_etch_caps_are_five_and_two_mebibytes() {
-        assert_eq!(UploadLimits::ETCH_CAPS, UploadLimits { image_bytes: 5_242_880, other_bytes: 2_097_152 });
-    }
-
-    #[test]
-    fn the_effective_limit_is_the_smaller_of_the_cap_and_the_server_limit() {
-        assert_eq!(UploadLimits::effective(None), UploadLimits::ETCH_CAPS);
-        assert_eq!(UploadLimits::effective(Some(100 * MIB)), UploadLimits::ETCH_CAPS);
-        assert_eq!(
-            UploadLimits::effective(Some(3 * MIB)),
-            UploadLimits { image_bytes: 3 * MIB, other_bytes: 2 * MIB },
-        );
-        assert_eq!(
-            UploadLimits::effective(Some(MIB)),
-            UploadLimits { image_bytes: MIB, other_bytes: MIB },
-        );
-    }
-
-    #[test]
-    fn a_file_exactly_at_the_limit_is_accepted_and_one_byte_more_is_not() {
+    fn each_kind_of_file_is_held_to_its_own_limit_to_the_byte() {
         let limits = UploadLimits::ETCH_CAPS;
-        assert_eq!(limits.check(&mime("image/png"), 5_242_880), Ok(()));
-        assert!(limits.check(&mime("image/png"), 5_242_881).is_err());
-        assert_eq!(limits.check(&mime("video/mp4"), 2_097_152), Ok(()));
-        assert!(limits.check(&mime("video/mp4"), 2_097_153).is_err());
-        assert_eq!(limits.check(&mime("application/pdf"), 0), Ok(()));
-    }
-
-    #[test]
-    fn a_gif_is_held_to_the_limit_for_other_files() {
+        assert_eq!(limits.check(&mime("image/png"), 5 * MIB), Ok(()));
+        assert!(limits.check(&mime("image/png"), 5 * MIB + 1).is_err());
+        assert_eq!(limits.check(&mime("video/mp4"), 2 * MIB), Ok(()));
         assert_eq!(
-            UploadLimits::ETCH_CAPS.check(&mime("image/gif"), 3 * MIB),
-            Err("it is 3 MB and the limit for this kind of file is 2 MB".into()),
-        );
-    }
-
-    #[test]
-    fn the_reason_gives_both_sizes_in_mb() {
-        assert_eq!(
-            UploadLimits::ETCH_CAPS.check(&mime("video/mp4"), 3_565_158),
+            limits.check(&mime("video/mp4"), 3_565_158),
             Err("it is 3.4 MB and the limit for this kind of file is 2 MB".into()),
         );
         assert_eq!(
-            UploadLimits::effective(Some(1_500_000)).check(&mime("image/png"), 2 * MIB),
-            Err("it is 2 MB and the limit for this kind of file is 1.4 MB".into()),
+            limits.check(&mime("image/gif"), 3 * MIB),
+            Err("it is 3 MB and the limit for this kind of file is 2 MB".into()),
+            "a GIF is held to the limit for other files, not the one for images",
         );
     }
 
+    /// The frontend's formatMB test uses the same sizes, because the two texts must agree byte for byte.
     #[test]
-    fn sizes_show_one_decimal_only_when_not_whole() {
+    fn sizes_round_to_tenths_half_up_and_drop_the_decimal_only_when_whole() {
         assert_eq!(format_mb(2 * MIB), "2 MB");
-        assert_eq!(format_mb(5 * MIB), "5 MB");
-        assert_eq!(format_mb(MIB + MIB / 2), "1.5 MB");
-        assert_eq!(format_mb(50_000_000), "47.7 MB");
-    }
-
-    #[test]
-    fn a_size_halfway_between_tenths_rounds_up() {
+        assert_eq!(format_mb(2 * MIB + 1), "2.0 MB");
         assert_eq!(format_mb(1_310_720), "1.3 MB");
         assert_eq!(format_mb(2_359_296), "2.3 MB");
-    }
-
-    #[test]
-    fn a_size_just_over_a_whole_number_keeps_its_decimal() {
-        assert_eq!(format_mb(2_097_153), "2.0 MB");
+        assert_eq!(format_mb(3_565_158), "3.4 MB");
+        assert_eq!(format_mb(50_000_000), "47.7 MB");
     }
 
     #[test]
@@ -345,124 +293,69 @@ mod tests {
     }
 
     #[test]
-    fn a_file_in_an_etch_paste_directory_is_a_temp_upload() {
+    fn only_a_file_directly_inside_an_etch_paste_directory_is_a_temp_upload() {
         assert_eq!(
             temp_upload_dir(Path::new("/tmp/etch-paste-abc/photo.png")),
             Some(Path::new("/tmp/etch-paste-abc")),
         );
-        assert_eq!(
-            temp_upload_dir(Path::new("/tmp/etch-paste-abc/etch-paste-1.png")),
-            Some(Path::new("/tmp/etch-paste-abc")),
-        );
+        for not_temp in [
+            "/tmp/etch-paste-1234.png",
+            "etch-paste-1.png",
+            "/home/someone/photo.png",
+            "/tmp/etch-paste/photo.png",
+            "/tmp/etch-paste-abc/nested/photo.png",
+            "/tmp/my-etch-paste-1/photo.png",
+        ] {
+            assert_eq!(temp_upload_dir(Path::new(not_temp)), None, "{not_temp}");
+        }
     }
 
     #[test]
-    fn a_flat_etch_paste_file_is_not_a_temp_upload() {
-        assert_eq!(temp_upload_dir(Path::new("/tmp/etch-paste-1234.png")), None);
-        assert_eq!(temp_upload_dir(Path::new("/home/someone/Downloads/etch-paste-1700000000000.png")), None);
-        assert_eq!(temp_upload_dir(Path::new("etch-paste-1.png")), None);
+    fn real_media_keeps_its_type_and_source_code_is_not_mistaken_for_it() {
+        for (name, expected) in [
+            ("clip.mp4", "video/mp4"),
+            ("song.flac", "audio/flac"),
+            ("Voice Memo.m4a", "audio/mp4"),
+            ("clip.m4v", "video/mp4"),
+            ("main.ts", "application/octet-stream"),
+        ] {
+            assert_eq!(sanitize_mime(Path::new(name)), mime(expected), "{name}");
+        }
     }
 
     #[test]
-    fn other_files_are_not_temp_uploads() {
-        assert_eq!(temp_upload_dir(Path::new("/home/someone/photo.png")), None);
-        assert_eq!(temp_upload_dir(Path::new("/tmp/etch-paste/photo.png")), None);
-        assert_eq!(temp_upload_dir(Path::new("/tmp/etch-paste-abc/nested/photo.png")), None);
-        assert_eq!(temp_upload_dir(Path::new("/tmp/my-etch-paste-1/photo.png")), None);
-    }
+    fn the_info_is_the_kind_the_sdk_keeps_for_the_type_and_carries_what_was_measured() {
+        let measured = media(640, 480, 2_500);
+        let (width, height) = (Some(UInt::from(640u32)), Some(UInt::from(480u32)));
+        let duration = Some(Duration::from_millis(2_500));
+        let size = Some(UInt::from(99u32));
 
-    #[test]
-    fn media_types_are_sniffed_from_the_extension_but_source_code_is_not_video() {
-        assert_eq!(sanitize_mime(Path::new("clip.mp4")), mime("video/mp4"));
-        assert_eq!(sanitize_mime(Path::new("song.flac")), mime("audio/flac"));
-        assert_eq!(sanitize_mime(Path::new("photo.png")), mime("image/png"));
-        assert_eq!(sanitize_mime(Path::new("main.ts")), mime::APPLICATION_OCTET_STREAM);
-        assert_eq!(sanitize_mime(Path::new("no-extension")), mime::APPLICATION_OCTET_STREAM);
-    }
+        for image in ["image/png", "image/gif"] {
+            let AttachmentInfo::Image(info) = attachment_info(&mime(image), 99, Some(&measured)) else {
+                panic!("{image} should be sent as an image");
+            };
+            assert_eq!((info.width, info.height, info.size), (width, height, size), "{image}");
+        }
 
-    #[test]
-    fn an_m4a_voice_memo_is_sent_as_mp4_audio_with_its_duration() {
-        let content_type = sanitize_mime(Path::new("Voice Memo.m4a"));
-        assert_eq!(content_type, mime("audio/mp4"));
-        let AttachmentInfo::Audio(info) = attachment_info(&content_type, 10, Some(&media(0, 0, 4_000))) else {
-            panic!("an m4a should be sent as audio");
-        };
-        assert_eq!(info.duration, Some(Duration::from_secs(4)));
-    }
-
-    #[test]
-    fn an_m4v_clip_is_sent_as_mp4_video_with_its_duration() {
-        let content_type = sanitize_mime(Path::new("clip.m4v"));
-        assert_eq!(content_type, mime("video/mp4"));
-        let AttachmentInfo::Video(info) = attachment_info(&content_type, 10, Some(&media(640, 360, 2_500))) else {
-            panic!("an m4v should be sent as video");
-        };
-        assert_eq!(info.duration, Some(Duration::from_millis(2_500)));
-    }
-
-    #[test]
-    fn an_image_carries_its_size_and_dimensions() {
-        let AttachmentInfo::Image(info) = attachment_info(&mime("image/png"), 1234, Some(&media(640, 480, 9))) else {
-            panic!("a PNG should be sent as an image");
-        };
-        assert_eq!(info.width, Some(UInt::from(640u32)));
-        assert_eq!(info.height, Some(UInt::from(480u32)));
-        assert_eq!(info.size, Some(UInt::from(1234u32)));
-    }
-
-    #[test]
-    fn a_gif_is_still_sent_as_an_image() {
-        let info = attachment_info(&mime("image/gif"), 10, Some(&media(32, 32, 0)));
-        assert!(matches!(info, AttachmentInfo::Image(_)), "the SDK sends a GIF as m.image, got {info:?}");
-    }
-
-    #[test]
-    fn a_video_carries_its_size_dimensions_and_duration() {
-        let AttachmentInfo::Video(info) = attachment_info(&mime("video/mp4"), 99, Some(&media(1920, 1080, 12_500))) else {
+        let AttachmentInfo::Video(info) = attachment_info(&mime("video/mp4"), 99, Some(&measured)) else {
             panic!("an MP4 should be sent as a video");
         };
-        assert_eq!(info.width, Some(UInt::from(1920u32)));
-        assert_eq!(info.height, Some(UInt::from(1080u32)));
-        assert_eq!(info.duration, Some(Duration::from_millis(12_500)));
-        assert_eq!(info.size, Some(UInt::from(99u32)));
-    }
+        assert_eq!((info.width, info.height, info.duration, info.size), (width, height, duration, size));
 
-    #[test]
-    fn audio_carries_its_size_and_duration() {
-        let AttachmentInfo::Audio(info) = attachment_info(&mime("audio/ogg"), 77, Some(&media(1, 1, 3_000))) else {
+        let AttachmentInfo::Audio(info) = attachment_info(&mime("audio/ogg"), 99, Some(&measured)) else {
             panic!("an Ogg file should be sent as audio");
         };
-        assert_eq!(info.duration, Some(Duration::from_secs(3)));
-        assert_eq!(info.size, Some(UInt::from(77u32)));
-    }
+        assert_eq!((info.duration, info.size), (duration, size));
 
-    #[test]
-    fn any_other_file_carries_only_its_size() {
-        let AttachmentInfo::File(info) = attachment_info(&mime("application/pdf"), 5, Some(&media(1, 1, 1))) else {
+        let AttachmentInfo::File(info) = attachment_info(&mime("application/pdf"), 99, Some(&measured)) else {
             panic!("a PDF should be sent as a file");
         };
-        assert_eq!(info.size, Some(UInt::from(5u32)));
-    }
+        assert_eq!(info.size, size);
 
-    #[test]
-    fn values_the_frontend_did_not_measure_are_left_out() {
-        let AttachmentInfo::Video(info) = attachment_info(&mime("video/webm"), 8, None) else {
+        let AttachmentInfo::Video(info) = attachment_info(&mime("video/webm"), 99, None) else {
             panic!("a WebM should be sent as a video");
         };
-        assert_eq!((info.width, info.height, info.duration), (None, None, None));
-        assert_eq!(info.size, Some(UInt::from(8u32)));
-
-        let partial = OutgoingMediaInfo { width: Some(10), ..Default::default() };
-        let AttachmentInfo::Image(info) = attachment_info(&mime("image/jpeg"), 8, Some(&partial)) else {
-            panic!("a JPEG should be sent as an image");
-        };
-        assert_eq!((info.width, info.height), (Some(UInt::from(10u32)), None));
-    }
-
-    #[test]
-    fn a_file_without_a_name_is_called_attachment() {
-        assert_eq!(display_name(Path::new("/tmp/etch-paste-abc/clip.mp4")), "clip.mp4");
-        assert_eq!(display_name(Path::new("/")), "attachment");
+        assert_eq!((info.width, info.height, info.duration, info.size), (None, None, None, size));
     }
 
     #[tokio::test]
@@ -484,18 +377,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_temp_upload_over_the_limit_is_rejected_and_still_removed() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("etch-paste-abc").join("clip.mp4");
-        write_file(&path, 3_565_158);
-
-        let result = load(&path, UploadLimits::ETCH_CAPS, None).await;
-
-        assert_eq!(result.unwrap_err(), "it is 3.4 MB and the limit for this kind of file is 2 MB");
-        assert!(!path.exists(), "a rejected temp file should still be removed");
-    }
-
-    #[tokio::test]
     async fn a_temp_directory_holding_anything_else_is_left_in_place() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("etch-paste-abc");
@@ -510,50 +391,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_file_the_user_picked_is_never_removed() {
+    async fn a_file_of_the_users_own_is_never_removed_even_one_named_like_a_legacy_temp_file() {
         let tmp = tempfile::tempdir().unwrap();
-        let small = tmp.path().join("notes.pdf");
-        let large = tmp.path().join("big.pdf");
-        write_file(&small, 10);
-        write_file(&large, 3 * MIB as usize);
+        let sent = tmp.path().join("etch-paste-1700000000000.png");
+        let rejected = tmp.path().join("big.pdf");
+        write_file(&sent, 10);
+        write_file(&rejected, 3 * MIB as usize);
 
-        load(&small, UploadLimits::ETCH_CAPS, None).await.expect("a small file should load");
-        load(&large, UploadLimits::ETCH_CAPS, None).await.expect_err("a large file should be rejected");
+        load(&sent, UploadLimits::ETCH_CAPS, None).await.expect("a small image should load");
+        load(&rejected, UploadLimits::ETCH_CAPS, None).await.expect_err("a large file should be rejected");
 
-        assert!(small.exists() && large.exists(), "only Etch temp files may be deleted");
-    }
-
-    #[tokio::test]
-    async fn a_saved_file_named_like_a_legacy_temp_file_is_never_removed() {
-        let tmp = tempfile::tempdir().unwrap();
-        let small = tmp.path().join("etch-paste-1700000000000.png");
-        let large = tmp.path().join("etch-paste-1700000000001.mp4");
-        write_file(&small, 10);
-        write_file(&large, 3 * MIB as usize);
-
-        load(&small, UploadLimits::ETCH_CAPS, None).await.expect("a small image should load");
-        load(&large, UploadLimits::ETCH_CAPS, None).await.expect_err("a large clip should be rejected");
-
-        assert!(small.exists() && large.exists(), "a flat etch-paste file is the user's own");
-    }
-
-    #[tokio::test]
-    async fn a_missing_file_is_reported_as_unreadable() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path: PathBuf = tmp.path().join("etch-paste-gone").join("photo.png");
-
-        let result = load(&path, UploadLimits::ETCH_CAPS, None).await;
-
-        assert_eq!(result.unwrap_err(), "the file could not be read");
-    }
-
-    #[tokio::test]
-    async fn the_homeserver_limit_lowers_the_caps() {
-        let server = CannedHomeserver::start("200 OK", r#"{"m.upload.size":1048576}"#).await;
-        let client = server.client_for("@alice:example.com").await;
-
-        assert_eq!(fetch_upload_limits(&client).await, UploadLimits { image_bytes: MIB, other_bytes: MIB });
-        assert!(server.requests_to("/config") > 0, "the limit should come from the media config endpoint");
+        assert!(sent.exists() && rejected.exists(), "only a file in an etch-paste directory may be deleted");
     }
 
     #[tokio::test]

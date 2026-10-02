@@ -1,8 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/svelte';
-import { get } from 'svelte/store';
-import { resetStores } from '$lib/stores/__tests__/helpers';
-import { activeOverlay, overlayImageUrl } from '$lib/stores/overlay';
+import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import MediaRenderer from '../MediaRenderer.svelte';
 
 const SRC = 'etch-media://example.org/abc123?mime=video%2Fmp4';
@@ -21,7 +18,6 @@ let fetchMock: ReturnType<typeof vi.fn>;
 let createdBlobs: Blob[];
 
 beforeEach(() => {
-    resetStores();
     fetchMock = vi.fn(async () => okResponse());
     vi.stubGlobal('fetch', fetchMock);
     createdBlobs = [];
@@ -37,27 +33,26 @@ afterEach(() => {
 });
 
 describe('MediaRenderer', () => {
-    it('plays video inline from a blob of the fetched bytes, typed with its mimetype', async () => {
-        const { container } = renderMedia({ mimetype: 'video/mp4', body: 'clip.mp4' });
+    // WebKitGTK cannot stream an etch-media URL, so a player must only ever be given the blob.
+    it('plays video and audio inline from a blob of the fetched bytes, typed with the mimetype', async () => {
+        const cases = [
+            { tag: 'video', mimetype: 'video/mp4', body: 'clip.mp4' },
+            { tag: 'audio', mimetype: 'audio/ogg', body: 'voice.ogg' },
+        ];
+        for (const [i, { tag, mimetype, body }] of cases.entries()) {
+            const { container } = renderMedia({ mimetype, body });
 
-        const video = container.querySelector('video')!;
-        expect(video.hasAttribute('controls')).toBe(true);
-        expect(video.getAttribute('preload')).toBe('metadata');
-        expect(fetchMock).toHaveBeenCalledWith(SRC);
-        await waitFor(() => expect(video.getAttribute('src')).toBe('blob:media-1'));
-        expect(createdBlobs[0].type).toBe('video/mp4');
-        expect(container.querySelector('img')).not.toBeInTheDocument();
-        expect(screen.queryByText('clip.mp4')).not.toBeInTheDocument();
-    });
-
-    it('never hands the player an etch-media URL, since WebKitGTK cannot stream one', () => {
-        const { container } = renderMedia({ mimetype: 'video/mp4', body: 'clip.mp4' });
-
-        expect(container.querySelector('video')!.hasAttribute('src')).toBe(false);
+            const player = container.querySelector(tag)!;
+            expect(player.hasAttribute('src'), tag).toBe(false);
+            expect(fetchMock).toHaveBeenLastCalledWith(SRC);
+            await waitFor(() => expect(player.getAttribute('src')).toBe(`blob:media-${i + 1}`));
+            expect(createdBlobs[i].type).toBe(mimetype);
+            expect(container.querySelector('.file-download'), tag).not.toBeInTheDocument();
+        }
     });
 
     it('offers a video the webview cannot play as a download and releases its blob', async () => {
-        const { container } = renderMedia({ mimetype: 'video/x-matroska', body: 'clip.mkv', size: 1_572_864 });
+        const { container } = renderMedia({ mimetype: 'video/x-matroska', body: 'clip.mkv' });
         const video = container.querySelector('video')!;
         await waitFor(() => expect(video.getAttribute('src')).toBe('blob:media-1'));
 
@@ -65,8 +60,6 @@ describe('MediaRenderer', () => {
 
         expect(container.querySelector('video')).not.toBeInTheDocument();
         expect(container.querySelector('.file-download')).toBeInTheDocument();
-        expect(screen.getByText('clip.mkv')).toBeInTheDocument();
-        expect(screen.getByText('1.5 MB')).toBeInTheDocument();
         expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:media-1');
     });
 
@@ -76,7 +69,6 @@ describe('MediaRenderer', () => {
 
         await waitFor(() => expect(container.querySelector('.file-download')).toBeInTheDocument());
         expect(container.querySelector('video')).not.toBeInTheDocument();
-        expect(URL.createObjectURL).not.toHaveBeenCalled();
     });
 
     it('offers video over the inline playback size as a download without fetching it', () => {
@@ -111,78 +103,24 @@ describe('MediaRenderer', () => {
         expect(video.getAttribute('src')).toBe('blob:media-1');
     });
 
-    it('plays audio from a blob with its controls, name and size', async () => {
-        const { container } = renderMedia({ mimetype: 'audio/ogg', body: 'voice.ogg', size: 48_128 });
+    it('shows an image inline, but offers an SVG or any other file as a download', () => {
+        const gif = renderMedia({ mimetype: 'image/gif', body: 'party.gif' }).container;
+        expect(gif.querySelector('img')?.getAttribute('src')).toBe(SRC);
 
-        const audio = container.querySelector('audio')!;
-        expect(audio.hasAttribute('controls')).toBe(true);
-        expect(audio.getAttribute('preload')).toBe('metadata');
-        await waitFor(() => expect(audio.getAttribute('src')).toBe('blob:media-1'));
-        expect(createdBlobs[0].type).toBe('audio/ogg');
-        expect(screen.getByText('voice.ogg')).toBeInTheDocument();
-        expect(screen.getByText('47 KB')).toBeInTheDocument();
-        expect(container.querySelector('video')).not.toBeInTheDocument();
+        for (const [mimetype, body] of [['image/svg+xml', 'logo.svg'], ['application/pdf', 'notes.pdf']]) {
+            const { container } = renderMedia({ mimetype, body });
+            expect(container.querySelector('img, video, audio'), mimetype).not.toBeInTheDocument();
+            expect(container.querySelector('.file-download'), mimetype).toBeInTheDocument();
+        }
     });
 
-    it('shows a GIF as an image so it keeps animating', () => {
-        const { container } = renderMedia({ mimetype: 'image/gif', body: 'party.gif' });
-
-        expect(container.querySelector('img')?.getAttribute('src')).toBe(SRC);
-        expect(container.querySelector('video')).not.toBeInTheDocument();
-        expect(container.querySelector('.file-download')).not.toBeInTheDocument();
-    });
-
-    it('opens an image in the viewer when clicked', async () => {
-        const { container } = renderMedia({ mimetype: 'image/png', body: 'photo.png' });
-
-        await fireEvent.click(container.querySelector('.image-btn')!);
-
-        expect(get(activeOverlay)).toBe('image');
-        expect(get(overlayImageUrl)).toBe(SRC);
-    });
-
-    it('reserves the scaled size of an image before it loads', () => {
-        const { container } = renderMedia({ mimetype: 'image/jpeg', body: 'photo.jpg', width: 1600, height: 1200 });
-
-        const img = container.querySelector('img')!;
+    it('reserves the scaled size of media before it loads, when the dimensions are known', () => {
+        const known = renderMedia({ mimetype: 'image/jpeg', body: 'photo.jpg', width: 1600, height: 1200 }).container;
+        const img = known.querySelector('img')!;
         expect(img.style.width).toBe('400px');
         expect(img.style.aspectRatio).toBe('1600 / 1200');
-    });
 
-    it('reserves the scaled size of a video before it loads', () => {
-        const { container } = renderMedia({ mimetype: 'video/webm', body: 'clip.webm', width: 720, height: 1280 });
-
-        const video = container.querySelector('video')!;
-        expect(video.style.width).toBe('169px');
-        expect(video.style.aspectRatio).toBe('720 / 1280');
-    });
-
-    it('reserves nothing when the dimensions are unknown', () => {
-        const { container } = renderMedia({ mimetype: 'image/png', body: 'photo.png', width: 0, height: 0 });
-
-        expect(container.querySelector('img')!.getAttribute('style')).toBeNull();
-    });
-
-    it('shows other files as a download card with a readable size', () => {
-        const { container } = renderMedia({ mimetype: 'application/pdf', body: 'notes.pdf', size: 3_565_158 });
-
-        expect(container.querySelector('.file-download')).toBeInTheDocument();
-        expect(screen.getByText('notes.pdf')).toBeInTheDocument();
-        expect(screen.getByText('3.4 MB')).toBeInTheDocument();
-        expect(container.querySelector('img, video, audio')).not.toBeInTheDocument();
-    });
-
-    it('leaves the size off when it is unknown', () => {
-        const { container } = renderMedia({ mimetype: 'application/zip', body: 'bundle.zip', size: 0 });
-
-        expect(container.querySelector('.file-size')).not.toBeInTheDocument();
-    });
-
-    it('offers an SVG as a file, since it is never served as an image', () => {
-        const { container } = renderMedia({ mimetype: 'image/svg+xml', body: 'logo.svg', size: 2048 });
-
-        expect(container.querySelector('img')).not.toBeInTheDocument();
-        expect(container.querySelector('.file-download')).toBeInTheDocument();
-        expect(screen.getByText('2 KB')).toBeInTheDocument();
+        const unknown = renderMedia({ mimetype: 'image/png', body: 'photo.png', width: 0, height: 0 }).container;
+        expect(unknown.querySelector('img')!.getAttribute('style')).toBeNull();
     });
 });

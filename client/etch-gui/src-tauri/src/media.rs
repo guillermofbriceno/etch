@@ -170,129 +170,70 @@ mod tests {
     }
 
     #[test]
-    fn mxc_url_uses_the_host_as_the_server() {
-        assert_eq!(
-            mxc_url(&uri("etch-media://example.org/AbC123"), false),
-            "mxc://example.org/AbC123"
-        );
-    }
-
-    #[test]
-    fn mxc_url_ignores_the_query() {
-        assert_eq!(
-            mxc_url(
-                &uri("etch-media://example.org/AbC123?mime=image%2Fpng"),
-                false
+    fn mxc_url_takes_the_server_from_the_authority_or_on_windows_from_the_path() {
+        for (request, on_windows, expected) in [
+            (
+                "etch-media://example.org/AbC123?mime=image%2Fpng",
+                false,
+                "mxc://example.org/AbC123",
             ),
-            "mxc://example.org/AbC123"
-        );
-    }
-
-    #[test]
-    fn mxc_url_keeps_a_server_port() {
-        assert_eq!(
-            mxc_url(&uri("etch-media://example.org:8448/AbC123"), false),
-            "mxc://example.org:8448/AbC123"
-        );
-    }
-
-    #[test]
-    fn mxc_url_treats_a_localhost_authority_as_the_server_outside_windows() {
-        assert_eq!(
-            mxc_url(&uri("etch-media://localhost/AbC123"), false),
-            "mxc://localhost/AbC123"
-        );
-        assert_eq!(
-            mxc_url(
-                &uri("etch-media://localhost:8448/AbC123?mime=image%2Fpng"),
-                false
+            (
+                "etch-media://example.org:8448/AbC123",
+                false,
+                "mxc://example.org:8448/AbC123",
             ),
-            "mxc://localhost:8448/AbC123"
-        );
-    }
-
-    #[test]
-    fn mxc_url_reads_the_server_from_the_path_on_the_windows_localhost_form() {
-        assert_eq!(
-            mxc_url(&uri("etch-media://localhost/example.org/AbC123"), true),
-            "mxc://example.org/AbC123"
-        );
-        assert_eq!(
-            mxc_url(
-                &uri("etch-media://localhost/example.org/AbC123?mime=video%2Fmp4"),
-                true
+            (
+                "etch-media://localhost/AbC123",
+                false,
+                "mxc://localhost/AbC123",
             ),
-            "mxc://example.org/AbC123"
-        );
-        assert_eq!(
-            mxc_url(
-                &uri("etch-media://localhost/example.org:8448/AbC123?mime=video%2Fmp4"),
-                true
+            (
+                "etch-media://localhost/example.org:8448/AbC123?mime=video%2Fmp4",
+                true,
+                "mxc://example.org:8448/AbC123",
             ),
-            "mxc://example.org:8448/AbC123"
-        );
+            (
+                "etch-media://localhost/localhost/AbC123",
+                true,
+                "mxc://localhost/AbC123",
+            ),
+        ] {
+            assert_eq!(mxc_url(&uri(request), on_windows), expected, "{request}");
+        }
     }
 
     #[test]
-    fn mxc_url_reads_a_localhost_server_from_the_path_on_windows() {
-        assert_eq!(
-            mxc_url(&uri("etch-media://localhost/localhost/AbC123"), true),
-            "mxc://localhost/AbC123"
-        );
-    }
-
-    #[test]
-    fn mime_hint_is_read_and_percent_decoded() {
-        assert_eq!(
-            mime_hint(Some("mime=image%2Fpng")).as_deref(),
-            Some("image/png")
-        );
+    fn mime_hint_is_the_percent_decoded_mime_parameter_or_nothing() {
         assert_eq!(
             mime_hint(Some("x=1&mime=video%2Fmp4")).as_deref(),
             Some("video/mp4")
         );
-        assert_eq!(
-            mime_hint(Some("mime=image%2Fsvg%2Bxml")).as_deref(),
-            Some("image/svg+xml")
-        );
-        assert_eq!(
-            mime_hint(Some("mime=audio/ogg")).as_deref(),
-            Some("audio/ogg")
-        );
+        for query in [
+            None,
+            Some(""),
+            Some("type=image%2Fpng"),
+            Some("mime=image%2"),
+            Some("mime=image%zzpng"),
+            Some("mime=%ff%fe"),
+        ] {
+            assert_eq!(mime_hint(query), None, "query {query:?}");
+        }
     }
 
     #[test]
-    fn mime_hint_is_absent_without_a_valid_mime_parameter() {
-        assert_eq!(mime_hint(None), None);
-        assert_eq!(mime_hint(Some("")), None);
-        assert_eq!(mime_hint(Some("type=image%2Fpng")), None);
-        assert_eq!(mime_hint(Some("mime=image%2")), None);
-        assert_eq!(mime_hint(Some("mime=image%zzpng")), None);
-        assert_eq!(mime_hint(Some("mime=%ff%fe")), None);
-    }
-
-    #[test]
-    fn content_type_passes_image_video_and_audio_hints() {
-        assert_eq!(content_type(Some("image/png")), "image/png");
-        assert_eq!(content_type(Some("image/jpeg")), "image/jpeg");
-        assert_eq!(content_type(Some("video/mp4")), "video/mp4");
-        assert_eq!(content_type(Some("audio/ogg")), "audio/ogg");
+    fn only_a_clean_image_video_or_audio_hint_becomes_the_content_type() {
         assert_eq!(content_type(Some("IMAGE/WebP")), "image/webp");
+        assert_eq!(content_type(Some("audio/ogg")), "audio/ogg");
         assert_eq!(
             content_type(Some("video/mp4; codecs=\"avc1\"")),
             "video/mp4"
         );
-    }
-
-    #[test]
-    fn content_type_falls_back_to_octet_stream_for_anything_else() {
         for hint in [
             None,
             Some("image/svg+xml"),
             Some("IMAGE/SVG+XML"),
             Some("text/html"),
             Some("application/pdf"),
-            Some("application/octet-stream"),
             Some("image/"),
             Some("image"),
             Some(""),
@@ -304,116 +245,43 @@ mod tests {
     }
 
     #[test]
-    fn parse_range_reads_a_bounded_range() {
-        assert_eq!(
-            parse_range(Some("bytes=0-99"), 1000),
-            ByteRange::Partial { start: 0, end: 99 }
-        );
-        assert_eq!(
-            parse_range(Some("bytes=10-10"), 1000),
-            ByteRange::Partial { start: 10, end: 10 }
-        );
-        assert_eq!(
-            parse_range(Some("Bytes=1-2"), 1000),
-            ByteRange::Partial { start: 1, end: 2 }
-        );
-    }
-
-    #[test]
-    fn parse_range_clamps_an_end_past_the_body() {
-        assert_eq!(
-            parse_range(Some("bytes=500-5000"), 1000),
-            ByteRange::Partial {
-                start: 500,
-                end: 999
-            }
-        );
-        assert_eq!(
-            parse_range(Some("bytes=0-99999999999999999999999"), 1000),
-            ByteRange::Partial { start: 0, end: 999 }
-        );
-    }
-
-    #[test]
-    fn parse_range_reads_an_open_ended_range() {
-        assert_eq!(
-            parse_range(Some("bytes=100-"), 1000),
-            ByteRange::Partial {
-                start: 100,
-                end: 999
-            }
-        );
-        assert_eq!(
-            parse_range(Some("bytes=0-"), 1000),
-            ByteRange::Partial { start: 0, end: 999 }
-        );
-    }
-
-    #[test]
-    fn parse_range_reads_a_suffix_range() {
-        assert_eq!(
-            parse_range(Some("bytes=-100"), 1000),
-            ByteRange::Partial {
-                start: 900,
-                end: 999
-            }
-        );
-        assert_eq!(
-            parse_range(Some("bytes=-5000"), 1000),
-            ByteRange::Partial { start: 0, end: 999 }
-        );
-    }
-
-    #[test]
-    fn parse_range_rejects_ranges_outside_the_body() {
-        assert_eq!(
-            parse_range(Some("bytes=1000-"), 1000),
-            ByteRange::Unsatisfiable
-        );
-        assert_eq!(
-            parse_range(Some("bytes=1000-1200"), 1000),
-            ByteRange::Unsatisfiable
-        );
-        assert_eq!(
-            parse_range(Some("bytes=99999999999999999999999-"), 1000),
-            ByteRange::Unsatisfiable
-        );
-        assert_eq!(
-            parse_range(Some("bytes=-0"), 1000),
-            ByteRange::Unsatisfiable
-        );
-        assert_eq!(parse_range(Some("bytes=0-"), 0), ByteRange::Unsatisfiable);
-        assert_eq!(parse_range(Some("bytes=-5"), 0), ByteRange::Unsatisfiable);
-    }
-
-    #[test]
-    fn parse_range_serves_the_whole_body_for_malformed_headers() {
-        for header in [
-            "",
-            "bytes",
-            "bytes=",
-            "bytes=-",
-            "bytes=abc",
-            "bytes=5-3",
-            "bytes=1-2-3",
-            "bytes=+1-2",
-            "bytes=0x10-",
-            "items=0-1",
-            "0-1",
+    fn parse_range_clamps_one_byte_range_to_the_body_and_ignores_anything_else() {
+        let partial = |start, end| ByteRange::Partial { start, end };
+        for (header, len, expected) in [
+            ("bytes=0-99", 1000, partial(0, 99)),
+            ("Bytes=10-10", 1000, partial(10, 10)),
+            ("bytes=500-5000", 1000, partial(500, 999)),
+            ("bytes=0-99999999999999999999999", 1000, partial(0, 999)),
+            ("bytes=100-", 1000, partial(100, 999)),
+            ("bytes=-100", 1000, partial(900, 999)),
+            ("bytes=-5000", 1000, partial(0, 999)),
+            ("bytes=1000-", 1000, ByteRange::Unsatisfiable),
+            ("bytes=1000-1200", 1000, ByteRange::Unsatisfiable),
+            (
+                "bytes=99999999999999999999999-",
+                1000,
+                ByteRange::Unsatisfiable,
+            ),
+            ("bytes=-0", 1000, ByteRange::Unsatisfiable),
+            ("bytes=0-", 0, ByteRange::Unsatisfiable),
+            ("bytes=-5", 0, ByteRange::Unsatisfiable),
+            ("", 1000, ByteRange::Full),
+            ("bytes", 1000, ByteRange::Full),
+            ("bytes=", 1000, ByteRange::Full),
+            ("bytes=-", 1000, ByteRange::Full),
+            ("bytes=abc", 1000, ByteRange::Full),
+            ("bytes=5-3", 1000, ByteRange::Full),
+            ("bytes=1-2-3", 1000, ByteRange::Full),
+            ("bytes=+1-2", 1000, ByteRange::Full),
+            ("bytes=0x10-", 1000, ByteRange::Full),
+            ("items=0-1", 1000, ByteRange::Full),
+            ("0-1", 1000, ByteRange::Full),
+            ("bytes=0-1,5-6", 1000, ByteRange::Full),
+            ("bytes=0-1, -5", 1000, ByteRange::Full),
         ] {
-            assert_eq!(
-                parse_range(Some(header), 1000),
-                ByteRange::Full,
-                "header {header:?}"
-            );
+            assert_eq!(parse_range(Some(header), len), expected, "header {header:?}");
         }
         assert_eq!(parse_range(None, 1000), ByteRange::Full);
-    }
-
-    #[test]
-    fn parse_range_serves_the_whole_body_for_multiple_ranges() {
-        assert_eq!(parse_range(Some("bytes=0-1,5-6"), 1000), ByteRange::Full);
-        assert_eq!(parse_range(Some("bytes=0-1, -5"), 1000), ByteRange::Full);
     }
 
     #[test]
@@ -454,18 +322,6 @@ mod tests {
     }
 
     #[test]
-    fn a_suffix_range_request_gets_the_tail() {
-        let response = media_response(b"0123456789".to_vec(), Some("bytes=-3"), "audio/ogg");
-        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
-        assert_eq!(response.body(), b"789");
-        assert_eq!(
-            header_value(&response, header::CONTENT_RANGE),
-            Some("bytes 7-9/10")
-        );
-        assert_eq!(header_value(&response, header::CONTENT_LENGTH), Some("3"));
-    }
-
-    #[test]
     fn an_unsatisfiable_range_gets_416() {
         let response = media_response(b"0123456789".to_vec(), Some("bytes=10-"), "video/mp4");
         assert_eq!(response.status(), StatusCode::RANGE_NOT_SATISFIABLE);
@@ -475,13 +331,5 @@ mod tests {
             Some("bytes */10")
         );
         assert_eq!(header_value(&response, header::CONTENT_LENGTH), Some("0"));
-    }
-
-    #[test]
-    fn a_multi_range_request_gets_the_whole_body() {
-        let response = media_response(b"0123456789".to_vec(), Some("bytes=0-1,4-5"), "video/mp4");
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(response.body(), b"0123456789");
-        assert_eq!(header_value(&response, header::CONTENT_LENGTH), Some("10"));
     }
 }

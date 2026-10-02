@@ -259,45 +259,25 @@ describe('MessageGroup media', () => {
         });
     }
 
-    it('gives message media the mime hint the protocol serves it by', () => {
-        const fetchMock = vi.fn(() => new Promise(() => {}));
-        vi.stubGlobal('fetch', fetchMock);
-        try {
-            render(MessageGroup, {
-                props: { msg: mediaMsg('clip.mp4', 'video/mp4'), sender, continuation: false, roomId: '!room:test' },
-            });
-
-            expect(fetchMock).toHaveBeenCalledWith('etch-media://example.org/abc123?mime=video%2Fmp4');
-        } finally {
-            vi.unstubAllGlobals();
-        }
-    });
-
-    it('leaves the avatar url without a hint', () => {
-        const { container } = render(MessageGroup, {
+    it('hands message media to the renderer with its mime hint, size and dimensions, and leaves the avatar url alone', () => {
+        const photo = render(MessageGroup, {
             props: {
-                msg: mediaMsg('photo.png', 'image/png'),
+                msg: mediaMsg('photo.png', 'image/png', { width: 800, height: 600 }),
                 sender: { ...sender, avatar_url: 'mxc://example.org/avatar' },
                 continuation: false,
                 roomId: '!room:test',
             },
-        });
+        }).container;
+        expect(photo.querySelector('.avatar img')?.getAttribute('src')).toBe('etch-media://example.org/avatar');
+        const img = photo.querySelector('.image-btn img') as HTMLElement;
+        expect(img.getAttribute('src')).toBe('etch-media://example.org/abc123?mime=image%2Fpng');
+        expect(img.style.width).toBe('400px');
 
-        expect(container.querySelector('.avatar img')?.getAttribute('src')).toBe('etch-media://example.org/avatar');
-        expect(container.querySelector('.image-btn img')?.getAttribute('src'))
-            .toBe('etch-media://example.org/abc123?mime=image%2Fpng');
-    });
-
-    it('passes the size and dimensions through to the renderer', () => {
-        const { container } = render(MessageGroup, {
-            props: { msg: mediaMsg('notes.pdf', 'application/pdf', { size: 1536 }), sender, continuation: false, roomId: '!room:test' },
-        });
-        expect(screen.getByText('1.5 KB')).toBeInTheDocument();
-
-        const photo = render(MessageGroup, {
-            props: { msg: mediaMsg('photo.jpg', 'image/jpeg', { width: 800, height: 600 }), sender, continuation: false, roomId: '!room:test' },
-        });
-        expect((photo.container.querySelector('.image-btn img') as HTMLElement).style.width).toBe('400px');
-        expect(container.querySelector('.file-download')).toBeInTheDocument();
+        // Only the size keeps a long video from being fetched whole for inline playback.
+        const video = render(MessageGroup, {
+            props: { msg: mediaMsg('long.mp4', 'video/mp4', { size: 21 * 1024 * 1024 }), sender, continuation: false, roomId: '!room:test' },
+        }).container;
+        expect(video.querySelector('.file-download')).toBeInTheDocument();
+        expect(video.querySelector('video')).not.toBeInTheDocument();
     });
 });

@@ -1122,7 +1122,7 @@ mod tests {
     #[tokio::test]
     async fn a_connect_publishes_the_effective_upload_limits_and_enforces_them() {
         let tmp = tempfile::tempdir().unwrap();
-        let server = CannedHomeserver::start("200 OK", r#"{"next_batch":"s1","m.upload.size":1048576}"#).await;
+        let server = CannedHomeserver::start("200 OK", r#"{"next_batch":"s1","m.upload.size":3145728}"#).await;
         let form = ServerConnectionForm { homeserver_url: Some(server.url.clone()), ..test_form() };
         let mut service = service(tmp.path());
         let (event_tx, mut event_rx) = mpsc::channel(64);
@@ -1143,12 +1143,15 @@ mod tests {
                 }
             }
         }).await.expect("UploadLimits should follow a successful connect");
-        assert_eq!(limits, (7, 1_048_576, 1_048_576), "the limits should carry the connect's generation");
+        assert_eq!(
+            limits, (7, 3_145_728, 2_097_152),
+            "the limits should carry the connect's generation, and the server's limit only lowers a cap",
+        );
 
-        let path = temp_upload(tmp.path(), "photo.png", 1_572_864);
+        let path = temp_upload(tmp.path(), "photo.png", 3_670_016);
         service.handle_command(send_attachment_command("!a:b", &path)).await;
         let (_, _, reason) = attachment_failure(&mut event_rx);
-        assert_eq!(reason, "it is 1.5 MB and the limit for this kind of file is 1 MB");
+        assert_eq!(reason, "it is 3.5 MB and the limit for this kind of file is 3 MB");
 
         service.reset().await;
         assert_eq!(service.upload_limits(), UploadLimits::ETCH_CAPS, "a reset must not carry the old server's limits");
