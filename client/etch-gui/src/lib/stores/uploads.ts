@@ -18,5 +18,8 @@ export function handleMatrixEvent(me: MatrixEvent): void {
         case 'AttachmentFailed':
             showToast(`Couldn't send ${me.data.file_name}: ${me.data.reason}`);
             break;
+        case 'SendFailed':
+            showToast(`Couldn't send a message: ${me.data.reason}`);
+            break;
     }
 }

@@ -20,6 +20,7 @@ export type MatrixEvent =
     | { type: 'PaginationComplete'; data: [string, boolean] }
     | { type: 'UploadLimits'; data: { image_bytes: number; other_bytes: number } }
     | { type: 'AttachmentFailed'; data: { room_id: string; file_name: string; reason: string } }
+    | { type: 'SendFailed'; data: { room_id: string; reason: string } }
     | { type: 'ConnectionState'; data: { type: 'Disconnected' } | { type: 'Connecting' } | { type: 'Connected' } | { type: 'Failed'; reason: string; retries: number; retry_in_secs: number } };
 
 export type MumbleEvent =

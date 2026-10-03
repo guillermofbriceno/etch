@@ -31,6 +31,7 @@ pub enum MatrixEvent {
     ConnectionState(ConnectionState),
     UploadLimits { image_bytes: u64, other_bytes: u64 },
     AttachmentFailed { room_id: String, file_name: String, reason: String },
+    SendFailed { room_id: String, reason: String },
 }
 
 #[derive(Debug, Serialize)]

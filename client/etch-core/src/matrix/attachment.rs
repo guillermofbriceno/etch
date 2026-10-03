@@ -7,6 +7,7 @@ use matrix_sdk::attachment::{
 };
 use matrix_sdk::media::MediaError;
 use matrix_sdk::ruma::{RoomId, UInt};
+use matrix_sdk::send_queue::RoomSendQueueError;
 use mime_guess::mime::{self, Mime};
 
 use crate::commands::OutgoingMediaInfo;
@@ -17,7 +18,10 @@ const MIB: u64 = 1024 * 1024;
 pub(crate) const NOT_CONNECTED: &str = "not connected to the server";
 const UNREADABLE: &str = "the file could not be read";
 const UNKNOWN_ROOM: &str = "the room could not be found";
+const NOT_JOINED: &str = "you are not in this room";
 const UPLOAD_FAILED: &str = "the upload failed";
+const HELD_FOR_RETRY: &str = "the server could not be reached; it will be retried when you next send to this room";
+const NOT_ACCEPTED: &str = "the server did not accept it";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum UploadCategory {
@@ -90,12 +94,14 @@ fn over_limit_reason(size: u64, limit: u64) -> String {
     )
 }
 
-fn send_failure_reason(err: &matrix_sdk::Error) -> String {
+/// For a failure the send queue reports after it has taken the request, which may be a text message.
+pub(crate) fn send_failure_reason(err: &matrix_sdk::Error, is_recoverable: bool) -> String {
     match err {
         matrix_sdk::Error::Media(MediaError::MediaTooLargeToUpload { max, current }) => {
             over_limit_reason(u64::from(*current), u64::from(*max))
         }
-        _ => UPLOAD_FAILED.into(),
+        _ if is_recoverable => HELD_FOR_RETRY.into(),
+        _ => NOT_ACCEPTED.into(),
     }
 }
 
@@ -190,6 +196,7 @@ fn unreadable(path: &Path, e: std::io::Error) -> String {
     UNREADABLE.into()
 }
 
+/// Returns once the file is queued; a failure after that arrives through the send queue's error stream.
 pub(crate) async fn send(client: &Client, room_id: &str, attachment: Attachment) -> Result<(), String> {
     let room = RoomId::parse(room_id).ok().and_then(|id| client.get_room(&id));
     let Some(room) = room else {
@@ -197,12 +204,16 @@ pub(crate) async fn send(client: &Client, room_id: &str, attachment: Attachment)
         return Err(UNKNOWN_ROOM.into());
     };
     let config = AttachmentConfig::new().info(attachment.info);
-    room.send_attachment(&attachment.file_name, &attachment.content_type, attachment.data, config)
+    room.send_queue()
+        .send_attachment(attachment.file_name, attachment.content_type, attachment.data, config)
         .await
         .map(|_| ())
         .map_err(|e| {
-            log::error!("Failed to send an attachment to {room_id}: {e:?}");
-            send_failure_reason(&e)
+            log::warn!("Failed to queue an attachment for {room_id}: {e:?}");
+            match e {
+                RoomSendQueueError::RoomNotJoined | RoomSendQueueError::RoomDisappeared => NOT_JOINED.into(),
+                _ => UPLOAD_FAILED.into(),
+            }
         })
 }
 
@@ -268,8 +279,8 @@ mod tests {
             max: UInt::new(MIB).unwrap(),
             current: UInt::new(3 * MIB).unwrap(),
         });
-        assert_eq!(send_failure_reason(&err), "it is 3 MB and the limit for this kind of file is 1 MB");
-        assert_eq!(send_failure_reason(&matrix_sdk::Error::InsufficientData), "the upload failed");
+        assert_eq!(send_failure_reason(&err, false), "it is 3 MB and the limit for this kind of file is 1 MB");
+        assert_eq!(send_failure_reason(&matrix_sdk::Error::InsufficientData, false), "the server did not accept it");
     }
 
     #[test]
