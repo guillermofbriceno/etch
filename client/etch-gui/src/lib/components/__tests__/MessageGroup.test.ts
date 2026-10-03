@@ -259,7 +259,7 @@ describe('MessageGroup media', () => {
         });
     }
 
-    it('hands message media to the renderer with its mime hint, size and dimensions, and leaves the avatar url alone', () => {
+    it('hands message media to the renderer with its mimetype, size and dimensions, and leaves the avatar url alone', () => {
         const photo = render(MessageGroup, {
             props: {
                 msg: mediaMsg('photo.png', 'image/png', { width: 800, height: 600 }),
@@ -270,7 +270,7 @@ describe('MessageGroup media', () => {
         }).container;
         expect(photo.querySelector('.avatar img')?.getAttribute('src')).toBe('etch-media://example.org/avatar');
         const img = photo.querySelector('.image-btn img') as HTMLElement;
-        expect(img.getAttribute('src')).toBe('etch-media://example.org/abc123?mime=image%2Fpng');
+        expect(img.getAttribute('src')).toBe('etch-media://example.org/abc123');
         expect(img.style.width).toBe('400px');
 
         // Only the size keeps a long video from being fetched whole for inline playback.

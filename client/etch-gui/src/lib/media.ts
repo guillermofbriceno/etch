@@ -14,13 +14,6 @@ export function resolveMediaUrl(url: string | null | undefined): string | null {
     return url;
 }
 
-/** Message media carries its mimetype as a hint so the protocol handler can serve a playable Content-Type. */
-export function resolveMessageMediaUrl(url: string | null | undefined, mimetype: string | null | undefined): string | null {
-    const resolved = resolveMediaUrl(url);
-    if (!resolved || !url?.startsWith('mxc://') || !mimetype) return resolved;
-    return `${resolved}?mime=${encodeURIComponent(mimetype)}`;
-}
-
 export function fitWithin(width: number, height: number, maxWidth: number, maxHeight: number): { width: number; height: number } | null {
     if (!(width > 0) || !(height > 0)) return null;
     const scale = Math.min(1, maxWidth / width, maxHeight / height);

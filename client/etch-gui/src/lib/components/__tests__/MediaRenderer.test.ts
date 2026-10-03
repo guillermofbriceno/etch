@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import MediaRenderer from '../MediaRenderer.svelte';
 
-const SRC = 'etch-media://example.org/abc123?mime=video%2Fmp4';
+const SRC = 'etch-media://example.org/abc123';
 
 type Props = { src?: string; mimetype: string; body: string; size?: number; width?: number; height?: number };
 
@@ -93,7 +93,7 @@ describe('MediaRenderer', () => {
         fetchMock.mockImplementationOnce(() => new Promise((resolve) => { finishFirst = resolve; }));
         const { container, rerender } = renderMedia({ mimetype: 'video/mp4', body: 'clip.mp4' });
 
-        await rerender({ src: 'etch-media://example.org/other?mime=video%2Fmp4' });
+        await rerender({ src: 'etch-media://example.org/other' });
         const video = container.querySelector('video')!;
         await waitFor(() => expect(video.getAttribute('src')).toBe('blob:media-1'));
         finishFirst(okResponse());

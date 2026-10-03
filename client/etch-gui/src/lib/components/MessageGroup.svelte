@@ -8,7 +8,7 @@
     import { markdownToHtml } from '$lib/markdown';
     import { HTML_BODY_SANITIZE } from '$lib/sanitize';
     import { replaceInTextNodes } from '$lib/dom';
-    import { resolveMediaUrl, resolveMessageMediaUrl, getInitial } from '$lib/media';
+    import { resolveMediaUrl, getInitial } from '$lib/media';
     import MediaRenderer from './MediaRenderer.svelte';
     import AvatarFallback from './AvatarFallback.svelte';
     import EmojiPicker from './EmojiPicker.svelte';
@@ -179,7 +179,7 @@
         {/if}
 
         {#if msg.media}
-            {@const mediaSrc = resolveMessageMediaUrl(msg.media.mxc_url, msg.media.mimetype)}
+            {@const mediaSrc = resolveMediaUrl(msg.media.mxc_url)}
             {#if mediaSrc}
                 <MediaRenderer
                     src={mediaSrc}

@@ -1,15 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveMessageMediaUrl, fitWithin, formatMB, formatSize } from '../media';
-
-describe('resolveMessageMediaUrl', () => {
-    it('adds the mimetype as an encoded hint, and only to an mxc url', () => {
-        expect(resolveMessageMediaUrl('mxc://example.org/abc123', 'audio/ogg; codecs=opus'))
-            .toBe('etch-media://example.org/abc123?mime=audio%2Fogg%3B%20codecs%3Dopus');
-        expect(resolveMessageMediaUrl('mxc://example.org/abc123', '')).toBe('etch-media://example.org/abc123');
-        expect(resolveMessageMediaUrl('https://example.org/a.png', 'image/png')).toBe('https://example.org/a.png');
-        expect(resolveMessageMediaUrl(null, 'image/png')).toBeNull();
-    });
-});
+import { fitWithin, formatMB, formatSize } from '../media';
 
 describe('formatMB', () => {
     // The same sizes as core's format_mb test, because the two texts must agree byte for byte.

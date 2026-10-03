@@ -266,19 +266,19 @@ pub fn run() {
             let media_tx = media_tx.clone();
             tauri::async_runtime::spawn(async move {
                 let mxc_url = media::mxc_url(request.uri(), cfg!(windows));
-                let content_type = media::content_type(media::mime_hint(request.uri().query()).as_deref());
-                let range = request
-                    .headers()
-                    .get(tauri::http::header::RANGE)
-                    .and_then(|v| v.to_str().ok())
-                    .map(str::to_owned);
 
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 let _ = media_tx.send(MediaRequest { mxc_url, respond: tx }).await;
 
                 match rx.await {
                     Ok(Ok(bytes)) => {
-                        responder.respond(media::media_response(bytes, range.as_deref(), &content_type));
+                        responder.respond(
+                            tauri::http::Response::builder()
+                                .header("content-type", "application/octet-stream")
+                                .header("access-control-allow-origin", "*")
+                                .body(bytes)
+                                .unwrap()
+                        );
                     }
                     Ok(Err(e)) => {
                         let body = format!("Media fetch error: {e}").into_bytes();
