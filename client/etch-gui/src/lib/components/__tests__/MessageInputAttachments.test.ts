@@ -1,18 +1,24 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { get } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
-import { stat, readFile, remove } from '@tauri-apps/plugin-fs';
+import { stat, remove } from '@tauri-apps/plugin-fs';
 import { open } from '@tauri-apps/plugin-dialog';
 import { getCurrentWebview, type DragDropEvent } from '@tauri-apps/api/webview';
 import { activeChannelId, setEditing, clearEditing, toastError, activeOverlay, uploadLimits } from '$lib/stores';
 import { resetStores } from '$lib/stores/__tests__/helpers';
+import { probeMediaInfo, type Inspection, type Verdict } from '$lib/attachments';
 import MessageInput from '../MessageInput.svelte';
 
 vi.mock('$lib/markdown', () => ({
     composeHtml: vi.fn((md: string) => `<p>${md}</p>\n`),
     insertMentionLinks: vi.fn((html: string) => html),
+}));
+
+vi.mock('$lib/attachments', async (importOriginal) => ({
+    ...await importOriginal<typeof import('$lib/attachments')>(),
+    probeMediaInfo: vi.fn(),
 }));
 
 const ROOM = 'room1';
@@ -22,11 +28,20 @@ const LIMITS = { image_bytes: 5 * MIB, other_bytes: 2 * MIB };
 let fileSizes: Record<string, number>;
 let commands: Record<string, (args: Record<string, unknown>) => unknown>;
 
+function inspection(mimetype: string, verdict: Verdict, limit = 5 * MIB): Inspection {
+    return { mimetype, limit, verdict };
+}
+
 beforeEach(() => {
     resetStores();
     activeChannelId.set(ROOM);
     fileSizes = {};
-    commands = { paste_clipboard_image: () => null };
+    commands = {
+        paste_clipboard_image: () => null,
+        inspect_attachment: () => inspection('application/octet-stream', { type: 'Accept', compress_offered: false }),
+    };
+    vi.mocked(probeMediaInfo).mockReset();
+    vi.mocked(probeMediaInfo).mockResolvedValue(null);
 
     vi.mocked(invoke).mockReset();
     vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
@@ -39,15 +54,9 @@ beforeEach(() => {
         if (size === undefined) throw new Error('no such file');
         return { size } as Awaited<ReturnType<typeof stat>>;
     });
-    vi.mocked(readFile).mockReset();
-    vi.mocked(readFile).mockRejectedValue(new Error('no such file'));
     vi.mocked(open).mockReset();
     vi.mocked(remove).mockClear();
     vi.mocked(getCurrentWebview().onDragDropEvent).mockClear();
-});
-
-afterEach(() => {
-    vi.unstubAllGlobals();
 });
 
 function textarea(): HTMLTextAreaElement {
@@ -89,10 +98,10 @@ function discarded() {
     return invocations('discard_temp_upload').map(([, args]) => (args as { path: string }).path);
 }
 
-function sentMessages() {
+function sentCommands() {
     return vi.mocked(invoke).mock.calls
         .filter(([cmd]) => cmd === 'core_command')
-        .map(([, args]) => (args as { command: { data: { data: Record<string, unknown> } } }).command.data.data);
+        .map(([, args]) => (args as { command: { data: { type: string; data: Record<string, unknown> } } }).command.data);
 }
 
 async function expectToast(message: string) {
@@ -103,23 +112,27 @@ function compressCheckbox(container: HTMLElement): HTMLInputElement | null {
     return container.querySelector('.compress-option input[type="checkbox"]');
 }
 
-describe('limits at attach time', () => {
-    beforeEach(() => {
+describe('attaching', () => {
+    it("rejects a file core rejects, with core's reason, and attaches nothing", async () => {
         uploadLimits.set(LIMITS);
-    });
-
-    it('rejects an other file over its limit, naming the limit', async () => {
+        commands.inspect_attachment = () => inspection('video/mp4', {
+            type: 'Reject', reason: 'it is 3 MB and the limit for this kind of file is 2 MB',
+        }, 2 * MIB);
         render(MessageInput);
 
         await pick('/home/user/clip.mp4', 3 * MIB);
 
         await expectToast("Couldn't attach clip.mp4: it is 3 MB and the limit for this kind of file is 2 MB");
+        expect(invoke).toHaveBeenCalledWith('inspect_attachment', { name: 'clip.mp4', size: 3 * MIB, limits: LIMITS });
         expect(screen.queryByText('clip.mp4')).not.toBeInTheDocument();
         await send();
-        expect(sentMessages()).toEqual([]);
+        expect(sentCommands()).toEqual([]);
     });
 
-    it('rejects a pasted file over its limit without writing it anywhere', async () => {
+    it('rejects a pasted file core rejects without writing it anywhere', async () => {
+        commands.inspect_attachment = () => inspection('video/mp4', {
+            type: 'Reject', reason: 'it is 3 MB and the limit for this kind of file is 2 MB',
+        }, 2 * MIB);
         render(MessageInput);
 
         await pasteFiles([clipboardFile('clip.mp4', 3 * MIB)]);
@@ -128,101 +141,7 @@ describe('limits at attach time', () => {
         expect(invocations('save_pasted_file')).toEqual([]);
         expect(screen.queryByText('clip.mp4')).not.toBeInTheDocument();
     });
-});
 
-describe('an image over its limit', () => {
-    beforeEach(() => {
-        uploadLimits.set(LIMITS);
-    });
-
-    it('stays attached, must be compressed, and is sent in its compressed form', async () => {
-        commands.compress_image = () => '/tmp/etch-paste-c/photo.jpg';
-        fileSizes['/tmp/etch-paste-c/photo.jpg'] = 2 * MIB;
-        const { container } = render(MessageInput);
-
-        await pick('/home/user/photo.png', 9 * MIB);
-
-        await vi.waitFor(() => expect(screen.getByText('photo.png')).toBeInTheDocument());
-        const checkbox = compressCheckbox(container)!;
-        expect(checkbox.checked).toBe(true);
-        expect(checkbox.disabled).toBe(true);
-        expect(screen.getByText('Must be compressed to fit the 5 MB limit')).toBeInTheDocument();
-
-        await send();
-
-        await vi.waitFor(() => expect(sentMessages()).toHaveLength(1));
-        expect(invoke).toHaveBeenCalledWith('compress_image', { path: '/home/user/photo.png' });
-        expect(sentMessages()[0].attachment_path).toBe('/tmp/etch-paste-c/photo.jpg');
-        expect(get(toastError)).toBeNull();
-    });
-
-    it('is not sent when compression leaves it over the limit', async () => {
-        commands.compress_image = () => '/tmp/etch-paste-c/photo.jpg';
-        fileSizes['/tmp/etch-paste-c/photo.jpg'] = 5.5 * MIB;
-        render(MessageInput);
-        await pick('/home/user/photo.png', 9 * MIB);
-        await vi.waitFor(() => expect(screen.getByText('photo.png')).toBeInTheDocument());
-
-        await send();
-
-        await expectToast("Couldn't send photo.png: it is 5.5 MB after compression and the limit for this kind of file is 5 MB");
-        expect(sentMessages()).toEqual([]);
-        expect(discarded()).toContain('/tmp/etch-paste-c/photo.jpg');
-    });
-
-    it.each<[string, (args: Record<string, unknown>) => unknown]>([
-        ['hands it back unchanged', (args) => args.path],
-        ['fails', () => { throw new Error('io error'); }],
-    ])('is not sent in its original form when compression %s', async (_, compress) => {
-        commands.compress_image = compress;
-        render(MessageInput);
-        await pick('/home/user/photo.png', 9 * MIB);
-        await vi.waitFor(() => expect(screen.getByText('photo.png')).toBeInTheDocument());
-
-        await send();
-
-        await expectToast("Couldn't send photo.png: it could not be compressed to fit the 5 MB limit");
-        expect(sentMessages()).toEqual([]);
-    });
-});
-
-describe('an image within its limit', () => {
-    beforeEach(() => {
-        uploadLimits.set(LIMITS);
-    });
-
-    it('falls back to the original when compression fails', async () => {
-        commands.compress_image = () => { throw new Error('io error'); };
-        const { container } = render(MessageInput);
-        await pick('/home/user/photo.png', 400_000);
-        await vi.waitFor(() => expect(screen.getByText('photo.png')).toBeInTheDocument());
-        expect(compressCheckbox(container)!.disabled).toBe(false);
-
-        await send();
-
-        await vi.waitFor(() => expect(sentMessages()).toHaveLength(1));
-        expect(invoke).toHaveBeenCalledWith('compress_image', { path: '/home/user/photo.png' });
-        expect(sentMessages()[0].attachment_path).toBe('/home/user/photo.png');
-        expect(get(toastError)).toBeNull();
-    });
-});
-
-describe('GIFs', () => {
-    it('are never sent to compress_image, however large', async () => {
-        const { container } = render(MessageInput);
-        await pick('/home/user/party.gif', 4 * MIB);
-        await vi.waitFor(() => expect(screen.getByText('party.gif')).toBeInTheDocument());
-        expect(compressCheckbox(container)).toBeNull();
-
-        await send();
-
-        await vi.waitFor(() => expect(sentMessages()).toHaveLength(1));
-        expect(invoke).not.toHaveBeenCalledWith('compress_image', expect.anything());
-        expect(sentMessages()[0].attachment_path).toBe('/home/user/party.gif');
-    });
-});
-
-describe('attaching', () => {
     it('keeps the newer file when an older attach finishes late', async () => {
         let finishOlder!: (meta: Awaited<ReturnType<typeof stat>>) => void;
         vi.mocked(stat).mockImplementationOnce(() => new Promise((resolve) => { finishOlder = resolve; }));
@@ -242,37 +161,64 @@ describe('attaching', () => {
     });
 });
 
-describe('media_info', () => {
-    it('is probed from the compressed file that is actually sent, at its new size', async () => {
-        commands.compress_image = () => '/tmp/etch-paste-c/photo.jpg';
-        fileSizes['/tmp/etch-paste-c/photo.jpg'] = MIB;
-        vi.mocked(readFile).mockResolvedValue(new Uint8Array([1, 2, 3]));
-        vi.stubGlobal('createImageBitmap', vi.fn().mockResolvedValue({ width: 2048, height: 1536, close: vi.fn() }));
-        render(MessageInput);
+describe('sending an attachment', () => {
+    it('forces compression on an image core says must be compressed', async () => {
+        commands.inspect_attachment = () => inspection('image/png', { type: 'MustCompress' });
+        const { container } = render(MessageInput);
+
         await pick('/home/user/photo.png', 9 * MIB);
+
         await vi.waitFor(() => expect(screen.getByText('photo.png')).toBeInTheDocument());
+        const checkbox = compressCheckbox(container)!;
+        expect(checkbox.checked).toBe(true);
+        expect(checkbox.disabled).toBe(true);
+        expect(screen.getByText('Must be compressed to fit the 5 MB limit')).toBeInTheDocument();
 
         await send();
 
-        await vi.waitFor(() => expect(sentMessages()).toHaveLength(1));
-        // The 9 MB original is too large to probe, so a probe means the new size was used.
-        expect(readFile).toHaveBeenCalledWith('/tmp/etch-paste-c/photo.jpg');
-        expect(readFile).not.toHaveBeenCalledWith('/home/user/photo.png');
-        expect(sentMessages()[0]).toMatchObject({
-            attachment_path: '/tmp/etch-paste-c/photo.jpg',
-            media_info: { width: 2048, height: 1536, duration_ms: null },
+        await vi.waitFor(() => expect(sentCommands()).toHaveLength(1));
+        expect(sentCommands()[0]).toEqual({
+            type: 'SendAttachment',
+            data: { room_id: ROOM, path: '/home/user/photo.png', compress: true, media_info: null },
         });
     });
 
-    it('is null when the file cannot be probed, and the file is still sent', async () => {
-        render(MessageInput);
-        await pick('/home/user/photo.png', 100_000);
+    it('sends the image uncompressed when the user turns the offered compression off', async () => {
+        commands.inspect_attachment = () => inspection('image/png', { type: 'Accept', compress_offered: true });
+        const { container } = render(MessageInput);
+        await pick('/home/user/photo.png', 400_000);
         await vi.waitFor(() => expect(screen.getByText('photo.png')).toBeInTheDocument());
+        const checkbox = compressCheckbox(container)!;
+        expect(checkbox.disabled).toBe(false);
+
+        await fireEvent.click(checkbox);
+        await send();
+
+        await vi.waitFor(() => expect(sentCommands()).toHaveLength(1));
+        expect(sentCommands()[0].data).toMatchObject({ path: '/home/user/photo.png', compress: false });
+    });
+
+    it('probes a video as the type core named and sends what it measured', async () => {
+        commands.inspect_attachment = () => inspection('video/mp4', { type: 'Accept', compress_offered: false }, 2 * MIB);
+        vi.mocked(probeMediaInfo).mockResolvedValue({ width: 1280, height: 720, duration_ms: 4000 });
+        const { container } = render(MessageInput);
+        await pick('/home/user/clip.mp4', MIB);
+        await vi.waitFor(() => expect(screen.getByText('clip.mp4')).toBeInTheDocument());
+        expect(compressCheckbox(container)).toBeNull();
 
         await send();
 
-        await vi.waitFor(() => expect(sentMessages()).toHaveLength(1));
-        expect(sentMessages()[0]).toMatchObject({ attachment_path: '/home/user/photo.png', media_info: null });
+        await vi.waitFor(() => expect(sentCommands()).toHaveLength(1));
+        expect(probeMediaInfo).toHaveBeenCalledWith('/home/user/clip.mp4', MIB, 'video/mp4');
+        expect(sentCommands()[0]).toEqual({
+            type: 'SendAttachment',
+            data: {
+                room_id: ROOM,
+                path: '/home/user/clip.mp4',
+                compress: true,
+                media_info: { width: 1280, height: 720, duration_ms: 4000 },
+            },
+        });
     });
 });
 
@@ -290,8 +236,8 @@ describe('pasting', () => {
 
         await send();
 
-        await vi.waitFor(() => expect(sentMessages()).toHaveLength(1));
-        expect(sentMessages()[0].attachment_path).toBe('/tmp/etch-upload-1/résumé.pdf');
+        await vi.waitFor(() => expect(sentCommands()).toHaveLength(1));
+        expect(sentCommands()[0].data.path).toBe('/tmp/etch-upload-1/résumé.pdf');
     });
 
     it('prefers a clipboard bitmap over the file list', async () => {
@@ -372,8 +318,7 @@ describe('a send that fails', () => {
 
     it('does not restore text that was already sent', async () => {
         commands.core_command = (args) => {
-            const data = (args as { command: { data: { data: { attachment_path: string | null } } } }).command.data.data;
-            if (data.attachment_path) throw FAILURE;
+            if ((args as { command: { data: { type: string } } }).command.data.type === 'SendAttachment') throw FAILURE;
         };
         render(MessageInput);
         await pick('/home/user/notes.pdf', 1000);
@@ -397,7 +342,7 @@ describe('a send that fails', () => {
         await type('hello');
 
         await send();
-        await vi.waitFor(() => expect(sentMessages()).toHaveLength(1));
+        await vi.waitFor(() => expect(sentCommands()).toHaveLength(1));
         await type('new draft');
         await pick('/home/user/notes.pdf', 1000);
         await vi.waitFor(() => expect(screen.getByText('notes.pdf')).toBeInTheDocument());
@@ -408,38 +353,6 @@ describe('a send that fails', () => {
         expect(screen.getByText('notes.pdf')).toBeInTheDocument();
         expect(screen.queryByText('image.png')).not.toBeInTheDocument();
         expect(discarded()).toContain('/tmp/etch-paste-1/image.png');
-    });
-
-    it('restores the compressed output of a paste, since compression removed the original', async () => {
-        commands.paste_clipboard_image = () => ['/tmp/etch-paste-1/image.png', 400_000];
-        commands.compress_image = () => '/tmp/etch-paste-2/image.jpg';
-        fileSizes['/tmp/etch-paste-2/image.jpg'] = 120_000;
-        commands.core_command = () => { throw FAILURE; };
-        render(MessageInput);
-        await pasteFiles([]);
-        await vi.waitFor(() => expect(screen.getByText('image.png')).toBeInTheDocument());
-
-        await send();
-
-        await expectToast(`Couldn't send image.png: ${FAILURE}`);
-        expect(screen.getByText('image.jpg')).toBeInTheDocument();
-        expect(screen.getByText('117.2 KB')).toBeInTheDocument();
-        expect(screen.queryByText('image.png')).not.toBeInTheDocument();
-    });
-
-    it('restores a picked file and discards its compressed copy', async () => {
-        commands.compress_image = () => '/tmp/etch-paste-c/photo.jpg';
-        fileSizes['/tmp/etch-paste-c/photo.jpg'] = 100_000;
-        commands.core_command = () => { throw FAILURE; };
-        render(MessageInput);
-        await pick('/home/user/photo.png', 400_000);
-        await vi.waitFor(() => expect(screen.getByText('photo.png')).toBeInTheDocument());
-
-        await send();
-
-        await expectToast(`Couldn't send photo.png: ${FAILURE}`);
-        expect(screen.getByText('photo.png')).toBeInTheDocument();
-        expect(discarded()).toContain('/tmp/etch-paste-c/photo.jpg');
     });
 });
 

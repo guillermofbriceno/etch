@@ -9,7 +9,7 @@ use matrix_sdk::ruma::api::client::{account::change_password, uiaa};
 use matrix_sdk::ruma::events::room::MediaSource;
 use matrix_sdk::ruma::{RoomId, UserId};
 use matrix_sdk::send_queue::SendQueueRoomError;
-use crate::commands::{MatrixCommand, OutgoingMediaInfo, ServerConnectionForm};
+use crate::commands::{AttachmentSend, MatrixCommand, ServerConnectionForm};
 use crate::events::{CoreEvent, MatrixEvent, InternalEvent, InternalMatrixEvent};
 use crate::matrix::attachment::{self, UploadLimits};
 use crate::temp_uploads::TempUploads;
@@ -243,12 +243,13 @@ impl MatrixService {
         }
     }
 
-    async fn send_attachment(&self, room_id: String, path: PathBuf, media_info: Option<OutgoingMediaInfo>) {
-        let outcome = match self.serving_client("SendMessage") {
-            Some(client) => match attachment::load(&path, self.upload_limits(), media_info.as_ref(), &self.temp_uploads).await {
-                Ok(loaded) => {
+    async fn send_attachment(&self, request: AttachmentSend) {
+        let AttachmentSend { room_id, path, compress, media_info } = request;
+        let outcome = match self.serving_client("SendAttachment") {
+            Some(client) => match attachment::prepare(&path, compress, self.upload_limits(), media_info, &self.temp_uploads).await {
+                Ok(prepared) => {
                     Self::resume_send_queue(&client, &room_id);
-                    attachment::send(&client, &room_id, loaded).await
+                    attachment::send(&client, &room_id, prepared).await
                 }
                 Err(reason) => Err(reason),
             },
@@ -536,10 +537,6 @@ impl MatrixBackend for MatrixService {
         match cmd {
             MatrixCommand::SendMessage(msg) => {
                 log::debug!("[MATRIX] TX -> {}: {}", msg.room_id, msg.text);
-                if let Some(path) = msg.attachment_path {
-                    self.send_attachment(msg.room_id, PathBuf::from(path), msg.media_info).await;
-                    return;
-                }
                 let Some(client) = self.serving_client("SendMessage") else { return };
                 Self::resume_send_queue(&client, &msg.room_id);
                 // Text messages go through Timeline::send for immediate local echo
@@ -553,6 +550,7 @@ impl MatrixBackend for MatrixService {
                     matrix::send_message(msg.text, msg.html_body, msg.room_id, &client).await;
                 }
             }
+            MatrixCommand::SendAttachment(request) => self.send_attachment(request).await,
             MatrixCommand::EditMessage { room_id, event_id, text, html_body } => {
                 if self.serving_client("EditMessage").is_none() { return }
                 self.timeline_manager.edit_message(&room_id, &event_id, &text, html_body.as_deref()).await;
@@ -1025,8 +1023,6 @@ mod tests {
                 room_id: room_id.into(),
                 text: "hello".into(),
                 html_body: None,
-                attachment_path: None,
-                media_info: None,
             })).await;
         }
 
@@ -1058,11 +1054,10 @@ mod tests {
     }
 
     fn send_attachment_command(room_id: &str, path: &std::path::Path) -> MatrixCommand {
-        MatrixCommand::SendMessage(ChatMessageSend {
+        MatrixCommand::SendAttachment(AttachmentSend {
             room_id: room_id.into(),
-            text: String::new(),
-            html_body: None,
-            attachment_path: Some(path.to_string_lossy().into_owned()),
+            path: path.to_path_buf(),
+            compress: false,
             media_info: None,
         })
     }
@@ -1214,8 +1209,6 @@ mod tests {
             room_id: "!joined:example.com".into(),
             text: "hello".into(),
             html_body: None,
-            attachment_path: None,
-            media_info: None,
         })).await;
         assert_eq!(
             send_failure(&mut event_rx).await.as_deref(), Some("!joined:example.com"),
@@ -1255,7 +1248,7 @@ mod tests {
         let path = temp_upload(&service, "photo.png", 3_670_016);
         service.handle_command(send_attachment_command("!a:b", &path)).await;
         let (_, _, reason) = attachment_failure(&mut event_rx);
-        assert_eq!(reason, "it is 3.5 MB and the limit for this kind of file is 3 MB");
+        assert_eq!(reason, "it could not be compressed to fit the 3 MB limit");
 
         service.reset().await;
         assert_eq!(service.upload_limits(), UploadLimits::ETCH_CAPS, "a reset must not carry the old server's limits");

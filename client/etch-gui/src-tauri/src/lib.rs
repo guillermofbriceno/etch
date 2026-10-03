@@ -1,8 +1,8 @@
-mod attachment;
 mod media;
 mod sfx;
 
 use etch_core::init_core;
+use etch_core::attachment::{self, Inspection, UploadLimits};
 use etch_core::commands::{CoreCommand, MediaRequest};
 use etch_core::temp_uploads::TempUploads;
 use tauri::{AppHandle, Manager, State};
@@ -82,17 +82,8 @@ async fn paste_clipboard_image(temp_uploads: State<'_, TempUploads>) -> Result<O
 }
 
 #[tauri::command]
-async fn compress_image(path: String, temp_uploads: State<'_, TempUploads>) -> Result<String, String> {
-    let temp_uploads = temp_uploads.inner().clone();
-    tokio::task::spawn_blocking(move || {
-        match attachment::compress_image_file(Path::new(&path), &temp_uploads) {
-            Ok(Some(out)) => Ok(out.to_string_lossy().into_owned()),
-            Ok(None) => Ok(path),
-            Err(e) => Err(e.to_string()),
-        }
-    })
-    .await
-    .map_err(|e| e.to_string())?
+fn inspect_attachment(name: String, size: u64, limits: Option<UploadLimits>) -> Inspection {
+    attachment::inspect(&name, size, limits)
 }
 
 /// The body is the file's bytes; its percent-encoded name travels in the `file-name` header.
@@ -341,7 +332,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             core_command,
             paste_clipboard_image,
-            compress_image,
+            inspect_attachment,
             save_pasted_file,
             discard_temp_upload,
             play_sfx,

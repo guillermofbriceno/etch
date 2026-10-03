@@ -4,7 +4,7 @@ import { initChannels } from './channels';
 export { appFocused } from './eventRouter';
 
 export { activeChannelId } from './activeChannel';
-export { activeWindow, setActiveChannel, loadOlder, sendMessage, editMessage, redactMessage, createDirectMessage, toggleReaction } from './messages';
+export { activeWindow, setActiveChannel, loadOlder, sendMessage, sendAttachment, editMessage, redactMessage, createDirectMessage, toggleReaction } from './messages';
 export { channels, activeChannel, hideDm, dmLastActivity } from './channels';
 export { currentUser } from './user';
 export { isMuted, isDeafened, toggleMute, toggleDeafen } from './audio';

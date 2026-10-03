@@ -2,129 +2,28 @@ import { invoke } from '@tauri-apps/api/core';
 import { readFile } from '@tauri-apps/plugin-fs';
 import type { OutgoingMediaInfo } from './ipc';
 import type { UploadLimits } from './stores/uploads';
-import { formatMB } from './media';
 
-export type AttachmentCategory = 'image' | 'other';
+/** Core's verdict on a file of this name and size; it decides again at send time with the session's real limits. */
+export type Verdict =
+    | { type: 'Accept'; compress_offered: boolean }
+    | { type: 'MustCompress' }
+    | { type: 'Reject'; reason: string };
 
-export type AttachVerdict = { accept: true; mustCompress: boolean } | { accept: false; reason: string };
+export type Inspection = { mimetype: string; limit: number; verdict: Verdict };
 
-export const COMPRESS_THRESHOLD_BYTES = 256_000;
+export type AttachedFile = { path: string; size: number; inspection: Inspection };
 
 const PROBE_TIMEOUT_MS = 3000;
 
 // The probe reads the whole file into the webview, and nothing above the largest Etch cap can be sent anyway.
 const PROBE_MAX_BYTES = 5 * 1024 ** 2;
 
-const MIME_BY_EXTENSION: Record<string, string> = {
-    png: 'image/png',
-    apng: 'image/apng',
-    jpg: 'image/jpeg',
-    jpeg: 'image/jpeg',
-    jpe: 'image/jpeg',
-    jfif: 'image/jpeg',
-    gif: 'image/gif',
-    webp: 'image/webp',
-    bmp: 'image/bmp',
-    dib: 'image/bmp',
-    tif: 'image/tiff',
-    tiff: 'image/tiff',
-    avif: 'image/avif',
-    heic: 'image/heic',
-    heif: 'image/heif',
-    jxl: 'image/jxl',
-    ico: 'image/x-icon',
-    svg: 'image/svg+xml',
-    mp4: 'video/mp4',
-    m4v: 'video/mp4',
-    webm: 'video/webm',
-    mov: 'video/quicktime',
-    mkv: 'video/x-matroska',
-    ogv: 'video/ogg',
-    avi: 'video/x-msvideo',
-    mpg: 'video/mpeg',
-    mpeg: 'video/mpeg',
-    mp3: 'audio/mpeg',
-    m4a: 'audio/mp4',
-    aac: 'audio/aac',
-    ogg: 'audio/ogg',
-    oga: 'audio/ogg',
-    opus: 'audio/ogg',
-    wav: 'audio/wav',
-    flac: 'audio/flac',
-    weba: 'audio/webm',
-    pdf: 'application/pdf',
-    txt: 'text/plain',
-    md: 'text/markdown',
-    csv: 'text/csv',
-    json: 'application/json',
-    rtf: 'application/rtf',
-    epub: 'application/epub+zip',
-    zip: 'application/zip',
-    '7z': 'application/x-7z-compressed',
-    rar: 'application/vnd.rar',
-    tar: 'application/x-tar',
-    gz: 'application/gzip',
-    doc: 'application/msword',
-    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    xls: 'application/vnd.ms-excel',
-    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    ppt: 'application/vnd.ms-powerpoint',
-    pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-    odt: 'application/vnd.oasis.opendocument.text',
-    ods: 'application/vnd.oasis.opendocument.spreadsheet',
-    odp: 'application/vnd.oasis.opendocument.presentation',
-};
-
-// Exactly what the shell's compress_image re-encodes; it hands anything else back unchanged.
-const COMPRESSIBLE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'jpe', 'jfif', 'webp', 'bmp', 'dib', 'tif', 'tiff']);
-
 export function fileName(path: string): string {
     return path.split(/[\\/]/).pop() || path;
 }
 
-function extension(path: string): string | null {
-    const name = fileName(path);
-    const dot = name.lastIndexOf('.');
-    return dot > 0 ? name.slice(dot + 1).toLowerCase() : null;
-}
-
-/** Null for an extension this table does not know, where core's own guess may still call it an image. */
-export function mimeFromPath(path: string): string | null {
-    const ext = extension(path);
-    if (ext === null) return 'application/octet-stream';
-    return MIME_BY_EXTENSION[ext] ?? null;
-}
-
-export function categoryOf(mimetype: string | null): AttachmentCategory {
-    return mimetype?.startsWith('image/') && mimetype !== 'image/gif' ? 'image' : 'other';
-}
-
-export function isCompressible(path: string): boolean {
-    const ext = extension(path);
-    return ext !== null && COMPRESSIBLE_EXTENSIONS.has(ext);
-}
-
-/** Null when the limits or the file's category are unknown, which leaves the check to core. */
-export function limitFor(path: string, limits: UploadLimits | null): number | null {
-    const mime = mimeFromPath(path);
-    if (!limits || mime === null) return null;
-    return categoryOf(mime) === 'image' ? limits.image_bytes : limits.other_bytes;
-}
-
-export function overLimitReason(size: number, limit: number, afterCompression = false): string {
-    const when = afterCompression ? ' after compression' : '';
-    return `it is ${formatMB(size)}${when} and the limit for this kind of file is ${formatMB(limit)}`;
-}
-
-export function compressionFailedReason(limit: number): string {
-    return `it could not be compressed to fit the ${formatMB(limit)} limit`;
-}
-
-export function checkAttachment(path: string, size: number, limits: UploadLimits | null): AttachVerdict {
-    const limit = limitFor(path, limits);
-    if (limit === null || size <= limit) return { accept: true, mustCompress: false };
-    if (isCompressible(path)) return { accept: true, mustCompress: true };
-    return { accept: false, reason: overLimitReason(size, limit) };
+export function inspectAttachment(name: string, size: number, limits: UploadLimits | null): Promise<Inspection> {
+    return invoke<Inspection>('inspect_attachment', { name, size, limits });
 }
 
 function mediaInfo(width: number, height: number, seconds: number): OutgoingMediaInfo | null {
@@ -136,53 +35,32 @@ function mediaInfo(width: number, height: number, seconds: number): OutgoingMedi
     return info.width === null && info.height === null && info.duration_ms === null ? null : info;
 }
 
-function loaded(element: HTMLElement, event: 'load' | 'loadedmetadata'): Promise<void> {
+function metadataLoaded(media: HTMLMediaElement): Promise<void> {
     return new Promise((resolve, reject) => {
-        element.addEventListener(event, () => resolve(), { once: true });
-        element.addEventListener('error', () => reject(new Error('media could not be decoded')), { once: true });
+        media.addEventListener('loadedmetadata', () => resolve(), { once: true });
+        media.addEventListener('error', () => reject(new Error('media could not be decoded')), { once: true });
     });
 }
 
-export async function probeMediaInfo(path: string, size: number): Promise<OutgoingMediaInfo | null> {
-    const mime = mimeFromPath(path);
-    const kind = mime?.slice(0, mime.indexOf('/'));
-    if (!mime || size > PROBE_MAX_BYTES || (kind !== 'image' && kind !== 'video' && kind !== 'audio')) return null;
+/** Video and audio only: core reads an image's dimensions itself. */
+export async function probeMediaInfo(path: string, size: number, mimetype: string): Promise<OutgoingMediaInfo | null> {
+    const kind = mimetype.slice(0, mimetype.indexOf('/'));
+    if (size > PROBE_MAX_BYTES || (kind !== 'video' && kind !== 'audio')) return null;
 
     let timer: ReturnType<typeof setTimeout> | undefined;
     const deadline = new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new Error('media probe timed out')), PROBE_TIMEOUT_MS);
     });
     let url: string | null = null;
-    let element: HTMLImageElement | HTMLMediaElement | null = null;
+    let media: HTMLMediaElement | null = null;
 
     try {
-        const blob = new Blob([await Promise.race([readFile(path), deadline])], { type: mime });
-
-        if (kind === 'image' && typeof createImageBitmap === 'function') {
-            const decoding = createImageBitmap(blob);
-            const bitmap = await Promise.race([decoding, deadline]).catch((e) => {
-                decoding.then(late => late.close(), () => undefined);
-                throw e;
-            });
-            const info = mediaInfo(bitmap.width, bitmap.height, NaN);
-            bitmap.close();
-            return info;
-        }
-
+        const blob = new Blob([await Promise.race([readFile(path), deadline])], { type: mimetype });
         url = URL.createObjectURL(blob);
-
-        if (kind === 'image') {
-            const image = element = new Image();
-            const ready = loaded(image, 'load');
-            image.src = url;
-            await Promise.race([ready, deadline]);
-            return mediaInfo(image.naturalWidth, image.naturalHeight, NaN);
-        }
-
-        const media = element = document.createElement(kind);
+        media = document.createElement(kind);
         media.preload = 'metadata';
         media.muted = true;
-        const ready = loaded(media, 'loadedmetadata');
+        const ready = metadataLoaded(media);
         media.src = url;
         await Promise.race([ready, deadline]);
         return media instanceof HTMLVideoElement
@@ -192,7 +70,7 @@ export async function probeMediaInfo(path: string, size: number): Promise<Outgoi
         return null;
     } finally {
         clearTimeout(timer);
-        element?.removeAttribute('src');
+        media?.removeAttribute('src');
         if (url) URL.revokeObjectURL(url);
     }
 }

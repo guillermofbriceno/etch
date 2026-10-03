@@ -1,34 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { readFile } from '@tauri-apps/plugin-fs';
-import { checkAttachment, probeMediaInfo } from '../attachments';
+import { probeMediaInfo } from '../attachments';
 
 const MIB = 1024 * 1024;
-const LIMITS = { image_bytes: 5 * MIB, other_bytes: 2 * MIB };
-
-describe('checkAttachment', () => {
-    const ACCEPT = { accept: true, mustCompress: false };
-    const reject = (size: string, limit: string) => ({
-        accept: false,
-        reason: `it is ${size} and the limit for this kind of file is ${limit}`,
-    });
-
-    it('holds each kind of file to its limit, and leaves what it cannot judge to core', () => {
-        const cases: [string, string, number, typeof LIMITS | null, unknown][] = [
-            ['an other file at its limit', '/tmp/clip.mp4', 2 * MIB, LIMITS, ACCEPT],
-            ['an other file one byte over', '/tmp/clip.mp4', 2 * MIB + 1, LIMITS, reject('2.0 MB', '2 MB')],
-            ['a GIF, which is not held to the image limit', '/tmp/party.gif', 3 * MIB, LIMITS, reject('3 MB', '2 MB')],
-            ['an image at its limit', '/tmp/photo.png', 5 * MIB, LIMITS, ACCEPT],
-            ['an oversize image the shell can compress', 'C:\\Users\\user\\Photo.JPG', 9 * MIB, LIMITS, { accept: true, mustCompress: true }],
-            ['an oversize image the shell cannot compress', '/tmp/photo.heic', 7 * MIB, LIMITS, reject('7 MB', '5 MB')],
-            ['a file with no extension, a plain file as in core', '/home/user/README', 3 * MIB, LIMITS, reject('3 MB', '2 MB')],
-            ['an extension only core can judge', '/home/user/raw.dng', 3 * MIB, LIMITS, ACCEPT],
-            ['anything while the limits are unknown', '/tmp/huge.mp4', 900 * MIB, null, ACCEPT],
-        ];
-        for (const [label, path, size, limits, verdict] of cases) {
-            expect(checkAttachment(path, size, limits), label).toEqual(verdict);
-        }
-    });
-});
 
 describe('probeMediaInfo', () => {
     let createdElements: HTMLElement[];
@@ -64,7 +38,7 @@ describe('probeMediaInfo', () => {
     }
 
     it('reads video dimensions and media durations from the loaded metadata, then lets go of the file', async () => {
-        const probingVideo = probeMediaInfo('/tmp/clip.mp4', 1000);
+        const probingVideo = probeMediaInfo('/tmp/clip.mp4', 1000, 'video/mp4');
         const video = await loadingElement('VIDEO');
         Object.defineProperty(video, 'videoWidth', { value: 1920 });
         Object.defineProperty(video, 'videoHeight', { value: 1080 });
@@ -75,7 +49,7 @@ describe('probeMediaInfo', () => {
         expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:probe');
         expect(video.hasAttribute('src')).toBe(false);
 
-        const probingAudio = probeMediaInfo('/tmp/voice.ogg', 1000);
+        const probingAudio = probeMediaInfo('/tmp/voice.ogg', 1000, 'audio/ogg');
         const audio = await loadingElement('AUDIO');
         Object.defineProperty(audio, 'duration', { value: 3.5 });
         audio.dispatchEvent(new Event('loadedmetadata'));
@@ -85,7 +59,7 @@ describe('probeMediaInfo', () => {
 
     it('gives up after a short timeout and still revokes the object url', async () => {
         vi.useFakeTimers();
-        const pending = probeMediaInfo('/tmp/clip.mp4', 1000);
+        const pending = probeMediaInfo('/tmp/clip.mp4', 1000, 'video/mp4');
 
         await vi.advanceTimersByTimeAsync(3000);
 
@@ -93,9 +67,10 @@ describe('probeMediaInfo', () => {
         expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:probe');
     });
 
-    it('never reads a file that carries no media metadata or is too large to send', async () => {
-        expect(await probeMediaInfo('/tmp/notes.pdf', 1000)).toBeNull();
-        expect(await probeMediaInfo('/tmp/clip.mp4', 50 * MIB)).toBeNull();
+    it('never reads an image, which core measures, a file with no media metadata, or one too large to send', async () => {
+        expect(await probeMediaInfo('/tmp/photo.png', 1000, 'image/png')).toBeNull();
+        expect(await probeMediaInfo('/tmp/notes.pdf', 1000, 'application/pdf')).toBeNull();
+        expect(await probeMediaInfo('/tmp/clip.mp4', 50 * MIB, 'video/mp4')).toBeNull();
         expect(readFile).not.toHaveBeenCalled();
     });
 });

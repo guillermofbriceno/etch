@@ -6,43 +6,34 @@
     import { invoke } from '@tauri-apps/api/core';
     import { getCurrentWebview, type DragDropEvent } from '@tauri-apps/api/webview';
     import type { Event as TauriEvent } from '@tauri-apps/api/event';
-    import { sendMessage, editMessage, activeChannelId, activeChannel, activeWindow, replyingTo, clearReply, editingMessage, clearEditing, activeOverlay, uploadLimits, showToast } from '$lib/stores';
+    import { sendMessage, sendAttachment, editMessage, activeChannelId, activeChannel, activeWindow, replyingTo, clearReply, editingMessage, clearEditing, activeOverlay, uploadLimits, showToast } from '$lib/stores';
     import { composeHtml, insertMentionLinks } from '$lib/markdown';
     import {
-        COMPRESS_THRESHOLD_BYTES,
-        checkAttachment,
-        compressionFailedReason,
         discardTempFile,
         fileName,
-        isCompressible,
-        limitFor,
-        overLimitReason,
-        probeMediaInfo,
+        inspectAttachment,
         writeTempAttachment,
+        type AttachedFile,
+        type Inspection,
     } from '$lib/attachments';
     import { formatMB, formatSize } from '$lib/media';
     import Icon from './Icon.svelte';
     import { customScrollbar } from '$lib/scrollbar';
 
-    type Attachment = { path: string; size: number; temp: boolean };
-
     let messageText = '';
     let showEmojiPicker = false;
     let textareaEl: HTMLTextAreaElement;
     let pickerAnchorEl: HTMLDivElement;
-    let pendingAttachment: Attachment | null = null;
+    let pendingAttachment: AttachedFile | null = null;
     let compressAttachment = true;
     let processingPaste = false;
     let composeLock = false;
     let dragActive = false;
 
-    $: attachmentLimit = pendingAttachment ? limitFor(pendingAttachment.path, $uploadLimits) : null;
-    $: verdict = pendingAttachment ? checkAttachment(pendingAttachment.path, pendingAttachment.size, $uploadLimits) : null;
-    $: mustCompress = verdict !== null && verdict.accept && verdict.mustCompress;
+    $: verdict = pendingAttachment?.inspection.verdict ?? null;
+    $: mustCompress = verdict?.type === 'MustCompress';
     $: if (mustCompress) compressAttachment = true;
-    $: showCompress = pendingAttachment !== null
-        && isCompressible(pendingAttachment.path)
-        && (mustCompress || pendingAttachment.size > COMPRESS_THRESHOLD_BYTES);
+    $: showCompress = mustCompress || (verdict?.type === 'Accept' && verdict.compress_offered);
     $: inputActive = $activeChannelId !== null && $activeOverlay === 'none' && !$editingMessage;
 
     // Tab-completion state
@@ -184,43 +175,53 @@
         textareaEl.style.overflowY = textareaEl.scrollHeight > max ? 'auto' : 'hidden';
     }
 
-    function setPending(next: Attachment | null) {
+    function setPending(next: AttachedFile | null) {
         const previous = pendingAttachment;
         pendingAttachment = next;
         compressAttachment = true;
         if (previous && previous.path !== next?.path) discardTempFile(previous.path);
     }
 
-    function rejectedOverLimit(name: string, size: number): boolean {
-        const verdict = checkAttachment(name, size, get(uploadLimits));
-        if (verdict.accept) return false;
-        showToast(`Couldn't attach ${name}: ${verdict.reason}`);
-        return true;
+    /** Null, after telling the user why, for a file that cannot be attached. */
+    async function inspect(name: string, size: number): Promise<Inspection | null> {
+        try {
+            const inspection = await inspectAttachment(name, size, get(uploadLimits));
+            if (inspection.verdict.type !== 'Reject') return inspection;
+            showToast(`Couldn't attach ${name}: ${inspection.verdict.reason}`);
+        } catch (e) {
+            showToast(`Couldn't attach ${name}: ${e}`);
+        }
+        return null;
     }
 
     // A slower attach that finishes after a newer one must not replace it.
     let attachSeq = 0;
-    async function attach(path: string, temp: boolean, knownSize?: number) {
+    async function attach(path: string, knownSize?: number, knownInspection?: Inspection) {
         const seq = ++attachSeq;
+        const name = fileName(path);
         let size = knownSize;
         if (size === undefined) {
             try {
                 size = (await stat(path)).size;
             } catch {
-                if (seq === attachSeq) showToast(`Couldn't attach ${fileName(path)}: the file could not be read`);
+                if (seq === attachSeq) showToast(`Couldn't attach ${name}: the file could not be read`);
                 return;
             }
         }
-        if (seq !== attachSeq || rejectedOverLimit(fileName(path), size)) {
-            discardTempFile(path);
-            return;
+        if (seq === attachSeq) {
+            const inspection = knownInspection ?? await inspect(name, size);
+            if (inspection && seq === attachSeq) {
+                setPending({ path, size, inspection });
+                return;
+            }
         }
-        setPending({ path, size, temp });
+        discardTempFile(path);
     }
 
     async function attachPastedFile(file: File) {
         const name = file.name || 'attachment';
-        if (rejectedOverLimit(name, file.size)) return;
+        const inspection = await inspect(name, file.size);
+        if (!inspection) return;
         let path: string;
         try {
             path = await writeTempAttachment(name, new Uint8Array(await file.arrayBuffer()));
@@ -228,12 +229,12 @@
             showToast(`Couldn't attach ${name}: the file could not be read`);
             return;
         }
-        await attach(path, true, file.size);
+        await attach(path, file.size, inspection);
     }
 
     async function pickFile() {
         const selected = await open({ multiple: false, directory: false });
-        if (selected) await attach(selected, false);
+        if (selected) await attach(selected);
     }
 
     function clearAttachment() {
@@ -256,7 +257,7 @@
             });
             if (bitmap) {
                 const [path, size] = bitmap;
-                await attach(path, true, size);
+                await attach(path, size);
             } else if (files.length > 0) {
                 await attachPastedFile(files[0]);
             } else if (failure !== null) {
@@ -277,7 +278,7 @@
             dragActive = false;
         } else if (drag.type === 'drop') {
             dragActive = false;
-            if (inputActive && drag.paths.length > 0) attach(drag.paths[0], false);
+            if (inputActive && drag.paths.length > 0) attach(drag.paths[0]);
         }
     }
 
@@ -373,42 +374,6 @@
         autoResize();
     }
 
-    async function sendAttachment(roomId: string, attachment: Attachment, wantCompress: boolean, onPrepared: (prepared: Attachment) => void) {
-        const name = fileName(attachment.path);
-        const limit = limitFor(attachment.path, get(uploadLimits));
-        const shrinkTo = limit !== null && attachment.size > limit ? limit : null;
-        let path = attachment.path;
-        let size: number | null = attachment.size;
-
-        const abandon = (reason: string) => {
-            showToast(`Couldn't send ${name}: ${reason}`);
-            if (path !== attachment.path) discardTempFile(path);
-            discardTempFile(attachment.path);
-        };
-
-        if (isCompressible(path) && (shrinkTo !== null || (wantCompress && attachment.size > COMPRESS_THRESHOLD_BYTES))) {
-            try {
-                path = await invoke<string>('compress_image', { path: attachment.path });
-            } catch {
-                if (shrinkTo !== null) return abandon(compressionFailedReason(shrinkTo));
-            }
-            if (path !== attachment.path) {
-                // Null when the stat fails, which leaves the size check to core.
-                size = await stat(path).then(meta => meta.size, () => null);
-            } else if (shrinkTo !== null) {
-                return abandon(compressionFailedReason(shrinkTo));
-            }
-        }
-        if (limit !== null && size !== null && size > limit) {
-            return abandon(overLimitReason(size, limit, path !== attachment.path));
-        }
-
-        const prepared = { path, size: size ?? attachment.size, temp: attachment.temp || path !== attachment.path };
-        onPrepared(prepared);
-        const mediaInfo = await probeMediaInfo(prepared.path, prepared.size);
-        await sendMessage(roomId, '', null, prepared.path, mediaInfo);
-    }
-
     // Anything typed or attached while the send was in flight wins over the restored draft.
     function restoreText(text: string, mentions: Map<string, string>) {
         if (!text.trim() || messageText.trim() || get(editingMessage)) return;
@@ -417,15 +382,9 @@
         requestAnimationFrame(autoResize);
     }
 
-    function restoreAttachment(original: Attachment, prepared: Attachment | null) {
-        let restored = original;
-        if (prepared && prepared.path !== original.path) {
-            // compress_image deletes a temp input it replaced, while a picked source still exists.
-            if (original.temp) restored = prepared;
-            else discardTempFile(prepared.path);
-        }
-        if (pendingAttachment === null) pendingAttachment = restored;
-        else discardTempFile(restored.path);
+    function restoreAttachment(attachment: AttachedFile) {
+        if (pendingAttachment === null) pendingAttachment = attachment;
+        else discardTempFile(attachment.path);
     }
 
     async function submit() {
@@ -476,23 +435,22 @@
 
         let textSent = false;
         let failing = 'your message';
-        let prepared = null as Attachment | null;
         try {
             if (body) {
                 const rawHtml = composeHtml(body);
                 const withMentions = insertMentionLinks(rawHtml, mentions);
                 const needsHtml = mentions.size > 0 || withMentions !== `<p>${body}</p>\n`;
-                await sendMessage(roomId, body, needsHtml ? withMentions : null, null);
+                await sendMessage(roomId, body, needsHtml ? withMentions : null);
                 textSent = true;
             }
             if (attachment) {
                 failing = fileName(attachment.path);
-                await sendAttachment(roomId, attachment, shouldCompress, (next) => { prepared = next; });
+                await sendAttachment(roomId, attachment, shouldCompress);
             }
         } catch (e) {
             showToast(`Couldn't send ${failing}: ${e}`);
             if (!textSent) restoreText(savedText, savedMentions);
-            if (attachment) restoreAttachment(attachment, prepared);
+            if (attachment) restoreAttachment(attachment);
         }
     }
 
@@ -594,8 +552,8 @@
             </div>
             <div class="attachment-actions">
                 {#if showCompress}
-                    {#if mustCompress && attachmentLimit !== null}
-                        <span class="compress-note">Must be compressed to fit the {formatMB(attachmentLimit)} limit</span>
+                    {#if mustCompress}
+                        <span class="compress-note">Must be compressed to fit the {formatMB(pendingAttachment.inspection.limit)} limit</span>
                     {/if}
                     <label class="compress-option" class:forced={mustCompress}>
                         <input type="checkbox" bind:checked={compressAttachment} disabled={mustCompress} />

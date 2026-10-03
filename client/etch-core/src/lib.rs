@@ -16,6 +16,8 @@ pub mod settings;
 pub mod temp_uploads;
 pub(crate) mod scripting;
 
+pub use matrix::attachment;
+
 #[cfg(test)]
 mod test_mocks;
 

@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 use matrix_sdk::Client;
@@ -9,11 +10,14 @@ use matrix_sdk::media::MediaError;
 use matrix_sdk::ruma::{RoomId, UInt};
 use matrix_sdk::send_queue::RoomSendQueueError;
 use mime_guess::mime::{self, Mime};
+use serde::{Deserialize, Serialize};
 
 use crate::commands::OutgoingMediaInfo;
+use crate::matrix::compress::{self, OutputFormat};
 use crate::temp_uploads::TempUploads;
 
 const MIB: u64 = 1024 * 1024;
+const COMPRESS_THRESHOLD_BYTES: u64 = 256_000;
 
 pub(crate) const NOT_CONNECTED: &str = "not connected to the server";
 const UNREADABLE: &str = "the file could not be read";
@@ -39,8 +43,8 @@ impl UploadCategory {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct UploadLimits {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub struct UploadLimits {
     pub image_bytes: u64,
     pub other_bytes: u64,
 }
@@ -65,16 +69,49 @@ impl UploadLimits {
             UploadCategory::Other => self.other_bytes,
         }
     }
+}
 
-    /// The error is the reason shown to the user.
-    pub(crate) fn check(&self, content_type: &Mime, size: u64) -> Result<(), String> {
-        let limit = self.for_category(UploadCategory::of(content_type));
-        if size > limit {
-            Err(over_limit_reason(size, limit))
-        } else {
-            Ok(())
-        }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "type")]
+pub enum Verdict {
+    Accept { compress_offered: bool },
+    MustCompress,
+    Reject { reason: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Inspection {
+    pub mimetype: String,
+    pub limit: u64,
+    pub verdict: Verdict,
+}
+
+/// The composer's preflight; `None` limits mean the session has not reported its own yet.
+pub fn inspect(file_name: &str, size: u64, limits: Option<UploadLimits>) -> Inspection {
+    let content_type = sanitize_mime(Path::new(file_name));
+    let limits = limits.unwrap_or(UploadLimits::ETCH_CAPS);
+    let limit = limits.for_category(UploadCategory::of(&content_type));
+    Inspection {
+        verdict: verdict(&content_type, size, limit),
+        mimetype: content_type.essence_str().to_owned(),
+        limit,
     }
+}
+
+fn verdict(content_type: &Mime, size: u64, limit: u64) -> Verdict {
+    let compressible = is_compressible(content_type);
+    if size <= limit {
+        Verdict::Accept { compress_offered: compressible && size > COMPRESS_THRESHOLD_BYTES }
+    } else if compressible {
+        Verdict::MustCompress
+    } else {
+        Verdict::Reject { reason: over_limit_reason(size, limit, false) }
+    }
+}
+
+fn is_compressible(content_type: &Mime) -> bool {
+    content_type.type_() == mime::IMAGE
+        && matches!(content_type.subtype().as_str(), "jpeg" | "png" | "webp" | "bmp" | "tiff")
 }
 
 /// Integer rounding, half up, so the frontend can reproduce the text exactly.
@@ -86,19 +123,24 @@ pub(crate) fn format_mb(bytes: u64) -> String {
     format!("{}.{} MB", tenths / 10, tenths % 10)
 }
 
-fn over_limit_reason(size: u64, limit: u64) -> String {
+fn over_limit_reason(size: u64, limit: u64, after_compression: bool) -> String {
     format!(
-        "it is {} and the limit for this kind of file is {}",
+        "it is {}{} and the limit for this kind of file is {}",
         format_mb(size),
+        if after_compression { " after compression" } else { "" },
         format_mb(limit),
     )
+}
+
+fn could_not_compress_reason(limit: u64) -> String {
+    format!("it could not be compressed to fit the {} limit", format_mb(limit))
 }
 
 /// For a failure the send queue reports after it has taken the request, which may be a text message.
 pub(crate) fn send_failure_reason(err: &matrix_sdk::Error, is_recoverable: bool) -> String {
     match err {
         matrix_sdk::Error::Media(MediaError::MediaTooLargeToUpload { max, current }) => {
-            over_limit_reason(u64::from(*current), u64::from(*max))
+            over_limit_reason(u64::from(*current), u64::from(*max), false)
         }
         _ if is_recoverable => HELD_FOR_RETRY.into(),
         _ => NOT_ACCEPTED.into(),
@@ -168,31 +210,96 @@ pub(crate) struct Attachment {
 }
 
 /// Discards the file whatever the outcome, which only removes one Etch created.
-pub(crate) async fn load(
+pub(crate) async fn prepare(
     path: &Path,
+    compress_requested: bool,
     limits: UploadLimits,
-    media: Option<&OutgoingMediaInfo>,
+    media: Option<OutgoingMediaInfo>,
     temp_uploads: &TempUploads,
 ) -> Result<Attachment, String> {
-    let read = read_within_limit(path, limits).await;
+    let prepared = prepare_file(path, compress_requested, limits, media).await;
     discard(temp_uploads, path).await;
-    let (content_type, data) = read?;
-    let info = attachment_info(&content_type, data.len() as u64, media);
-    Ok(Attachment { file_name: display_name(path), content_type, data, info })
+    prepared
 }
 
-async fn read_within_limit(path: &Path, limits: UploadLimits) -> Result<(Mime, Vec<u8>), String> {
+async fn prepare_file(
+    path: &Path,
+    compress_requested: bool,
+    limits: UploadLimits,
+    media: Option<OutgoingMediaInfo>,
+) -> Result<Attachment, String> {
     let content_type = sanitize_mime(path);
+    let limit = limits.for_category(UploadCategory::of(&content_type));
     let size = tokio::fs::metadata(path).await.map_err(|e| unreadable(path, e))?.len();
-    limits.check(&content_type, size)?;
+    let (must_compress, should_compress) = match verdict(&content_type, size, limit) {
+        Verdict::Reject { reason } => return Err(reason),
+        Verdict::MustCompress => (true, true),
+        Verdict::Accept { compress_offered } => (false, compress_requested && compress_offered),
+    };
     let data = tokio::fs::read(path).await.map_err(|e| unreadable(path, e))?;
-    // The file may have grown since the metadata was read, and the cap is on what is uploaded.
-    limits.check(&content_type, data.len() as u64)?;
-    Ok((content_type, data))
+
+    let (data, compressed) = if should_compress {
+        on_blocking_pool(data, compress::compress).await
+    } else {
+        (data, None)
+    };
+    if compressed.is_none() && must_compress {
+        return Err(could_not_compress_reason(limit));
+    }
+    let after_compression = compressed.is_some();
+    let (file_name, content_type, data, pixels) = match compressed {
+        Some(out) => (
+            compressed_file_name(path, out.format),
+            out.format.content_type(),
+            out.bytes,
+            Some((out.width, out.height)),
+        ),
+        None => (display_name(path), content_type, data, None),
+    };
+
+    // Checked on what is uploaded, since the file may also have grown since its size was read.
+    let uploaded = data.len() as u64;
+    if uploaded > limit {
+        return Err(over_limit_reason(uploaded, limit, after_compression));
+    }
+
+    let (data, pixels) = if pixels.is_none() && content_type.type_() == mime::IMAGE {
+        on_blocking_pool(data, compress::dimensions).await
+    } else {
+        (data, pixels)
+    };
+    let media = match pixels {
+        Some((width, height)) => Some(OutgoingMediaInfo { width: Some(width), height: Some(height), duration_ms: None }),
+        None => media,
+    };
+    let info = attachment_info(&content_type, uploaded, media.as_ref());
+    Ok(Attachment { file_name, content_type, data, info })
+}
+
+/// Decoding is CPU work, so it runs on the blocking pool; the bytes come back either way.
+async fn on_blocking_pool<T: Send + 'static>(
+    data: Vec<u8>,
+    work: fn(&[u8]) -> Option<T>,
+) -> (Vec<u8>, Option<T>) {
+    let data = Arc::new(data);
+    let input = data.clone();
+    let result = tokio::task::spawn_blocking(move || work(&input))
+        .await
+        .unwrap_or_else(|e| {
+            log::warn!("Processing an attached image did not finish: {e}");
+            None
+        });
+    (Arc::unwrap_or_clone(data), result)
+}
+
+fn compressed_file_name(path: &Path, format: OutputFormat) -> String {
+    let stem = path.file_stem().map(|s| s.to_string_lossy()).unwrap_or_default();
+    let stem: &str = if stem.is_empty() { "image" } else { &stem };
+    format!("{stem}.{}", format.extension())
 }
 
 fn unreadable(path: &Path, e: std::io::Error) -> String {
-    log::error!("Failed to read the attachment {}: {e}", path.display());
+    log::warn!("Failed to read the attachment {}: {e}", path.display());
     UNREADABLE.into()
 }
 
@@ -230,6 +337,7 @@ pub(crate) async fn fetch_upload_limits(client: &Client) -> UploadLimits {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::matrix::compress::fixtures::{jpeg_with_orientation, opaque};
     use crate::matrix::test_server::CannedHomeserver;
 
     fn mime(s: &str) -> Mime {
@@ -246,19 +354,27 @@ mod tests {
     }
 
     #[test]
-    fn each_kind_of_file_is_held_to_its_own_limit_to_the_byte() {
-        let limits = UploadLimits::ETCH_CAPS;
-        assert_eq!(limits.check(&mime("image/png"), 5 * MIB), Ok(()));
-        assert!(limits.check(&mime("image/png"), 5 * MIB + 1).is_err());
-        assert_eq!(limits.check(&mime("video/mp4"), 2 * MIB), Ok(()));
+    fn each_kind_of_file_is_held_to_its_own_limit_and_offered_compression_only_where_it_helps() {
+        let accept = |compress_offered| Verdict::Accept { compress_offered };
+        let reject = |reason: &str| Verdict::Reject { reason: reason.into() };
+        for (name, size, expected) in [
+            ("photo.png", 256_000, accept(false)),
+            ("photo.png", 256_001, accept(true)),
+            ("photo.webp", 5 * MIB, accept(true)),
+            ("Photo.JPG", 5 * MIB + 1, Verdict::MustCompress),
+            ("photo.heic", 7 * MIB, reject("it is 7 MB and the limit for this kind of file is 5 MB")),
+            ("clip.mp4", 2 * MIB, accept(false)),
+            ("clip.mp4", 3_565_158, reject("it is 3.4 MB and the limit for this kind of file is 2 MB")),
+            ("party.gif", MIB, accept(false)),
+            ("party.gif", 3 * MIB, reject("it is 3 MB and the limit for this kind of file is 2 MB")),
+        ] {
+            assert_eq!(inspect(name, size, None).verdict, expected, "{name} at {size} bytes");
+        }
+
+        let lowered = UploadLimits { image_bytes: 3 * MIB, other_bytes: MIB };
         assert_eq!(
-            limits.check(&mime("video/mp4"), 3_565_158),
-            Err("it is 3.4 MB and the limit for this kind of file is 2 MB".into()),
-        );
-        assert_eq!(
-            limits.check(&mime("image/gif"), 3 * MIB),
-            Err("it is 3 MB and the limit for this kind of file is 2 MB".into()),
-            "a GIF is held to the limit for other files, not the one for images",
+            inspect("photo.png", 4 * MIB, Some(lowered)),
+            Inspection { mimetype: "image/png".into(), limit: 3 * MIB, verdict: Verdict::MustCompress },
         );
     }
 
@@ -341,7 +457,7 @@ mod tests {
         let uploads = uploads(tmp.path());
         let path = uploads.create("photo.png", &[0u8; 1000]).unwrap();
 
-        let attachment = load(&path, UploadLimits::ETCH_CAPS, Some(&media(4, 3, 0)), &uploads).await
+        let attachment = prepare(&path, true, UploadLimits::ETCH_CAPS, None, &uploads).await
             .expect("a small image should load");
 
         assert_eq!(attachment.file_name, "photo.png");
@@ -362,10 +478,39 @@ mod tests {
         write_file(&sent, 10);
         write_file(&rejected, 3 * MIB as usize);
 
-        load(&sent, UploadLimits::ETCH_CAPS, None, &uploads).await.expect("a small image should load");
-        load(&rejected, UploadLimits::ETCH_CAPS, None, &uploads).await.expect_err("a large file should be rejected");
+        prepare(&sent, true, UploadLimits::ETCH_CAPS, None, &uploads).await.expect("a small image should load");
+        prepare(&rejected, true, UploadLimits::ETCH_CAPS, None, &uploads).await.expect_err("a large file should be rejected");
 
         assert!(sent.exists() && rejected.exists(), "only a file Etch created may be deleted");
+    }
+
+    #[tokio::test]
+    async fn an_image_over_its_limit_is_sent_compressed_and_every_image_reports_its_upright_size() {
+        let tmp = tempfile::tempdir().unwrap();
+        let uploads = uploads(tmp.path());
+        let sideways = jpeg_with_orientation(&opaque(3000, 1000), 6);
+        let sized = |info: &AttachmentInfo| match info {
+            AttachmentInfo::Image(info) => (info.width, info.height),
+            other => panic!("expected image info, got {other:?}"),
+        };
+        let px = |n: u32| Some(UInt::from(n));
+
+        let tight = UploadLimits { image_bytes: sideways.len() as u64 - 1, other_bytes: MIB };
+        let path = uploads.create("photo.jpeg", &sideways).unwrap();
+        let attachment = prepare(&path, false, tight, None, &uploads).await
+            .expect("an image over its limit should be compressed to fit");
+
+        assert_eq!((attachment.file_name.as_str(), &attachment.content_type), ("photo.jpg", &mime::IMAGE_JPEG));
+        assert!(attachment.data.len() as u64 <= tight.image_bytes);
+        assert_eq!(sized(&attachment.info), (px(683), px(2048)));
+
+        let roomy = UploadLimits { image_bytes: 20 * MIB, other_bytes: MIB };
+        let path = uploads.create("photo.jpeg", &sideways).unwrap();
+        let attachment = prepare(&path, false, roomy, None, &uploads).await
+            .expect("an image within its limit should be sent as is");
+
+        assert_eq!(attachment.data, sideways);
+        assert_eq!(sized(&attachment.info), (px(1000), px(3000)), "measured from the header, turned upright");
     }
 
     #[tokio::test]

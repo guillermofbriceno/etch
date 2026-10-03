@@ -54,7 +54,8 @@ export type CoreEvent =
 export type OutgoingMediaInfo = { width: number | null; height: number | null; duration_ms: number | null };
 
 export type MatrixCommand =
-    | { type: 'SendMessage'; data: { room_id: string; text: string; html_body: string | null; attachment_path: string | null; media_info: OutgoingMediaInfo | null } }
+    | { type: 'SendMessage'; data: { room_id: string; text: string; html_body: string | null } }
+    | { type: 'SendAttachment'; data: { room_id: string; path: string; compress: boolean; media_info: OutgoingMediaInfo | null } }
     | { type: 'EditMessage'; data: { room_id: string; event_id: string; text: string; html_body: string | null } }
     | { type: 'RedactMessage'; data: { room_id: string; event_id: string } }
     | { type: 'ToggleReaction'; data: { room_id: string; event_id: string; key: string } }

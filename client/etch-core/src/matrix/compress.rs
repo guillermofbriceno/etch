@@ -1,13 +1,12 @@
-use std::io::{self, Cursor};
-use std::path::{Path, PathBuf};
+use std::io::Cursor;
 
-use etch_core::temp_uploads::TempUploads;
 use image::codecs::jpeg::JpegEncoder;
 use image::codecs::png::{CompressionType, FilterType as PngFilter, PngDecoder, PngEncoder};
 use image::codecs::webp::WebPDecoder;
 use image::imageops::FilterType;
 use image::metadata::Orientation;
 use image::{ColorType, DynamicImage, ImageDecoder, ImageFormat, ImageReader};
+use mime_guess::mime::{self, Mime};
 
 const MAX_EDGE: u32 = 2048;
 const JPEG_QUALITY: u8 = 80;
@@ -19,7 +18,7 @@ pub(crate) enum OutputFormat {
 }
 
 impl OutputFormat {
-    pub(crate) fn for_alpha(has_meaningful_alpha: bool) -> Self {
+    fn for_alpha(has_meaningful_alpha: bool) -> Self {
         if has_meaningful_alpha {
             Self::Png
         } else {
@@ -27,76 +26,31 @@ impl OutputFormat {
         }
     }
 
-    fn extension(self) -> &'static str {
+    pub(crate) fn extension(self) -> &'static str {
         match self {
             Self::Jpeg => "jpg",
             Self::Png => "png",
         }
     }
-}
 
-pub(crate) fn target_dimensions(width: u32, height: u32, max_edge: u32) -> (u32, u32) {
-    let longest = width.max(height);
-    if longest <= max_edge {
-        return (width, height);
-    }
-    let scale = |edge: u32| {
-        let scaled =
-            (u64::from(edge) * u64::from(max_edge) + u64::from(longest) / 2) / u64::from(longest);
-        (scaled as u32).max(1)
-    };
-    (scale(width), scale(height))
-}
-
-pub(crate) fn has_meaningful_alpha(img: &DynamicImage) -> bool {
-    match img {
-        DynamicImage::ImageLumaA8(buf) => buf.pixels().any(|p| p.0[1] < u8::MAX),
-        DynamicImage::ImageRgba8(buf) => buf.pixels().any(|p| p.0[3] < u8::MAX),
-        other if other.color().has_alpha() => other.to_rgba16().pixels().any(|p| p.0[3] < u16::MAX),
-        _ => false,
+    pub(crate) fn content_type(self) -> Mime {
+        match self {
+            Self::Jpeg => mime::IMAGE_JPEG,
+            Self::Png => mime::IMAGE_PNG,
+        }
     }
 }
 
-pub(crate) fn is_compressible(format: Option<ImageFormat>, animated: bool) -> bool {
-    match format {
-        Some(ImageFormat::Jpeg | ImageFormat::Bmp | ImageFormat::Tiff) => true,
-        Some(ImageFormat::Png | ImageFormat::WebP) => !animated,
-        _ => false,
-    }
+#[derive(Debug)]
+pub(crate) struct Compressed {
+    pub bytes: Vec<u8>,
+    pub format: OutputFormat,
+    pub width: u32,
+    pub height: u32,
 }
 
-pub(crate) fn is_animated(format: ImageFormat, data: &[u8]) -> bool {
-    match format {
-        ImageFormat::Png => PngDecoder::new(Cursor::new(data))
-            .and_then(|d| d.is_apng())
-            .unwrap_or(false),
-        ImageFormat::WebP => WebPDecoder::new(Cursor::new(data)).is_ok_and(|d| d.has_animation()),
-        _ => false,
-    }
-}
-
-pub(crate) fn output_file_name(input: &Path, format: OutputFormat) -> String {
-    let stem = input
-        .file_stem()
-        .map(|s| s.to_string_lossy())
-        .unwrap_or_default();
-    let stem: &str = if stem.is_empty() { "image" } else { &stem };
-    format!("{stem}.{}", format.extension())
-}
-
-/// `Ok(None)` means the input should be uploaded as is; it is then left untouched.
-pub(crate) fn compress_image_file(input: &Path, temp_uploads: &TempUploads) -> io::Result<Option<PathBuf>> {
-    let data = std::fs::read(input)?;
-    let Some((bytes, format)) = compress_bytes(&data) else {
-        return Ok(None);
-    };
-    let out = temp_uploads.create(&output_file_name(input, format), &bytes)?;
-    // Only removes an input Etch created, such as a pasted screenshot.
-    temp_uploads.discard(input);
-    Ok(Some(out))
-}
-
-fn compress_bytes(data: &[u8]) -> Option<(Vec<u8>, OutputFormat)> {
+/// `None` means the input should be uploaded as is.
+pub(crate) fn compress(data: &[u8]) -> Option<Compressed> {
     let reader = ImageReader::new(Cursor::new(data))
         .with_guessed_format()
         .ok()?;
@@ -122,7 +76,62 @@ fn compress_bytes(data: &[u8]) -> Option<(Vec<u8>, OutputFormat)> {
     };
 
     let bytes = encode(&img, output).ok()?;
-    (bytes.len() < data.len()).then_some((bytes, output))
+    (bytes.len() < data.len()).then_some(Compressed { bytes, format: output, width, height })
+}
+
+/// Reads only the header, and reports the size the image is displayed at.
+pub(crate) fn dimensions(data: &[u8]) -> Option<(u32, u32)> {
+    let mut decoder = ImageReader::new(Cursor::new(data))
+        .with_guessed_format()
+        .ok()?
+        .into_decoder()
+        .ok()?;
+    let (width, height) = decoder.dimensions();
+    let sideways = matches!(
+        decoder.orientation().unwrap_or(Orientation::NoTransforms),
+        Orientation::Rotate90 | Orientation::Rotate270 | Orientation::Rotate90FlipH | Orientation::Rotate270FlipH
+    );
+    Some(if sideways { (height, width) } else { (width, height) })
+}
+
+fn target_dimensions(width: u32, height: u32, max_edge: u32) -> (u32, u32) {
+    let longest = width.max(height);
+    if longest <= max_edge {
+        return (width, height);
+    }
+    let scale = |edge: u32| {
+        let scaled =
+            (u64::from(edge) * u64::from(max_edge) + u64::from(longest) / 2) / u64::from(longest);
+        (scaled as u32).max(1)
+    };
+    (scale(width), scale(height))
+}
+
+fn has_meaningful_alpha(img: &DynamicImage) -> bool {
+    match img {
+        DynamicImage::ImageLumaA8(buf) => buf.pixels().any(|p| p.0[1] < u8::MAX),
+        DynamicImage::ImageRgba8(buf) => buf.pixels().any(|p| p.0[3] < u8::MAX),
+        other if other.color().has_alpha() => other.to_rgba16().pixels().any(|p| p.0[3] < u16::MAX),
+        _ => false,
+    }
+}
+
+fn is_compressible(format: Option<ImageFormat>, animated: bool) -> bool {
+    match format {
+        Some(ImageFormat::Jpeg | ImageFormat::Bmp | ImageFormat::Tiff) => true,
+        Some(ImageFormat::Png | ImageFormat::WebP) => !animated,
+        _ => false,
+    }
+}
+
+fn is_animated(format: ImageFormat, data: &[u8]) -> bool {
+    match format {
+        ImageFormat::Png => PngDecoder::new(Cursor::new(data))
+            .and_then(|d| d.is_apng())
+            .unwrap_or(false),
+        ImageFormat::WebP => WebPDecoder::new(Cursor::new(data)).is_ok_and(|d| d.has_animation()),
+        _ => false,
+    }
 }
 
 fn to_output_color(img: DynamicImage, output: OutputFormat) -> DynamicImage {
@@ -154,46 +163,12 @@ fn encode(img: &DynamicImage, output: OutputFormat) -> image::ImageResult<Vec<u8
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod fixtures {
     use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
     use image::codecs::webp::WebPEncoder;
-    use image::{GenericImageView, ImageBuffer, LumaA, Rgb, RgbImage, Rgba, RgbaImage};
+    use image::{Rgb, RgbImage, Rgba, RgbaImage};
 
-    struct TestDir(PathBuf);
-
-    impl TestDir {
-        fn new() -> Self {
-            static COUNTER: AtomicU64 = AtomicU64::new(0);
-            let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-            let dir =
-                std::env::temp_dir().join(format!("etch-gui-test-{}-{n}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(&dir).unwrap();
-            Self(dir)
-        }
-
-        fn path(&self) -> &Path {
-            &self.0
-        }
-
-        fn entries(&self) -> Vec<String> {
-            let mut names: Vec<String> = std::fs::read_dir(&self.0)
-                .unwrap()
-                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-                .collect();
-            names.sort();
-            names
-        }
-    }
-
-    impl Drop for TestDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
-    fn uncompressed_png(img: &DynamicImage) -> Vec<u8> {
+    pub fn uncompressed_png(img: &DynamicImage) -> Vec<u8> {
         let mut buf = Vec::new();
         img.write_with_encoder(PngEncoder::new_with_quality(
             &mut buf,
@@ -204,13 +179,13 @@ mod tests {
         buf
     }
 
-    fn encoded(img: &DynamicImage, format: ImageFormat) -> Vec<u8> {
+    pub fn encoded(img: &DynamicImage, format: ImageFormat) -> Vec<u8> {
         let mut buf = Cursor::new(Vec::new());
         img.write_to(&mut buf, format).unwrap();
         buf.into_inner()
     }
 
-    fn opaque(width: u32, height: u32) -> DynamicImage {
+    pub fn opaque(width: u32, height: u32) -> DynamicImage {
         DynamicImage::ImageRgb8(RgbImage::from_fn(width, height, |x, y| {
             Rgb([
                 (x % 256) as u8,
@@ -220,7 +195,7 @@ mod tests {
         }))
     }
 
-    fn translucent(width: u32, height: u32) -> DynamicImage {
+    pub fn translucent(width: u32, height: u32) -> DynamicImage {
         DynamicImage::ImageRgba8(RgbaImage::from_fn(width, height, |x, y| {
             Rgba([
                 (x % 256) as u8,
@@ -246,7 +221,7 @@ mod tests {
         !crc
     }
 
-    fn noise(width: u32, height: u32) -> DynamicImage {
+    pub fn noise(width: u32, height: u32) -> DynamicImage {
         let mut state = 0x9E37_79B9u32;
         DynamicImage::ImageRgb8(RgbImage::from_fn(width, height, |_, _| {
             state ^= state << 13;
@@ -256,7 +231,7 @@ mod tests {
         }))
     }
 
-    fn apng(img: &DynamicImage) -> Vec<u8> {
+    pub fn apng(img: &DynamicImage) -> Vec<u8> {
         let png = uncompressed_png(img);
         let mut actl = 8u32.to_be_bytes().to_vec();
         actl.extend_from_slice(b"acTL");
@@ -279,10 +254,15 @@ mod tests {
         out
     }
 
-    fn animated_webp(img: &DynamicImage) -> Vec<u8> {
-        let mut still = Vec::new();
-        img.write_with_encoder(WebPEncoder::new_lossless(&mut still))
+    pub fn lossless_webp(img: &DynamicImage) -> Vec<u8> {
+        let mut webp = Vec::new();
+        img.write_with_encoder(WebPEncoder::new_lossless(&mut webp))
             .unwrap();
+        webp
+    }
+
+    pub fn animated_webp(img: &DynamicImage) -> Vec<u8> {
+        let still = lossless_webp(img);
         let len = u32::from_le_bytes(still[16..20].try_into().unwrap()) as usize;
         let bitstream = &still[20..20 + len];
 
@@ -305,7 +285,7 @@ mod tests {
         out
     }
 
-    fn jpeg_with_orientation(img: &DynamicImage, orientation: u8) -> Vec<u8> {
+    pub fn jpeg_with_orientation(img: &DynamicImage, orientation: u8) -> Vec<u8> {
         let mut jpeg = Vec::new();
         img.write_with_encoder(JpegEncoder::new_with_quality(&mut jpeg, 100))
             .unwrap();
@@ -319,6 +299,13 @@ mod tests {
         out.extend_from_slice(&jpeg[2..]);
         out
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fixtures::*;
+    use super::*;
+    use image::{GenericImageView, ImageBuffer, LumaA, Rgb, RgbImage, Rgba, RgbaImage};
 
     #[test]
     fn target_dimensions_scale_only_down_keep_the_aspect_ratio_and_never_reach_zero() {
@@ -350,160 +337,61 @@ mod tests {
         assert!(has_meaningful_alpha(&DynamicImage::ImageRgba16(rgba16)));
     }
 
-    fn uploads(root: &TestDir) -> TempUploads {
-        TempUploads::new(root.path().to_path_buf())
-    }
-
     #[test]
     fn a_large_opaque_image_becomes_a_jpeg_within_the_size_limit() {
-        let root = TestDir::new();
-        let input = root.path().join("vacation.png");
-        std::fs::write(&input, uncompressed_png(&opaque(3000, 1000))).unwrap();
+        let out = compress(&uncompressed_png(&opaque(3000, 1000))).expect("compressed");
 
-        let out = compress_image_file(&input, &uploads(&root))
-            .unwrap()
-            .expect("compressed");
-
-        assert_eq!(out.file_name().unwrap(), "vacation.jpg");
-        let bytes = std::fs::read(&out).unwrap();
-        assert_eq!(image::guess_format(&bytes).unwrap(), ImageFormat::Jpeg);
-        assert_eq!(
-            image::load_from_memory(&bytes).unwrap().dimensions(),
-            (2048, 683)
-        );
-        assert!(input.exists());
+        assert_eq!(out.format, OutputFormat::Jpeg);
+        assert_eq!(image::guess_format(&out.bytes).unwrap(), ImageFormat::Jpeg);
+        assert_eq!(image::load_from_memory(&out.bytes).unwrap().dimensions(), (2048, 683));
+        assert_eq!((out.width, out.height), (2048, 683));
     }
 
     #[test]
     fn an_image_with_transparency_becomes_a_png_that_keeps_it() {
-        let root = TestDir::new();
-        let input = root.path().join("logo.png");
-        std::fs::write(&input, uncompressed_png(&translucent(2500, 400))).unwrap();
+        let out = compress(&uncompressed_png(&translucent(2500, 400))).expect("compressed");
 
-        let out = compress_image_file(&input, &uploads(&root))
-            .unwrap()
-            .expect("compressed");
-
-        assert_eq!(out.file_name().unwrap(), "logo.png");
-        let bytes = std::fs::read(&out).unwrap();
-        assert_eq!(image::guess_format(&bytes).unwrap(), ImageFormat::Png);
-        let decoded = image::load_from_memory(&bytes).unwrap();
+        assert_eq!(out.format, OutputFormat::Png);
+        assert_eq!(image::guess_format(&out.bytes).unwrap(), ImageFormat::Png);
+        let decoded = image::load_from_memory(&out.bytes).unwrap();
         assert_eq!(decoded.dimensions(), (2048, 328));
         assert!(has_meaningful_alpha(&decoded));
     }
 
     #[test]
-    fn every_still_format_the_frontend_offers_to_compress_is_re_encoded() {
-        let root = TestDir::new();
+    fn every_still_format_core_offers_to_compress_is_re_encoded() {
         let img = noise(64, 64);
-        let mut webp = Vec::new();
-        img.write_with_encoder(WebPEncoder::new_lossless(&mut webp))
-            .unwrap();
         for (name, bytes) in [
             ("photo.jpg", jpeg_with_orientation(&img, 1)),
-            ("photo.webp", webp),
+            ("photo.webp", lossless_webp(&img)),
             ("photo.bmp", encoded(&img, ImageFormat::Bmp)),
             ("photo.tiff", encoded(&img, ImageFormat::Tiff)),
         ] {
-            let input = root.path().join(name);
-            std::fs::write(&input, bytes).unwrap();
-
-            let out = compress_image_file(&input, &uploads(&root)).unwrap();
-
-            assert_eq!(
-                out.and_then(|path| path.file_name().map(|n| n.to_os_string())),
-                Some("photo.jpg".into()),
-                "{name}"
-            );
+            assert_eq!(compress(&bytes).map(|out| out.format), Some(OutputFormat::Jpeg), "{name}");
         }
     }
 
     #[test]
     fn a_photo_stored_sideways_comes_out_upright() {
-        let root = TestDir::new();
-        let input = root.path().join("portrait.jpg");
-        std::fs::write(&input, jpeg_with_orientation(&noise(400, 200), 6)).unwrap();
+        let out = compress(&jpeg_with_orientation(&noise(400, 200), 6)).expect("compressed");
 
-        let out = compress_image_file(&input, &uploads(&root))
-            .unwrap()
-            .expect("compressed");
-
-        let decoded = image::load_from_memory(&std::fs::read(&out).unwrap()).unwrap();
+        let decoded = image::load_from_memory(&out.bytes).unwrap();
         assert_eq!(decoded.dimensions(), (200, 400));
+        assert_eq!((out.width, out.height), (200, 400));
     }
 
     #[test]
-    fn a_file_that_cannot_or_should_not_be_re_encoded_is_returned_untouched() {
-        let root = TestDir::new();
+    fn a_file_that_cannot_or_should_not_be_re_encoded_is_left_alone() {
         let frame = noise(300, 300);
         let solid = DynamicImage::ImageRgb8(RgbImage::from_pixel(16, 16, Rgb([200, 10, 10])));
         for (name, bytes) in [
             ("party.gif", encoded(&opaque(32, 32), ImageFormat::Gif)),
             ("animated.png", apng(&frame)),
             ("animated.webp", animated_webp(&frame)),
-            (
-                "not-an-image.png",
-                b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>".to_vec(),
-            ),
+            ("not-an-image.png", b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>".to_vec()),
             ("already-small.png", encoded(&solid, ImageFormat::Png)),
         ] {
-            let input = root.path().join(name);
-            std::fs::write(&input, &bytes).unwrap();
-            let before = root.entries();
-
-            assert_eq!(
-                compress_image_file(&input, &uploads(&root)).unwrap(),
-                None,
-                "{name}"
-            );
-            assert_eq!(std::fs::read(&input).unwrap(), bytes, "{name}");
-            assert_eq!(root.entries(), before, "{name}");
+            assert!(compress(&bytes).is_none(), "{name}");
         }
-    }
-
-    #[test]
-    fn a_replaced_input_of_the_users_own_is_kept_whatever_its_folder_is_called() {
-        let root = TestDir::new();
-        let uploads = uploads(&root);
-        let ours = uploads.create("ours.png", b"ours").unwrap();
-        for folder in [ours.parent().unwrap(), &root.path().join("etch-paste-abc")] {
-            std::fs::create_dir_all(folder).unwrap();
-            let input = folder.join("photo.png");
-            std::fs::write(&input, uncompressed_png(&opaque(300, 300))).unwrap();
-
-            let out = compress_image_file(&input, &uploads)
-                .unwrap()
-                .expect("compressed");
-
-            assert!(input.exists(), "{} is the user's own", input.display());
-            assert_eq!(out.file_name().unwrap(), "photo.jpg");
-        }
-    }
-
-    #[test]
-    fn a_replaced_input_etch_created_is_deleted_with_its_directory() {
-        let root = TestDir::new();
-        let uploads = uploads(&root);
-        let input = uploads
-            .create("image.png", &uncompressed_png(&opaque(300, 300)))
-            .unwrap();
-        let input_dir = input.parent().unwrap().to_path_buf();
-
-        let out = compress_image_file(&input, &uploads)
-            .unwrap()
-            .expect("compressed");
-
-        assert!(!input_dir.exists());
-        assert_eq!(out.file_name().unwrap(), "image.jpg");
-        assert_eq!(
-            root.entries(),
-            vec![out
-                .parent()
-                .unwrap()
-                .file_name()
-                .unwrap()
-                .to_string_lossy()
-                .into_owned()]
-        );
     }
 }
