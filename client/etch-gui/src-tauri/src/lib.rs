@@ -4,6 +4,7 @@ mod sfx;
 
 use etch_core::init_core;
 use etch_core::commands::{CoreCommand, MediaRequest};
+use etch_core::temp_uploads::TempUploads;
 use tauri::{AppHandle, Manager, State};
 use tauri::Emitter;
 use tauri_plugin_updater::UpdaterExt;
@@ -55,8 +56,9 @@ fn load_custom_css(path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-async fn paste_clipboard_image() -> Result<Option<(String, u64)>, String> {
-    tokio::task::spawn_blocking(|| {
+async fn paste_clipboard_image(temp_uploads: State<'_, TempUploads>) -> Result<Option<(String, u64)>, String> {
+    let temp_uploads = temp_uploads.inner().clone();
+    tokio::task::spawn_blocking(move || {
         let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
         let img_data = match clipboard.get_image() {
             Ok(data) => data,
@@ -73,17 +75,17 @@ async fn paste_clipboard_image() -> Result<Option<(String, u64)>, String> {
         img.write_to(&mut buf, image::ImageFormat::Png).map_err(|e| e.to_string())?;
         let bytes = buf.into_inner();
         let size = bytes.len() as u64;
-        let path = attachment::write_temp_file(&std::env::temp_dir(), "image.png", &bytes)
-            .map_err(|e| e.to_string())?;
+        let path = temp_uploads.create("image.png", &bytes).map_err(|e| e.to_string())?;
 
         Ok(Some((path.to_string_lossy().into_owned(), size)))
     }).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-async fn compress_image(path: String) -> Result<String, String> {
+async fn compress_image(path: String, temp_uploads: State<'_, TempUploads>) -> Result<String, String> {
+    let temp_uploads = temp_uploads.inner().clone();
     tokio::task::spawn_blocking(move || {
-        match attachment::compress_image_file(Path::new(&path), &std::env::temp_dir()) {
+        match attachment::compress_image_file(Path::new(&path), &temp_uploads) {
             Ok(Some(out)) => Ok(out.to_string_lossy().into_owned()),
             Ok(None) => Ok(path),
             Err(e) => Err(e.to_string()),
@@ -91,6 +93,35 @@ async fn compress_image(path: String) -> Result<String, String> {
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// The body is the file's bytes; its percent-encoded name travels in the `file-name` header.
+#[tauri::command]
+async fn save_pasted_file(
+    request: tauri::ipc::Request<'_>,
+    temp_uploads: State<'_, TempUploads>,
+) -> Result<String, String> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("expected the file's bytes".into());
+    };
+    let name = request.headers().get("file-name")
+        .and_then(|value| value.to_str().ok())
+        .and_then(media::percent_decode)
+        .unwrap_or_default();
+    let (temp_uploads, bytes) = (temp_uploads.inner().clone(), bytes.clone());
+    tokio::task::spawn_blocking(move || temp_uploads.create(&name, &bytes))
+        .await
+        .map_err(|e| e.to_string())?
+        .map(|path| path.to_string_lossy().into_owned())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn discard_temp_upload(path: String, temp_uploads: State<'_, TempUploads>) -> Result<(), String> {
+    let temp_uploads = temp_uploads.inner().clone();
+    tokio::task::spawn_blocking(move || temp_uploads.discard(Path::new(&path)))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -282,9 +313,11 @@ pub fn run() {
             let logger = build_logger(&log_path);
 
             let sfx_player = SfxPlayer::new(&data_dir);
+            let temp_uploads = TempUploads::new(std::env::temp_dir());
+            app.manage(temp_uploads.clone());
             // `setup` runs outside a Tokio context, and `init_core` spawns tasks.
             let (mut core_handle, engine) = tauri::async_runtime::block_on(async {
-                init_core(data_dir, resource_dir, cmd_tx, cmd_rx, media_rx, logger)
+                init_core(data_dir, resource_dir, cmd_tx, cmd_rx, media_rx, temp_uploads, logger)
             });
             app.manage(TauriState::new(core_handle.cmd_tx));
             app.manage(sfx_player);
@@ -309,6 +342,8 @@ pub fn run() {
             core_command,
             paste_clipboard_image,
             compress_image,
+            save_pasted_file,
+            discard_temp_upload,
             play_sfx,
             load_custom_css,
             check_for_update

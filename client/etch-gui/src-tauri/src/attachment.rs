@@ -1,7 +1,7 @@
 use std::io::{self, Cursor};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
+use etch_core::temp_uploads::TempUploads;
 use image::codecs::jpeg::JpegEncoder;
 use image::codecs::png::{CompressionType, FilterType as PngFilter, PngDecoder, PngEncoder};
 use image::codecs::webp::WebPDecoder;
@@ -9,7 +9,6 @@ use image::imageops::FilterType;
 use image::metadata::Orientation;
 use image::{ColorType, DynamicImage, ImageDecoder, ImageFormat, ImageReader};
 
-const TEMP_PREFIX: &str = "etch-paste-";
 const MAX_EDGE: u32 = 2048;
 const JPEG_QUALITY: u8 = 80;
 
@@ -34,15 +33,6 @@ impl OutputFormat {
             Self::Png => "png",
         }
     }
-}
-
-/// Only the directory form counts: older versions sent files named `etch-paste-*`, and a
-/// user re-sharing one of those must not lose it.
-pub(crate) fn temp_upload_dir(path: &Path) -> Option<&Path> {
-    path.parent().filter(|dir| {
-        dir.file_name()
-            .is_some_and(|n| n.to_string_lossy().starts_with(TEMP_PREFIX))
-    })
 }
 
 pub(crate) fn target_dimensions(width: u32, height: u32, max_edge: u32) -> (u32, u32) {
@@ -95,28 +85,15 @@ pub(crate) fn output_file_name(input: &Path, format: OutputFormat) -> String {
 }
 
 /// `Ok(None)` means the input should be uploaded as is; it is then left untouched.
-pub(crate) fn compress_image_file(input: &Path, temp_root: &Path) -> io::Result<Option<PathBuf>> {
+pub(crate) fn compress_image_file(input: &Path, temp_uploads: &TempUploads) -> io::Result<Option<PathBuf>> {
     let data = std::fs::read(input)?;
     let Some((bytes, format)) = compress_bytes(&data) else {
         return Ok(None);
     };
-    let out = write_temp_file(temp_root, &output_file_name(input, format), &bytes)?;
-    remove_temp_input(input);
+    let out = temp_uploads.create(&output_file_name(input, format), &bytes)?;
+    // Only removes an input Etch created, such as a pasted screenshot.
+    temp_uploads.discard(input);
     Ok(Some(out))
-}
-
-pub(crate) fn write_temp_file(
-    temp_root: &Path,
-    file_name: &str,
-    bytes: &[u8],
-) -> io::Result<PathBuf> {
-    let dir = create_temp_dir(temp_root)?;
-    let path = dir.join(file_name);
-    if let Err(e) = std::fs::write(&path, bytes) {
-        let _ = std::fs::remove_dir_all(&dir);
-        return Err(e);
-    }
-    Ok(path)
 }
 
 fn compress_bytes(data: &[u8]) -> Option<(Vec<u8>, OutputFormat)> {
@@ -176,37 +153,10 @@ fn encode(img: &DynamicImage, output: OutputFormat) -> image::ImageResult<Vec<u8
     Ok(buf)
 }
 
-fn create_temp_dir(temp_root: &Path) -> io::Result<PathBuf> {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    for _ in 0..16 {
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let dir = temp_root.join(format!("{TEMP_PREFIX}{}-{nanos}-{n}", std::process::id()));
-        match std::fs::create_dir(&dir) {
-            Ok(()) => return Ok(dir),
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(e),
-        }
-    }
-    Err(io::Error::new(
-        io::ErrorKind::AlreadyExists,
-        "no free temp directory name",
-    ))
-}
-
-fn remove_temp_input(path: &Path) {
-    if let Some(dir) = temp_upload_dir(path) {
-        let _ = std::fs::remove_file(path);
-        let _ = std::fs::remove_dir(dir);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use image::codecs::webp::WebPEncoder;
     use image::{GenericImageView, ImageBuffer, LumaA, Rgb, RgbImage, Rgba, RgbaImage};
 
@@ -400,19 +350,8 @@ mod tests {
         assert!(has_meaningful_alpha(&DynamicImage::ImageRgba16(rgba16)));
     }
 
-    #[test]
-    fn write_temp_file_uses_a_fresh_prefixed_directory() {
-        let root = TestDir::new();
-        let a = write_temp_file(root.path(), "image.png", b"a").unwrap();
-        let b = write_temp_file(root.path(), "image.png", b"b").unwrap();
-        assert_ne!(a.parent(), b.parent());
-        for path in [&a, &b] {
-            assert_eq!(path.file_name().unwrap(), "image.png");
-            assert_eq!(path.parent().unwrap().parent().unwrap(), root.path());
-            assert!(temp_upload_dir(path).is_some());
-        }
-        assert_eq!(std::fs::read(&a).unwrap(), b"a");
-        assert_eq!(std::fs::read(&b).unwrap(), b"b");
+    fn uploads(root: &TestDir) -> TempUploads {
+        TempUploads::new(root.path().to_path_buf())
     }
 
     #[test]
@@ -421,12 +360,11 @@ mod tests {
         let input = root.path().join("vacation.png");
         std::fs::write(&input, uncompressed_png(&opaque(3000, 1000))).unwrap();
 
-        let out = compress_image_file(&input, root.path())
+        let out = compress_image_file(&input, &uploads(&root))
             .unwrap()
             .expect("compressed");
 
         assert_eq!(out.file_name().unwrap(), "vacation.jpg");
-        assert!(temp_upload_dir(&out).is_some());
         let bytes = std::fs::read(&out).unwrap();
         assert_eq!(image::guess_format(&bytes).unwrap(), ImageFormat::Jpeg);
         assert_eq!(
@@ -442,7 +380,7 @@ mod tests {
         let input = root.path().join("logo.png");
         std::fs::write(&input, uncompressed_png(&translucent(2500, 400))).unwrap();
 
-        let out = compress_image_file(&input, root.path())
+        let out = compress_image_file(&input, &uploads(&root))
             .unwrap()
             .expect("compressed");
 
@@ -470,7 +408,7 @@ mod tests {
             let input = root.path().join(name);
             std::fs::write(&input, bytes).unwrap();
 
-            let out = compress_image_file(&input, root.path()).unwrap();
+            let out = compress_image_file(&input, &uploads(&root)).unwrap();
 
             assert_eq!(
                 out.and_then(|path| path.file_name().map(|n| n.to_os_string())),
@@ -486,7 +424,7 @@ mod tests {
         let input = root.path().join("portrait.jpg");
         std::fs::write(&input, jpeg_with_orientation(&noise(400, 200), 6)).unwrap();
 
-        let out = compress_image_file(&input, root.path())
+        let out = compress_image_file(&input, &uploads(&root))
             .unwrap()
             .expect("compressed");
 
@@ -514,7 +452,7 @@ mod tests {
             let before = root.entries();
 
             assert_eq!(
-                compress_image_file(&input, root.path()).unwrap(),
+                compress_image_file(&input, &uploads(&root)).unwrap(),
                 None,
                 "{name}"
             );
@@ -524,31 +462,34 @@ mod tests {
     }
 
     #[test]
-    fn a_replaced_input_named_like_a_legacy_temp_file_is_kept() {
+    fn a_replaced_input_of_the_users_own_is_kept_whatever_its_folder_is_called() {
         let root = TestDir::new();
-        let input = root.path().join("etch-paste-4.png");
-        std::fs::write(&input, uncompressed_png(&opaque(300, 300))).unwrap();
+        let uploads = uploads(&root);
+        let ours = uploads.create("ours.png", b"ours").unwrap();
+        for folder in [ours.parent().unwrap(), &root.path().join("etch-paste-abc")] {
+            std::fs::create_dir_all(folder).unwrap();
+            let input = folder.join("photo.png");
+            std::fs::write(&input, uncompressed_png(&opaque(300, 300))).unwrap();
 
-        let out = compress_image_file(&input, root.path())
-            .unwrap()
-            .expect("compressed");
+            let out = compress_image_file(&input, &uploads)
+                .unwrap()
+                .expect("compressed");
 
-        assert!(input.exists(), "a flat etch-paste file is the user's own");
-        assert_eq!(out.file_name().unwrap(), "etch-paste-4.jpg");
+            assert!(input.exists(), "{} is the user's own", input.display());
+            assert_eq!(out.file_name().unwrap(), "photo.jpg");
+        }
     }
 
     #[test]
-    fn a_replaced_directory_temp_input_is_deleted_with_its_directory() {
+    fn a_replaced_input_etch_created_is_deleted_with_its_directory() {
         let root = TestDir::new();
-        let input = write_temp_file(
-            root.path(),
-            "image.png",
-            &uncompressed_png(&opaque(300, 300)),
-        )
-        .unwrap();
+        let uploads = uploads(&root);
+        let input = uploads
+            .create("image.png", &uncompressed_png(&opaque(300, 300)))
+            .unwrap();
         let input_dir = input.parent().unwrap().to_path_buf();
 
-        let out = compress_image_file(&input, root.path())
+        let out = compress_image_file(&input, &uploads)
             .unwrap()
             .expect("compressed");
 

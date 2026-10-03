@@ -1,5 +1,5 @@
-import { readFile, writeFile, mkdir, remove } from '@tauri-apps/plugin-fs';
-import { tempDir, join } from '@tauri-apps/api/path';
+import { invoke } from '@tauri-apps/api/core';
+import { readFile } from '@tauri-apps/plugin-fs';
 import type { OutgoingMediaInfo } from './ipc';
 import type { UploadLimits } from './stores/uploads';
 import { formatMB } from './media';
@@ -9,8 +9,6 @@ export type AttachmentCategory = 'image' | 'other';
 export type AttachVerdict = { accept: true; mustCompress: boolean } | { accept: false; reason: string };
 
 export const COMPRESS_THRESHOLD_BYTES = 256_000;
-
-const TEMP_PREFIX = 'etch-paste-';
 
 const PROBE_TIMEOUT_MS = 3000;
 
@@ -113,11 +111,6 @@ export function limitFor(path: string, limits: UploadLimits | null): number | nu
     return categoryOf(mime) === 'image' ? limits.image_bytes : limits.other_bytes;
 }
 
-export function isTempPath(path: string): boolean {
-    const parts = path.split(/[\\/]/);
-    return parts.length > 1 && parts[parts.length - 2].startsWith(TEMP_PREFIX);
-}
-
 export function overLimitReason(size: number, limit: number, afterCompression = false): string {
     const when = afterCompression ? ' after compression' : '';
     return `it is ${formatMB(size)}${when} and the limit for this kind of file is ${formatMB(limit)}`;
@@ -204,27 +197,12 @@ export async function probeMediaInfo(path: string, size: number): Promise<Outgoi
     }
 }
 
-function safeFileName(name: string): string {
-    const base = fileName(name).trim();
-    return base && base !== '.' && base !== '..' ? base : 'attachment';
-}
-
+/** The shell writes the file, so that Etch has a record of having created it. */
 export async function writeTempAttachment(name: string, bytes: Uint8Array): Promise<string> {
-    const dir = await join(await tempDir(), `${TEMP_PREFIX}${crypto.randomUUID()}`);
-    await mkdir(dir, { recursive: true });
-    const path = await join(dir, safeFileName(name));
-    try {
-        await writeFile(path, bytes);
-    } catch (e) {
-        await remove(dir, { recursive: true }).catch(() => undefined);
-        throw e;
-    }
-    return path;
+    return invoke<string>('save_pasted_file', bytes, { headers: { 'file-name': encodeURIComponent(name) } });
 }
 
-/** Best effort; only ever touches a file inside an etch-paste directory, and removes that directory. */
+/** Best effort. The shell only removes a file Etch itself created, so any path is safe to pass. */
 export async function discardTempFile(path: string): Promise<void> {
-    if (!isTempPath(path)) return;
-    const dir = path.slice(0, path.length - fileName(path).length - 1);
-    await remove(dir, { recursive: true }).catch(() => undefined);
+    await invoke('discard_temp_upload', { path }).catch(() => undefined);
 }

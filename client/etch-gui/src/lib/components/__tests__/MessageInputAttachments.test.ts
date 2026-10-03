@@ -3,7 +3,7 @@ import { render, screen, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { get } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
-import { stat, readFile, writeFile, mkdir, remove } from '@tauri-apps/plugin-fs';
+import { stat, readFile, remove } from '@tauri-apps/plugin-fs';
 import { open } from '@tauri-apps/plugin-dialog';
 import { getCurrentWebview, type DragDropEvent } from '@tauri-apps/api/webview';
 import { activeChannelId, setEditing, clearEditing, toastError, activeOverlay, uploadLimits } from '$lib/stores';
@@ -42,8 +42,6 @@ beforeEach(() => {
     vi.mocked(readFile).mockReset();
     vi.mocked(readFile).mockRejectedValue(new Error('no such file'));
     vi.mocked(open).mockReset();
-    vi.mocked(writeFile).mockClear();
-    vi.mocked(mkdir).mockClear();
     vi.mocked(remove).mockClear();
     vi.mocked(getCurrentWebview().onDragDropEvent).mockClear();
 });
@@ -83,6 +81,14 @@ async function send() {
     await fireEvent.keyDown(textarea(), { key: 'Enter' });
 }
 
+function invocations(command: string) {
+    return vi.mocked(invoke).mock.calls.filter(([cmd]) => cmd === command);
+}
+
+function discarded() {
+    return invocations('discard_temp_upload').map(([, args]) => (args as { path: string }).path);
+}
+
 function sentMessages() {
     return vi.mocked(invoke).mock.calls
         .filter(([cmd]) => cmd === 'core_command')
@@ -119,8 +125,7 @@ describe('limits at attach time', () => {
         await pasteFiles([clipboardFile('clip.mp4', 3 * MIB)]);
 
         await expectToast("Couldn't attach clip.mp4: it is 3 MB and the limit for this kind of file is 2 MB");
-        expect(writeFile).not.toHaveBeenCalled();
-        expect(mkdir).not.toHaveBeenCalled();
+        expect(invocations('save_pasted_file')).toEqual([]);
         expect(screen.queryByText('clip.mp4')).not.toBeInTheDocument();
     });
 });
@@ -162,7 +167,7 @@ describe('an image over its limit', () => {
 
         await expectToast("Couldn't send photo.png: it is 5.5 MB after compression and the limit for this kind of file is 5 MB");
         expect(sentMessages()).toEqual([]);
-        expect(remove).toHaveBeenCalledWith('/tmp/etch-paste-c', { recursive: true });
+        expect(discarded()).toContain('/tmp/etch-paste-c/photo.jpg');
     });
 
     it.each<[string, (args: Record<string, unknown>) => unknown]>([
@@ -272,21 +277,21 @@ describe('media_info', () => {
 });
 
 describe('pasting', () => {
-    it('writes the file into its own etch-paste directory and attaches it', async () => {
+    it('has the shell write a pasted file, under its own name, and attaches the result', async () => {
+        commands.save_pasted_file = () => '/tmp/etch-upload-1/résumé.pdf';
         render(MessageInput);
 
-        await pasteFiles([clipboardFile('notes.pdf', 3)]);
+        await pasteFiles([clipboardFile('résumé.pdf', 3)]);
 
-        await vi.waitFor(() => expect(screen.getByText('notes.pdf')).toBeInTheDocument());
-        const dir = vi.mocked(mkdir).mock.calls[0][0] as string;
-        expect(dir).toMatch(/^\/tmp\/etch-paste-[^/]+$/);
-        expect(mkdir).toHaveBeenCalledWith(dir, { recursive: true });
-        expect(writeFile).toHaveBeenCalledWith(`${dir}/notes.pdf`, new Uint8Array([1, 2, 3]));
+        await vi.waitFor(() => expect(screen.getByText('résumé.pdf')).toBeInTheDocument());
+        expect(invocations('save_pasted_file')).toEqual([
+            ['save_pasted_file', new Uint8Array([1, 2, 3]), { headers: { 'file-name': 'r%C3%A9sum%C3%A9.pdf' } }],
+        ]);
 
         await send();
 
         await vi.waitFor(() => expect(sentMessages()).toHaveLength(1));
-        expect(sentMessages()[0].attachment_path).toBe(`${dir}/notes.pdf`);
+        expect(sentMessages()[0].attachment_path).toBe('/tmp/etch-upload-1/résumé.pdf');
     });
 
     it('prefers a clipboard bitmap over the file list', async () => {
@@ -296,10 +301,10 @@ describe('pasting', () => {
         await pasteFiles([clipboardFile('image.png', 1000)]);
 
         await vi.waitFor(() => expect(screen.getByText('etch-paste-1.png')).toBeInTheDocument());
-        expect(writeFile).not.toHaveBeenCalled();
+        expect(invocations('save_pasted_file')).toEqual([]);
     });
 
-    it('removes a pasted temp file when the attachment is cleared', async () => {
+    it('asks the shell to discard a pasted file when the attachment is cleared', async () => {
         commands.paste_clipboard_image = () => ['/tmp/etch-paste-1/image.png', 1000];
         render(MessageInput);
         await pasteFiles([]);
@@ -308,7 +313,20 @@ describe('pasting', () => {
         await fireEvent.click(screen.getByLabelText('Remove attachment'));
 
         expect(screen.queryByText('image.png')).not.toBeInTheDocument();
-        expect(remove).toHaveBeenCalledWith('/tmp/etch-paste-1', { recursive: true });
+        expect(discarded()).toEqual(['/tmp/etch-paste-1/image.png']);
+    });
+
+    it('never deletes a file itself, even one picked from a folder named like a temp one', async () => {
+        commands.paste_clipboard_image = () => ['/tmp/etch-upload-1/image.png', 1000];
+        render(MessageInput);
+        await pick('/home/user/etch-paste-holiday/photo.png', 1000);
+        await vi.waitFor(() => expect(screen.getByText('photo.png')).toBeInTheDocument());
+        await pasteFiles([]);
+        await vi.waitFor(() => expect(screen.getByText('image.png')).toBeInTheDocument());
+
+        await fireEvent.click(screen.getByLabelText('Remove attachment'));
+
+        expect(remove).not.toHaveBeenCalled();
     });
 
     it('shows a toast when the clipboard image cannot be read', async () => {
@@ -389,7 +407,7 @@ describe('a send that fails', () => {
         expect(textarea().value).toBe('new draft');
         expect(screen.getByText('notes.pdf')).toBeInTheDocument();
         expect(screen.queryByText('image.png')).not.toBeInTheDocument();
-        expect(remove).toHaveBeenCalledWith('/tmp/etch-paste-1', { recursive: true });
+        expect(discarded()).toContain('/tmp/etch-paste-1/image.png');
     });
 
     it('restores the compressed output of a paste, since compression removed the original', async () => {
@@ -421,7 +439,7 @@ describe('a send that fails', () => {
 
         await expectToast(`Couldn't send photo.png: ${FAILURE}`);
         expect(screen.getByText('photo.png')).toBeInTheDocument();
-        expect(remove).toHaveBeenCalledWith('/tmp/etch-paste-c', { recursive: true });
+        expect(discarded()).toContain('/tmp/etch-paste-c/photo.jpg');
     });
 });
 

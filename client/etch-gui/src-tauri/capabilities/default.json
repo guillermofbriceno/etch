@@ -18,6 +18,7 @@
     "core:window:allow-close",
     "fs:default",
     "fs:allow-stat",
+    "fs:deny-remove",
     "fs:allow-app-write",
     "fs:allow-temp-write-recursive",
     {

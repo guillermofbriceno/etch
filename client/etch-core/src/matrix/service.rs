@@ -11,6 +11,7 @@ use matrix_sdk::ruma::UserId;
 use crate::commands::{MatrixCommand, OutgoingMediaInfo, ServerConnectionForm};
 use crate::events::{CoreEvent, MatrixEvent, InternalEvent, InternalMatrixEvent};
 use crate::matrix::attachment::{self, UploadLimits};
+use crate::temp_uploads::TempUploads;
 use crate::matrix::client::{session_path, start_matrix_client, ConnectionResult};
 use crate::matrix::retry::credentials_rejected;
 use crate::matrix::timeline::TimelineManager;
@@ -179,10 +180,16 @@ pub struct MatrixService {
     data_dir: PathBuf,
     dispatcher: Arc<ScriptDispatcher>,
     limits_fetch: Option<UploadLimitsFetch>,
+    temp_uploads: TempUploads,
 }
 
 impl MatrixService {
-    pub fn new(event_tx: mpsc::Sender<CoreEvent>, data_dir: PathBuf, dispatcher: Arc<ScriptDispatcher>) -> Self {
+    pub fn new(
+        event_tx: mpsc::Sender<CoreEvent>,
+        data_dir: PathBuf,
+        dispatcher: Arc<ScriptDispatcher>,
+        temp_uploads: TempUploads,
+    ) -> Self {
         let timeline_manager = TimelineManager::new(event_tx.clone(), dispatcher.clone());
         Self {
             session: MatrixSession::None,
@@ -191,6 +198,7 @@ impl MatrixService {
             data_dir,
             dispatcher,
             limits_fetch: None,
+            temp_uploads,
         }
     }
 
@@ -203,12 +211,12 @@ impl MatrixService {
 
     async fn send_attachment(&self, room_id: String, path: PathBuf, media_info: Option<OutgoingMediaInfo>) {
         let outcome = match self.serving_client("SendMessage") {
-            Some(client) => match attachment::load(&path, self.upload_limits(), media_info.as_ref()).await {
+            Some(client) => match attachment::load(&path, self.upload_limits(), media_info.as_ref(), &self.temp_uploads).await {
                 Ok(loaded) => attachment::send(&client, &room_id, loaded).await,
                 Err(reason) => Err(reason),
             },
             None => {
-                attachment::discard_if_temp(&path).await;
+                attachment::discard(&self.temp_uploads, &path).await;
                 Err(attachment::NOT_CONNECTED.into())
             }
         };
@@ -781,7 +789,7 @@ mod tests {
     fn service(dir: &std::path::Path) -> MatrixService {
         let (tx, _rx) = mpsc::channel(1);
         let dispatcher = Arc::new(ScriptDispatcher::empty());
-        MatrixService::new(tx, dir.to_path_buf(), dispatcher)
+        MatrixService::new(tx, dir.to_path_buf(), dispatcher, TempUploads::new(dir.to_path_buf()))
     }
 
     fn parked_task() -> (AbortOnDrop, tokio::task::AbortHandle) {
@@ -1012,12 +1020,8 @@ mod tests {
         })
     }
 
-    fn temp_upload(root: &std::path::Path, name: &str, len: usize) -> std::path::PathBuf {
-        let dir = root.join("etch-paste-test");
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join(name);
-        std::fs::write(&path, vec![0u8; len]).unwrap();
-        path
+    fn temp_upload(service: &MatrixService, name: &str, len: usize) -> std::path::PathBuf {
+        service.temp_uploads.create(name, &vec![0u8; len]).unwrap()
     }
 
     fn attachment_failure(event_rx: &mut mpsc::Receiver<CoreEvent>) -> (String, String, String) {
@@ -1038,7 +1042,7 @@ mod tests {
         let (mut service, _sync_abort, _pagination_abort) = connected_service(tmp.path()).await;
         let (event_tx, mut event_rx) = mpsc::channel(16);
         service.event_tx = event_tx;
-        let path = temp_upload(tmp.path(), "clip.mp4", 3_565_158);
+        let path = temp_upload(&service, "clip.mp4", 3_565_158);
 
         service.handle_command(send_attachment_command("!a:b", &path)).await;
 
@@ -1055,7 +1059,7 @@ mod tests {
         let (mut service, _sync_abort, _pagination_abort) = connected_service(tmp.path()).await;
         let (event_tx, mut event_rx) = mpsc::channel(16);
         service.event_tx = event_tx;
-        let path = temp_upload(tmp.path(), "photo.png", 5_242_880);
+        let path = temp_upload(&service, "photo.png", 5_242_880);
 
         service.handle_command(send_attachment_command("!unknown:example.com", &path)).await;
 
@@ -1084,7 +1088,7 @@ mod tests {
         let (event_tx, mut event_rx) = mpsc::channel(16);
         service.event_tx = event_tx;
         service.reset().await;
-        let path = temp_upload(tmp.path(), "photo.png", 10);
+        let path = temp_upload(&service, "photo.png", 10);
 
         service.handle_command(send_attachment_command("!a:b", &path)).await;
 
@@ -1110,7 +1114,7 @@ mod tests {
         service.session = MatrixSession::Live {
             key: SessionKey::of(&client, &test_form()), client, _sync: sync, _pagination: pagination,
         };
-        let path = temp_upload(tmp.path(), "photo.png", 10);
+        let path = temp_upload(&service, "photo.png", 10);
 
         service.handle_command(send_attachment_command("!left:example.com", &path)).await;
 
@@ -1148,7 +1152,7 @@ mod tests {
             "the limits should carry the connect's generation, and the server's limit only lowers a cap",
         );
 
-        let path = temp_upload(tmp.path(), "photo.png", 3_670_016);
+        let path = temp_upload(&service, "photo.png", 3_670_016);
         service.handle_command(send_attachment_command("!a:b", &path)).await;
         let (_, _, reason) = attachment_failure(&mut event_rx);
         assert_eq!(reason, "it is 3.5 MB and the limit for this kind of file is 3 MB");

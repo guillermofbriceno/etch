@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { readFile, writeFile, remove } from '@tauri-apps/plugin-fs';
-import { checkAttachment, discardTempFile, isTempPath, probeMediaInfo, writeTempAttachment } from '../attachments';
+import { readFile } from '@tauri-apps/plugin-fs';
+import { checkAttachment, probeMediaInfo } from '../attachments';
 
 const MIB = 1024 * 1024;
 const LIMITS = { image_bytes: 5 * MIB, other_bytes: 2 * MIB };
@@ -97,37 +97,5 @@ describe('probeMediaInfo', () => {
         expect(await probeMediaInfo('/tmp/notes.pdf', 1000)).toBeNull();
         expect(await probeMediaInfo('/tmp/clip.mp4', 50 * MIB)).toBeNull();
         expect(readFile).not.toHaveBeenCalled();
-    });
-});
-
-describe('writeTempAttachment', () => {
-    it('keeps only the base name of what the clipboard calls the file', async () => {
-        vi.mocked(writeFile).mockReset();
-
-        const path = await writeTempAttachment('../../escape.txt', new Uint8Array());
-
-        expect(path).toMatch(/^\/tmp\/etch-paste-[^/]+\/escape\.txt$/);
-        expect(writeFile).toHaveBeenCalledWith(path, new Uint8Array());
-    });
-});
-
-describe('discardTempFile', () => {
-    it('removes an etch-paste directory and never anything else', async () => {
-        vi.mocked(remove).mockClear();
-
-        for (const path of ['/tmp/etch-paste-123.png', '/home/user/my-etch-paste-dir/photo.png', '/home/user/photo.png']) {
-            expect(isTempPath(path), path).toBe(false);
-            await discardTempFile(path);
-        }
-        expect(remove).not.toHaveBeenCalled();
-
-        for (const [path, dir] of [
-            ['/tmp/etch-paste-abc/notes.pdf', '/tmp/etch-paste-abc'],
-            ['C:\\Temp\\etch-paste-abc\\notes.pdf', 'C:\\Temp\\etch-paste-abc'],
-        ]) {
-            expect(isTempPath(path), path).toBe(true);
-            await discardTempFile(path);
-            expect(remove).toHaveBeenLastCalledWith(dir, { recursive: true });
-        }
     });
 });

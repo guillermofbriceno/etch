@@ -15,7 +15,6 @@
         discardTempFile,
         fileName,
         isCompressible,
-        isTempPath,
         limitFor,
         overLimitReason,
         probeMediaInfo,
@@ -25,7 +24,7 @@
     import Icon from './Icon.svelte';
     import { customScrollbar } from '$lib/scrollbar';
 
-    type Attachment = { path: string; size: number };
+    type Attachment = { path: string; size: number; temp: boolean };
 
     let messageText = '';
     let showEmojiPicker = false;
@@ -201,7 +200,7 @@
 
     // A slower attach that finishes after a newer one must not replace it.
     let attachSeq = 0;
-    async function attach(path: string, knownSize?: number) {
+    async function attach(path: string, temp: boolean, knownSize?: number) {
         const seq = ++attachSeq;
         let size = knownSize;
         if (size === undefined) {
@@ -216,7 +215,7 @@
             discardTempFile(path);
             return;
         }
-        setPending({ path, size });
+        setPending({ path, size, temp });
     }
 
     async function attachPastedFile(file: File) {
@@ -229,12 +228,12 @@
             showToast(`Couldn't attach ${name}: the file could not be read`);
             return;
         }
-        await attach(path, file.size);
+        await attach(path, true, file.size);
     }
 
     async function pickFile() {
         const selected = await open({ multiple: false, directory: false });
-        if (selected) await attach(selected);
+        if (selected) await attach(selected, false);
     }
 
     function clearAttachment() {
@@ -257,7 +256,7 @@
             });
             if (bitmap) {
                 const [path, size] = bitmap;
-                await attach(path, size);
+                await attach(path, true, size);
             } else if (files.length > 0) {
                 await attachPastedFile(files[0]);
             } else if (failure !== null) {
@@ -278,7 +277,7 @@
             dragActive = false;
         } else if (drag.type === 'drop') {
             dragActive = false;
-            if (inputActive && drag.paths.length > 0) attach(drag.paths[0]);
+            if (inputActive && drag.paths.length > 0) attach(drag.paths[0], false);
         }
     }
 
@@ -404,7 +403,7 @@
             return abandon(overLimitReason(size, limit, path !== attachment.path));
         }
 
-        const prepared = { path, size: size ?? attachment.size };
+        const prepared = { path, size: size ?? attachment.size, temp: attachment.temp || path !== attachment.path };
         onPrepared(prepared);
         const mediaInfo = await probeMediaInfo(prepared.path, prepared.size);
         await sendMessage(roomId, '', null, prepared.path, mediaInfo);
@@ -422,7 +421,7 @@
         let restored = original;
         if (prepared && prepared.path !== original.path) {
             // compress_image deletes a temp input it replaced, while a picked source still exists.
-            if (isTempPath(original.path)) restored = prepared;
+            if (original.temp) restored = prepared;
             else discardTempFile(prepared.path);
         }
         if (pendingAttachment === null) pendingAttachment = restored;

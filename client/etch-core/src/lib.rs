@@ -13,6 +13,7 @@ mod mumble;
 mod logger;
 mod task;
 pub mod settings;
+pub mod temp_uploads;
 pub(crate) mod scripting;
 
 #[cfg(test)]
@@ -36,6 +37,7 @@ pub fn init_core(
     cmd_tx: mpsc::Sender<commands::CoreCommand>,
     cmd_rx: mpsc::Receiver<commands::CoreCommand>,
     media_rx: mpsc::Receiver<commands::MediaRequest>,
+    temp_uploads: temp_uploads::TempUploads,
     logger: Box<dyn log::Log>,
 ) -> (CoreHandle, ProductionEngine) {
     let (event_tx, event_rx) = mpsc::channel(100);
@@ -49,7 +51,7 @@ pub fn init_core(
     let settings = settings::load(&data_dir);
     let dispatcher = Arc::new(scripting::ScriptDispatcher::from_settings(&settings));
 
-    let matrix = matrix::MatrixService::new(event_tx.clone(), data_dir.clone(), dispatcher.clone());
+    let matrix = matrix::MatrixService::new(event_tx.clone(), data_dir.clone(), dispatcher.clone(), temp_uploads);
     let voice = mumble::service::MumbleVoiceService::new(event_tx.clone(), data_dir.clone(), resource_dir, dispatcher);
 
     let handle = CoreHandle { cmd_tx, event_rx };

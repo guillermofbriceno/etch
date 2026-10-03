@@ -43,7 +43,7 @@ fn is_tchar(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b)
 }
 
-fn percent_decode(s: &str) -> Option<String> {
+pub(crate) fn percent_decode(s: &str) -> Option<String> {
     let hex = |b: u8| (b as char).to_digit(16).map(|d| d as u8);
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());

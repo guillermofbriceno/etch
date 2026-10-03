@@ -1,4 +1,3 @@
-use std::io::ErrorKind;
 use std::path::Path;
 use std::time::Duration;
 
@@ -11,9 +10,9 @@ use matrix_sdk::ruma::{RoomId, UInt};
 use mime_guess::mime::{self, Mime};
 
 use crate::commands::OutgoingMediaInfo;
+use crate::temp_uploads::TempUploads;
 
 const MIB: u64 = 1024 * 1024;
-const TEMP_PREFIX: &str = "etch-paste-";
 
 pub(crate) const NOT_CONNECTED: &str = "not connected to the server";
 const UNREADABLE: &str = "the file could not be read";
@@ -124,29 +123,9 @@ pub(crate) fn sanitize_mime(path: &Path) -> Mime {
     }
 }
 
-/// Only the directory form counts: older versions sent files named `etch-paste-*`, and a
-/// user re-sharing one of those must not lose it.
-pub(crate) fn temp_upload_dir(path: &Path) -> Option<&Path> {
-    path.parent().filter(|dir| {
-        dir.file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.starts_with(TEMP_PREFIX))
-    })
-}
-
-pub(crate) async fn discard_if_temp(path: &Path) {
-    let Some(dir) = temp_upload_dir(path) else { return };
-    if let Err(e) = tokio::fs::remove_file(path).await
-        && e.kind() != ErrorKind::NotFound
-    {
-        log::warn!("Failed to remove the temp upload {}: {e}", path.display());
-    }
-    // Not `remove_dir_all`: a directory holding anything else is left alone.
-    if let Err(e) = tokio::fs::remove_dir(dir).await
-        && e.kind() != ErrorKind::NotFound
-    {
-        log::warn!("Failed to remove the temp upload directory {}: {e}", dir.display());
-    }
+pub(crate) async fn discard(temp_uploads: &TempUploads, path: &Path) {
+    let (temp_uploads, path) = (temp_uploads.clone(), path.to_owned());
+    let _ = tokio::task::spawn_blocking(move || temp_uploads.discard(&path)).await;
 }
 
 /// Keyed on the top-level type because that is what the SDK picks the message type
@@ -182,14 +161,15 @@ pub(crate) struct Attachment {
     pub info: AttachmentInfo,
 }
 
-/// Removes an Etch temp file whatever the outcome.
+/// Discards the file whatever the outcome, which only removes one Etch created.
 pub(crate) async fn load(
     path: &Path,
     limits: UploadLimits,
     media: Option<&OutgoingMediaInfo>,
+    temp_uploads: &TempUploads,
 ) -> Result<Attachment, String> {
     let read = read_within_limit(path, limits).await;
-    discard_if_temp(path).await;
+    discard(temp_uploads, path).await;
     let (content_type, data) = read?;
     let info = attachment_info(&content_type, data.len() as u64, media);
     Ok(Attachment { file_name: display_name(path), content_type, data, info })
@@ -293,24 +273,6 @@ mod tests {
     }
 
     #[test]
-    fn only_a_file_directly_inside_an_etch_paste_directory_is_a_temp_upload() {
-        assert_eq!(
-            temp_upload_dir(Path::new("/tmp/etch-paste-abc/photo.png")),
-            Some(Path::new("/tmp/etch-paste-abc")),
-        );
-        for not_temp in [
-            "/tmp/etch-paste-1234.png",
-            "etch-paste-1.png",
-            "/home/someone/photo.png",
-            "/tmp/etch-paste/photo.png",
-            "/tmp/etch-paste-abc/nested/photo.png",
-            "/tmp/my-etch-paste-1/photo.png",
-        ] {
-            assert_eq!(temp_upload_dir(Path::new(not_temp)), None, "{not_temp}");
-        }
-    }
-
-    #[test]
     fn real_media_keeps_its_type_and_source_code_is_not_mistaken_for_it() {
         for (name, expected) in [
             ("clip.mp4", "video/mp4"),
@@ -358,14 +320,17 @@ mod tests {
         assert_eq!((info.width, info.height, info.duration, info.size), (None, None, None, size));
     }
 
-    #[tokio::test]
-    async fn a_temp_upload_in_its_own_directory_is_read_and_removed_with_the_directory() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().join("etch-paste-abc");
-        let path = dir.join("photo.png");
-        write_file(&path, 1000);
+    fn uploads(root: &Path) -> TempUploads {
+        TempUploads::new(root.to_path_buf())
+    }
 
-        let attachment = load(&path, UploadLimits::ETCH_CAPS, Some(&media(4, 3, 0))).await
+    #[tokio::test]
+    async fn a_temp_upload_is_read_and_then_removed_with_its_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let uploads = uploads(tmp.path());
+        let path = uploads.create("photo.png", &[0u8; 1000]).unwrap();
+
+        let attachment = load(&path, UploadLimits::ETCH_CAPS, Some(&media(4, 3, 0)), &uploads).await
             .expect("a small image should load");
 
         assert_eq!(attachment.file_name, "photo.png");
@@ -373,35 +338,23 @@ mod tests {
         assert_eq!(attachment.data.len(), 1000);
         assert!(matches!(attachment.info, AttachmentInfo::Image(ref i) if i.size == Some(UInt::from(1000u32))));
         assert!(!path.exists(), "the temp file should be removed");
-        assert!(!dir.exists(), "its etch-paste directory should be removed");
+        assert!(!path.parent().unwrap().exists(), "its directory should be removed");
     }
 
     #[tokio::test]
-    async fn a_temp_directory_holding_anything_else_is_left_in_place() {
+    async fn a_file_of_the_users_own_is_never_removed_whatever_its_folder_is_called() {
         let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().join("etch-paste-abc");
-        let path = dir.join("clip.mp4");
-        write_file(&path, 10);
-        write_file(&dir.join("other.txt"), 10);
-
-        load(&path, UploadLimits::ETCH_CAPS, None).await.expect("a small clip should load");
-
-        assert!(!path.exists(), "the uploaded file should be removed");
-        assert!(dir.join("other.txt").exists(), "nothing else in the directory may be deleted");
-    }
-
-    #[tokio::test]
-    async fn a_file_of_the_users_own_is_never_removed_even_one_named_like_a_legacy_temp_file() {
-        let tmp = tempfile::tempdir().unwrap();
-        let sent = tmp.path().join("etch-paste-1700000000000.png");
-        let rejected = tmp.path().join("big.pdf");
+        let uploads = uploads(tmp.path());
+        let ours = uploads.create("ours.png", &[0u8; 10]).unwrap();
+        let sent = ours.parent().unwrap().join("photo.png");
+        let rejected = tmp.path().join("etch-paste-abc").join("big.pdf");
         write_file(&sent, 10);
         write_file(&rejected, 3 * MIB as usize);
 
-        load(&sent, UploadLimits::ETCH_CAPS, None).await.expect("a small image should load");
-        load(&rejected, UploadLimits::ETCH_CAPS, None).await.expect_err("a large file should be rejected");
+        load(&sent, UploadLimits::ETCH_CAPS, None, &uploads).await.expect("a small image should load");
+        load(&rejected, UploadLimits::ETCH_CAPS, None, &uploads).await.expect_err("a large file should be rejected");
 
-        assert!(sent.exists() && rejected.exists(), "only a file in an etch-paste directory may be deleted");
+        assert!(sent.exists() && rejected.exists(), "only a file Etch created may be deleted");
     }
 
     #[tokio::test]
