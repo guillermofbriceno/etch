@@ -22,6 +22,7 @@ import { replyingTo, editingMessage } from '../compose';
 import { activeWindow, setActiveChannel } from '../messages';
 import { mediaBaseUrl, passwordRequested, matrixConnecting, serverBookmarks, selectedBookmarkId } from '../servers';
 import { currentUser } from '../user';
+import { nameColors, canSetNameColor } from '../nameColors';
 import { activeOverlay } from '../overlay';
 import { transmissionMode } from '../voiceSettings';
 import { errorLog } from '../errors';
@@ -199,6 +200,21 @@ const MATRIX_PROBES: SessionStoreProbe[] = [
             certChangeRequest.set({ host: 'voice.example.org', port: 64738, new_fingerprint: 'aa:bb:cc' });
         },
         expectCleared: () => { expect(get(certChangeRequest)).toBeNull(); },
+    },
+    {
+        name: 'nameColors',
+        populate: () => {
+            fireMatrixEvent({
+                type: 'NameColors',
+                data: [{ user_id: '@someone:example.org', color: { color: '#ff8800' } }],
+            });
+        },
+        expectCleared: () => { expect(get(nameColors).size).toBe(0); },
+    },
+    {
+        name: 'canSetNameColor',
+        populate: () => { fireMatrixEvent({ type: 'Capabilities', data: { name_color: true } }); },
+        expectCleared: () => { expect(get(canSetNameColor)).toBe(false); },
     },
     {
         name: 'messageWindows',

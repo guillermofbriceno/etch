@@ -1,5 +1,6 @@
 use serde::Serialize;
 use crate::models::{ConnectionState, RoomInfo};
+use crate::matrix::name_colors::UserNameColor;
 use crate::matrix::timeline::TimelineEntry;
 
 // core -> gui
@@ -31,6 +32,9 @@ pub enum MatrixEvent {
     ConnectionState(ConnectionState),
     AttachmentFailed { room_id: String, file_name: String, reason: String },
     SendFailed { room_id: String, reason: String },
+    /// Answers to `ResolveNameColors`, and changes nobody asked about.
+    NameColors(Vec<UserNameColor>),
+    Capabilities { name_color: bool },
 }
 
 #[derive(Debug, Serialize)]

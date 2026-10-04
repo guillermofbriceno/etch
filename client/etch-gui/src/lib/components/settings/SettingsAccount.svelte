@@ -1,8 +1,9 @@
 <script lang="ts">
-    import { currentUser } from '$lib/stores';
+    import { currentUser, canSetNameColor } from '$lib/stores';
     import { sendCoreCommand } from '$lib/ipc';
     import Icon from '../Icon.svelte';
     import AvatarFallback from '../AvatarFallback.svelte';
+    import NameColorSetting from './NameColorSetting.svelte';
     import { resolveMediaUrl, getInitial } from '$lib/media';
     import { open } from '@tauri-apps/plugin-dialog';
 
@@ -74,6 +75,10 @@
                     <button class="action-btn" on:click={applyDisplayName} disabled={!displayNameChanged}>{displayNameLabel}</button>
                 </div>
             </div>
+
+            {#if $canSetNameColor}
+                <NameColorSetting />
+            {/if}
         </div>
     </div>
 

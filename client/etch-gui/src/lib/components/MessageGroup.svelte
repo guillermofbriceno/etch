@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { currentUser, compactChat } from '$lib/stores';
+    import { currentUser, compactChat, nameColors, colorOf } from '$lib/stores';
     import { toggleReaction } from '$lib/stores';
     import type { ChatMessage, SenderProfile } from '$lib/types';
     import DOMPurify from 'dompurify';
@@ -38,17 +38,6 @@
             return DOMPurify.sanitize(html_body, HTML_BODY_SANITIZE) as string;
         }
         return markdownToHtml(body);
-    }
-
-    function usernameColor(userId: string): string {
-        // FNV-1a hash — much better distribution than simple multiply-add
-        let hash = 0x811c9dc5;
-        for (let i = 0; i < userId.length; i++) {
-            hash ^= userId.charCodeAt(i);
-            hash = Math.imul(hash, 0x01000193);
-        }
-        const hue = ((hash >>> 0) % 360);
-        return `hsl(${hue}, 70%, 65%)`;
     }
 
     function handleLinkClick(e: MouseEvent) {
@@ -153,7 +142,7 @@
     <div class="message-content">
         {#if !continuation}
             <div class="message-meta">
-                <span class="sender" style="color: {usernameColor(msg.sender)}">{sender?.display_name ?? msg.sender.split(':')[0]}</span>
+                <span class="sender" style="color: {colorOf($nameColors, msg.sender)}">{sender?.display_name ?? msg.sender.split(':')[0]}</span>
                 <span class="timestamp">{formatTimestamp(msg.timestamp)}{#if msg.edited}*{/if}</span>
             </div>
         {/if}

@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use serde::Deserialize;
+use crate::matrix::name_colors::NameColor;
 use crate::models::ServerBookmark;
 
 // gui -> core
@@ -30,6 +31,9 @@ pub enum MatrixCommand {
     CreateDirectMessage { target_user_id: String },
     SetDisplayName(String),
     SetAvatar(String),
+    /// `None` clears the color, leaving the automatic one.
+    SetNameColor(Option<NameColor>),
+    ResolveNameColors(Vec<String>),
     ChangePassword { current_password: String, new_password: String },
     SendReadReceipt { room_id: String, event_id: String },
     PaginateBackwards { room_id: String },

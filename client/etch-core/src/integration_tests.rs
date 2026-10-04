@@ -14,6 +14,7 @@ use crate::commands::{
 };
 use crate::engine::CoreEngine;
 use crate::events::{CoreEvent, MatrixEvent, SystemEvent};
+use crate::matrix::name_colors::{self, Fetched, NameColor, UserNameColor};
 use crate::matrix::service::MatrixService;
 use crate::matrix::timeline::{TimelineEntry, TimelineEntryKind};
 use crate::models::{ConnectionState, MediaInfo, RoomInfo, RoomType};
@@ -402,6 +403,19 @@ fn timeline_entries(event: &CoreEvent) -> Option<(&str, &[TimelineEntry])> {
         }
         _ => None,
     }
+}
+
+/// A plain client for another provisioned user, to read profiles from outside the engine.
+async fn logged_in_reader(username: &str, password: &str) -> matrix_sdk::Client {
+    let form = test_connection_form();
+    let client = matrix_sdk::Client::builder()
+        .homeserver_url(form.homeserver_url.expect("the test form names the homeserver"))
+        .build()
+        .await
+        .expect("reader client should build");
+    client.matrix_auth().login_username(username, password).send().await
+        .expect("reader should log in");
+    client
 }
 
 // ---------------------------------------------------------------------------
@@ -1179,4 +1193,60 @@ async fn reconnecting_does_not_duplicate_events_in_a_created_dm() {
         "a message in a DM created this session was delivered {after_reconnect} times after a \
          reconnect but {baseline} before; the DM has more than one timeline stream",
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn name_color_round_trips_through_the_profile() {
+    let mut h = TestHarness::new();
+    let server_name = std::env::var("ETCH_INTEG_SERVER_NAME")
+        .unwrap_or_else(|_| "localhost".into());
+    let alice = format!("@alice:{server_name}");
+    let blue: NameColor = serde_json::from_value(serde_json::json!({ "color": "#62BAF7" })).unwrap();
+
+    h.send(CoreCommand::System(SystemCommand::ConnectToServer(
+        test_connection_form(),
+    ))).await;
+    let settable = h.expect_event(|e| match e {
+        CoreEvent::Matrix(MatrixEvent::Capabilities { name_color }) => Some(*name_color),
+        _ => None,
+    }, CONNECT_TIMEOUT).await;
+    assert!(settable, "the test homeserver supports extended profiles, so the color is settable");
+    h.expect_event(|e| match e {
+        CoreEvent::Matrix(MatrixEvent::ConnectionState(ConnectionState::Connected)) => Some(()),
+        _ => None,
+    }, CONNECT_TIMEOUT).await;
+
+    let reader = logged_in_reader("bob", "bob_password").await;
+
+    h.send(CoreCommand::Matrix(MatrixCommand::SetNameColor(Some(blue)))).await;
+    let set = UserNameColor { user_id: alice.clone(), color: Some(blue) };
+    h.expect_event(|e| match e {
+        CoreEvent::Matrix(MatrixEvent::NameColors(answers)) if answers.contains(&set) => Some(()),
+        _ => None,
+    }, EVENT_TIMEOUT).await;
+    assert_eq!(
+        name_colors::fetch(reader.clone(), alice.clone()).await,
+        Fetched::Value(Some(blue)),
+        "the color should read back",
+    );
+    let stored = reader.account()
+        .fetch_profile_field_of(matrix_sdk::ruma::UserId::parse(&alice).unwrap(), name_colors::field_name())
+        .await
+        .expect("the profile field should be readable")
+        .expect("the profile field should be set");
+    assert_eq!(*stored.value(), serde_json::json!({ "color": "#62baf7" }), "the profile holds lowercase hex");
+
+    h.send(CoreCommand::Matrix(MatrixCommand::SetNameColor(None))).await;
+    let cleared = UserNameColor { user_id: alice.clone(), color: None };
+    h.expect_event(|e| match e {
+        CoreEvent::Matrix(MatrixEvent::NameColors(answers)) if answers.contains(&cleared) => Some(()),
+        _ => None,
+    }, EVENT_TIMEOUT).await;
+    assert_eq!(
+        name_colors::fetch(reader.clone(), alice.clone()).await,
+        Fetched::Value(None),
+        "a cleared color should read as none, as the server's answer rather than a failed fetch",
+    );
+
+    h.shutdown().await;
 }

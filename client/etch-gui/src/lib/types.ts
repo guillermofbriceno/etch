@@ -87,3 +87,6 @@ export type RoomInfo = {
     is_encrypted: boolean;
     avatar_url: string | null;
 };
+
+// Matches Rust NameColor: always lowercase `#rrggbb` coming from core.
+export type NameColor = { color: string };

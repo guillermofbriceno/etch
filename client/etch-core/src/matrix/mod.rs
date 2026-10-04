@@ -1,6 +1,7 @@
 pub mod attachment;
 pub(crate) mod compress;
 pub mod client;
+pub mod name_colors;
 pub(crate) mod retry;
 pub mod service;
 pub mod sync;

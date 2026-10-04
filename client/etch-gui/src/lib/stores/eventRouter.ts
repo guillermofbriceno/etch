@@ -6,6 +6,7 @@ import { handleMatrixEvent as messagesHandleMatrix } from './messages';
 import { handleMatrixEvent as channelsHandleMatrix } from './channels';
 import { handleMatrixEvent as serversHandleMatrix } from './servers';
 import { handleMatrixEvent as userHandleMatrix, handleSystemEvent as userHandleSystem } from './user';
+import { handleMatrixEvent as nameColorsHandleMatrix } from './nameColors';
 import { handleSystemEvent as serversHandleSystem } from './servers';
 import { handleSystemEvent as errorsHandleSystem } from './errors';
 import { handleMumbleEvent, handleSystemEvent as voiceHandleSystem } from './voiceState';
@@ -33,6 +34,7 @@ export function initEventRouter(): void {
                 channelsHandleMatrix(ce.data);
                 serversHandleMatrix(ce.data);
                 userHandleMatrix(ce.data);
+                nameColorsHandleMatrix(ce.data);
                 break;
             case 'Mumble':
                 handleMumbleEvent(ce.data);

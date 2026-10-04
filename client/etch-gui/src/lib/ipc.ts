@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { TimelineEntry, RoomInfo, ServerBookmark } from '$lib/types';
+import type { TimelineEntry, RoomInfo, ServerBookmark, NameColor } from '$lib/types';
 
 // --- Event envelope types (Rust → Frontend) ---
 
@@ -20,7 +20,9 @@ export type MatrixEvent =
     | { type: 'PaginationComplete'; data: [string, boolean] }
     | { type: 'AttachmentFailed'; data: { room_id: string; file_name: string; reason: string } }
     | { type: 'SendFailed'; data: { room_id: string; reason: string } }
-    | { type: 'ConnectionState'; data: { type: 'Disconnected' } | { type: 'Connecting' } | { type: 'Connected' } | { type: 'Failed'; reason: string; retries: number; retry_in_secs: number } };
+    | { type: 'ConnectionState'; data: { type: 'Disconnected' } | { type: 'Connecting' } | { type: 'Connected' } | { type: 'Failed'; reason: string; retries: number; retry_in_secs: number } }
+    | { type: 'NameColors'; data: { user_id: string; color: NameColor | null }[] }
+    | { type: 'Capabilities'; data: { name_color: boolean } };
 
 export type MumbleEvent =
     | { type: 'LocalSession'; data: number }
@@ -61,6 +63,8 @@ export type MatrixCommand =
     | { type: 'CreateDirectMessage'; data: { target_user_id: string } }
     | { type: 'SetDisplayName'; data: string }
     | { type: 'SetAvatar'; data: string }
+    | { type: 'SetNameColor'; data: NameColor | null }
+    | { type: 'ResolveNameColors'; data: string[] }
     | { type: 'ChangePassword'; data: { current_password: string; new_password: string } }
     | { type: 'SendReadReceipt'; data: { room_id: string; event_id: string } }
     | { type: 'PaginateBackwards'; data: { room_id: string } }
