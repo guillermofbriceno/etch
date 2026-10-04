@@ -799,6 +799,8 @@ impl MatrixBackend for MatrixService {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
     use super::*;
     use crate::commands::ChatMessageSend;
     use crate::matrix::test_server::CannedHomeserver;
@@ -1169,10 +1171,14 @@ mod tests {
 
     /// The room of the next `SendFailed`, or `None` if none arrives in time.
     async fn send_failure(event_rx: &mut mpsc::Receiver<CoreEvent>) -> Option<String> {
+        send_failure_and_reason(event_rx).await.map(|(room_id, _)| room_id)
+    }
+
+    async fn send_failure_and_reason(event_rx: &mut mpsc::Receiver<CoreEvent>) -> Option<(String, String)> {
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
-                if let Some(CoreEvent::Matrix(MatrixEvent::SendFailed { room_id, .. })) = event_rx.recv().await {
-                    return room_id;
+                if let Some(CoreEvent::Matrix(MatrixEvent::SendFailed { room_id, reason })) = event_rx.recv().await {
+                    return (room_id, reason);
                 }
             }
         }).await.ok()
@@ -1213,6 +1219,90 @@ mod tests {
         assert_eq!(
             send_failure(&mut event_rx).await.as_deref(), Some("!joined:example.com"),
             "the next message should have been tried, not held in the disabled queue",
+        );
+        assert!(!room.send_queue().is_enabled(), "that failure should have disabled the queue again");
+
+        let path = temp_upload(&service, "photo.png", 10);
+        service.handle_command(send_attachment_command("!joined:example.com", &path)).await;
+        assert_eq!(
+            send_failure(&mut event_rx).await.as_deref(), Some("!joined:example.com"),
+            "the next attachment should have been tried too",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_send_the_server_was_too_busy_to_take_is_held_and_goes_out_first_with_the_next_send() {
+        // One body that answers a sync, the media config, an upload and an event send alike.
+        const SUCCESS: &str = r#"{"next_batch":"s1","rooms":{"join":{"!joined:example.com":{}}},"m.upload.size":52428800,"content_uri":"mxc://example.com/uploaded","event_id":"$sent"}"#;
+        let tmp = tempfile::tempdir().unwrap();
+        let unavailable = Arc::new(AtomicBool::new(false));
+        let server = CannedHomeserver::answering({
+            let unavailable = unavailable.clone();
+            move |request| {
+                if unavailable.load(Ordering::SeqCst) {
+                    ("503 Service Unavailable", "{}")
+                } else if request.contains("/state/m.room.encryption") {
+                    ("404 Not Found", r#"{"errcode":"M_NOT_FOUND","error":"Event not found"}"#)
+                } else {
+                    ("200 OK", SUCCESS)
+                }
+            }
+        }).await;
+        let form = ServerConnectionForm { homeserver_url: Some(server.url.clone()), ..test_form() };
+        let mut service = service(tmp.path());
+        let (event_tx, mut event_rx) = mpsc::channel(64);
+        service.event_tx = event_tx;
+        let (internal_tx, mut internal_rx) = mpsc::channel(64);
+        let client = server.client_for("@alice:example.com").await;
+        service.session.install(SessionKey::of(&client, &form), client);
+        let outcome = service.connect(form, internal_tx, 1).await;
+        assert!(matches!(outcome, ConnectOutcome::Connected(_)), "the canned server should accept the connect");
+        // Once the limits are known the next request to meet the outage is the upload itself.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !matches!(
+                internal_rx.recv().await,
+                Some(InternalEvent::Matrix(InternalMatrixEvent::UploadLimits { .. })),
+            ) {}
+        }).await.expect("UploadLimits should follow a successful connect");
+
+        unavailable.store(true, Ordering::SeqCst);
+        let path = temp_upload(&service, "photo.png", 10);
+        service.handle_command(send_attachment_command("!joined:example.com", &path)).await;
+        assert_eq!(
+            send_failure_and_reason(&mut event_rx).await,
+            Some((
+                "!joined:example.com".into(),
+                "the server could not be reached; it will be retried when you next send to this room".into(),
+            )),
+        );
+
+        unavailable.store(false, Ordering::SeqCst);
+        let already_logged = server.requests().len();
+        service.handle_command(MatrixCommand::SendMessage(ChatMessageSend {
+            room_id: "!joined:example.com".into(),
+            text: "hello".into(),
+            html_body: None,
+        })).await;
+
+        let delivered = || -> Vec<&'static str> {
+            server.requests()[already_logged..].iter().filter_map(|request| {
+                if request.contains("/media/v3/upload") {
+                    Some("upload")
+                } else if request.contains("/send/m.room.message/") {
+                    Some("event")
+                } else {
+                    None
+                }
+            }).collect()
+        };
+        let _ = tokio::time::timeout(Duration::from_secs(5), async {
+            while delivered().len() < 3 {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }).await;
+        assert_eq!(
+            delivered(), ["upload", "event", "event"],
+            "the held attachment should go out first, then the message that resumed the queue",
         );
     }
 

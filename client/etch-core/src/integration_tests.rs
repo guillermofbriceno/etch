@@ -8,12 +8,15 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
-use crate::commands::{CoreCommand, MatrixCommand, ChatMessageSend, ServerConnectionForm, SystemCommand};
+use crate::commands::{
+    AttachmentSend, ChatMessageSend, CoreCommand, MatrixCommand, MediaRequest, OutgoingMediaInfo,
+    ServerConnectionForm, SystemCommand,
+};
 use crate::engine::CoreEngine;
 use crate::events::{CoreEvent, MatrixEvent, SystemEvent};
 use crate::matrix::service::MatrixService;
-use crate::matrix::timeline::TimelineEntryKind;
-use crate::models::{ConnectionState, RoomInfo, RoomType};
+use crate::matrix::timeline::{TimelineEntry, TimelineEntryKind};
+use crate::models::{ConnectionState, MediaInfo, RoomInfo, RoomType};
 use crate::scripting::ScriptDispatcher;
 use crate::test_mocks::MockVoice;
 
@@ -26,6 +29,7 @@ const EVENT_TIMEOUT: Duration = Duration::from_secs(10);
 
 struct TestHarness {
     cmd_tx: mpsc::Sender<CoreCommand>,
+    media_tx: mpsc::Sender<MediaRequest>,
     event_rx: mpsc::Receiver<CoreEvent>,
     engine_handle: tokio::task::JoinHandle<()>,
     // Held so the temp directory outlives the engine. Fields are dropped in
@@ -63,7 +67,7 @@ impl TestHarness {
         init_test_logging();
         let data_dir = tempfile::tempdir().expect("failed to create temp dir");
         let (cmd_tx, cmd_rx) = mpsc::channel(32);
-        let (_media_tx, media_rx) = mpsc::channel(256);
+        let (media_tx, media_rx) = mpsc::channel(256);
         let (event_tx, event_rx) = mpsc::channel(256);
 
         let settings = crate::settings::load(data_dir.path());
@@ -77,7 +81,7 @@ impl TestHarness {
         );
         let engine_handle = tokio::spawn(engine.run());
 
-        Self { cmd_tx, event_rx, engine_handle, _data_dir: data_dir }
+        Self { cmd_tx, media_tx, event_rx, engine_handle, _data_dir: data_dir }
     }
 
     async fn send(&self, cmd: CoreCommand) {
@@ -182,9 +186,11 @@ impl TestHarness {
     /// Connect to the test server and wait for the channel list and
     /// Connected state. Returns the room list.
     async fn connect(&mut self) -> Vec<RoomInfo> {
-        self.send(CoreCommand::System(SystemCommand::ConnectToServer(
-            test_connection_form(),
-        ))).await;
+        self.connect_as(test_connection_form()).await
+    }
+
+    async fn connect_as(&mut self, form: ServerConnectionForm) -> Vec<RoomInfo> {
+        self.send(CoreCommand::System(SystemCommand::ConnectToServer(form))).await;
 
         let rooms: Vec<RoomInfo> = self.expect_event(|e| match e {
             CoreEvent::Matrix(MatrixEvent::ChannelList(rooms)) => Some(rooms.clone()),
@@ -252,6 +258,31 @@ impl TestHarness {
             }
             None
         }, EVENT_TIMEOUT).await
+    }
+
+    /// Waits for the copy the server accepted; the local echo before it has no event ID yet.
+    async fn expect_attachment(&mut self, room_id: &str, file_name: &str) -> MediaInfo {
+        let (room_id, file_name) = (room_id.to_string(), file_name.to_string());
+        self.expect_event(move |e| {
+            let (event_room, entries) = timeline_entries(e)?;
+            if event_room != room_id { return None; }
+            entries.iter().find_map(|entry| match &entry.kind {
+                TimelineEntryKind::Message(msg) if msg.body == file_name && msg.id.starts_with('$') => {
+                    msg.media.clone()
+                }
+                _ => None,
+            })
+        }, EVENT_TIMEOUT).await
+    }
+
+    async fn fetch_media(&self, mxc_url: &str) -> Vec<u8> {
+        let (respond, response) = tokio::sync::oneshot::channel();
+        self.media_tx.send(MediaRequest { mxc_url: mxc_url.to_string(), respond }).await
+            .expect("engine already stopped");
+        timeout(EVENT_TIMEOUT, response).await
+            .expect("the media fetch was not answered in time")
+            .expect("the media fetch was dropped")
+            .unwrap_or_else(|e| panic!("{mxc_url} should download: {e}"))
     }
 
     /// Non-blocking drain: collect message bodies from any timeline events
@@ -351,9 +382,86 @@ fn test_connection_form() -> ServerConnectionForm {
     }
 }
 
+fn bob_connection_form() -> ServerConnectionForm {
+    ServerConnectionForm {
+        username: "bob".into(),
+        password: Some("bob_password".into()),
+        ..test_connection_form()
+    }
+}
+
+fn timeline_entries(event: &CoreEvent) -> Option<(&str, &[TimelineEntry])> {
+    match event {
+        CoreEvent::Matrix(MatrixEvent::TimelineAppend(room_id, entries))
+        | CoreEvent::Matrix(MatrixEvent::TimelineReset(room_id, entries)) => Some((room_id, entries)),
+        CoreEvent::Matrix(MatrixEvent::TimelinePushBack(room_id, entry))
+        | CoreEvent::Matrix(MatrixEvent::TimelinePushFront(room_id, entry))
+        | CoreEvent::Matrix(MatrixEvent::TimelineInsert(room_id, _, entry))
+        | CoreEvent::Matrix(MatrixEvent::TimelineSet(room_id, _, entry)) => {
+            Some((room_id, std::slice::from_ref(entry)))
+        }
+        _ => None,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+/// Read back by a second user, because the sender's own copy is served from its media cache.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_attachment_reaches_another_user_intact_with_its_type_size_and_measurements() {
+    use crate::matrix::compress::fixtures::{encoded, opaque};
+
+    let mut bob = TestHarness::new();
+    bob.connect_as(bob_connection_form()).await;
+    let mut alice = TestHarness::new();
+    let rooms = alice.connect().await;
+
+    let files = tempfile::tempdir().unwrap();
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+    let photo = encoded(&opaque(40, 30), image::ImageFormat::Png);
+    let clip: Vec<u8> = (0..50_000u32).map(|i| (i % 251) as u8).collect();
+    let measured = OutgoingMediaInfo { width: Some(1280), height: Some(720), duration_ms: Some(4_000) };
+
+    for (room, name, bytes, media_info, (mimetype, width, height, duration)) in [
+        ("Test Text", format!("photo-{stamp}.png"), photo, None, ("image/png", 40, 30, 0)),
+        ("Encrypted Room", format!("clip-{stamp}.mp4"), clip, Some(measured), ("video/mp4", 1280, 720, 4_000)),
+    ] {
+        let room_id = TestHarness::find_room(&rooms, room).id.clone();
+        let path = files.path().join(&name);
+        std::fs::write(&path, &bytes).unwrap();
+
+        alice.send(CoreCommand::Matrix(MatrixCommand::SendAttachment(AttachmentSend {
+            room_id: room_id.clone(),
+            path,
+            compress: true,
+            media_info,
+        }))).await;
+
+        let sent = alice.expect_attachment(&room_id, &name).await;
+        let received = bob.expect_attachment(&room_id, &name).await;
+        for (who, media) in [("its sender", &sent), ("another user", &received)] {
+            assert_eq!(
+                (media.mimetype.as_str(), media.size, media.width, media.height, media.duration),
+                (mimetype, bytes.len() as u64, width, height, duration),
+                "{name} in {room}, as {who} sees it",
+            );
+        }
+        let downloaded = bob.fetch_media(&received.mxc_url).await;
+        assert!(
+            downloaded == bytes,
+            "{name} in {room}: another user downloaded {} bytes that are not the {} that were sent",
+            downloaded.len(), bytes.len(),
+        );
+    }
+
+    alice.shutdown().await;
+    bob.shutdown().await;
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn connect_receives_channel_list() {

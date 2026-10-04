@@ -358,3 +358,19 @@ pub fn run() {
             }
         });
 }
+
+#[cfg(test)]
+mod tests {
+    use tauri::ipc::Origin;
+
+    // Other fs permissions the app holds include `remove`, so only the explicit denial keeps it from the webview.
+    #[test]
+    fn the_webview_is_never_allowed_to_delete_a_file() {
+        let mut context: tauri::Context<tauri::Wry> = tauri::generate_context!(test = true);
+        let authority = context.runtime_authority_mut();
+        let allowed = |command: &str| authority.resolve_access(command, "main", "main", &Origin::Local).is_some();
+
+        assert!(allowed("plugin:fs|stat"), "the composer reads a picked file's size, so this command name resolves");
+        assert!(!allowed("plugin:fs|remove"), "deleting is the shell's alone, and only for files Etch created");
+    }
+}

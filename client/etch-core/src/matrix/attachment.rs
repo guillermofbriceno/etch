@@ -336,8 +336,11 @@ pub(crate) async fn fetch_upload_limits(client: &Client) -> UploadLimits {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
-    use crate::matrix::compress::fixtures::{jpeg_with_orientation, opaque};
+    use crate::commands::{AttachmentSend, CoreCommand, MatrixCommand};
+    use crate::matrix::compress::fixtures::{jpeg_with_orientation, noise, opaque, uncompressed_png};
     use crate::matrix::test_server::CannedHomeserver;
 
     fn mime(s: &str) -> Mime {
@@ -511,6 +514,107 @@ mod tests {
 
         assert_eq!(attachment.data, sideways);
         assert_eq!(sized(&attachment.info), (px(1000), px(3000)), "measured from the header, turned upright");
+    }
+
+    #[tokio::test]
+    async fn a_requested_compression_is_applied_above_the_offer_threshold_and_ignored_below_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let uploads = uploads(tmp.path());
+        let large = uncompressed_png(&opaque(600, 400));
+        let small = uncompressed_png(&opaque(200, 200));
+        assert!(large.len() as u64 > COMPRESS_THRESHOLD_BYTES && small.len() as u64 <= COMPRESS_THRESHOLD_BYTES);
+
+        let path = uploads.create("photo.png", &large).unwrap();
+        let attachment = prepare(&path, true, UploadLimits::ETCH_CAPS, None, &uploads).await
+            .expect("an image within its limit should be sent");
+
+        assert_eq!((attachment.file_name.as_str(), &attachment.content_type), ("photo.jpg", &mime::IMAGE_JPEG));
+        assert!(attachment.data.len() < large.len(), "the user asked for the smaller file");
+
+        // The composer sends `compress: true` whenever its checkbox is hidden, which it is for a small image.
+        let path = uploads.create("photo.png", &small).unwrap();
+        let attachment = prepare(&path, true, UploadLimits::ETCH_CAPS, None, &uploads).await
+            .expect("a small image should be sent");
+
+        assert_eq!((attachment.file_name.as_str(), &attachment.content_type), ("photo.png", &mime::IMAGE_PNG));
+        assert_eq!(attachment.data, small, "a small image must reach the room untouched");
+    }
+
+    #[tokio::test]
+    async fn an_image_still_over_its_limit_after_compression_is_refused_and_says_so() {
+        let tmp = tempfile::tempdir().unwrap();
+        let uploads = uploads(tmp.path());
+        let noisy = uncompressed_png(&noise(400, 400));
+        let compressed = compress::compress(&noisy).expect("noise should still shrink as a JPEG").bytes.len() as u64;
+        let limits = UploadLimits { image_bytes: 100_000, other_bytes: 100_000 };
+        assert!(compressed > limits.image_bytes, "the fixture has to stay over the limit once compressed");
+        let path = uploads.create("photo.png", &noisy).unwrap();
+
+        let reason = prepare(&path, true, limits, None, &uploads).await
+            .expect_err("nothing over the limit may be handed to the send queue");
+
+        assert_eq!(
+            reason,
+            format!("it is {} after compression and the limit for this kind of file is 0.1 MB", format_mb(compressed)),
+        );
+        assert!(!path.exists(), "the temp file should be removed");
+    }
+
+    /// The other side of this shape is `MatrixCommand` in the frontend's ipc.ts.
+    #[test]
+    fn the_send_attachment_json_the_frontend_sends_is_the_command_core_runs() {
+        let audio_only = OutgoingMediaInfo { width: None, height: None, duration_ms: Some(3_500) };
+        for (media_info, expected) in [
+            (json!(null), None),
+            (json!({ "width": 1280, "height": 720, "duration_ms": 4000 }), Some(media(1280, 720, 4_000))),
+            (json!({ "width": null, "height": null, "duration_ms": 3500 }), Some(audio_only)),
+        ] {
+            let sent = json!({
+                "type": "Matrix",
+                "data": {
+                    "type": "SendAttachment",
+                    "data": {
+                        "room_id": "!room:example.org",
+                        "path": "/home/user/clip.mp4",
+                        "compress": true,
+                        "media_info": media_info,
+                    },
+                },
+            });
+
+            let CoreCommand::Matrix(command) = serde_json::from_value(sent.clone())
+                .unwrap_or_else(|e| panic!("{sent} should be a command: {e}"))
+            else {
+                panic!("{sent} should be a Matrix command");
+            };
+            assert_eq!(command, MatrixCommand::SendAttachment(AttachmentSend {
+                room_id: "!room:example.org".into(),
+                path: "/home/user/clip.mp4".into(),
+                compress: true,
+                media_info: expected,
+            }));
+        }
+    }
+
+    /// The other side of these shapes is `Inspection` in attachments.ts and `UploadLimits` in stores/uploads.ts.
+    #[test]
+    fn an_inspection_takes_the_frontends_limits_and_answers_in_the_shape_it_reads() {
+        let limits: UploadLimits = serde_json::from_value(json!({ "image_bytes": 3_145_728, "other_bytes": 1_048_576 }))
+            .expect("the limits the frontend stores should be understood");
+        for (name, size, mimetype, limit, verdict) in [
+            ("photo.png", 300_000, "image/png", 3_145_728, json!({ "type": "Accept", "compress_offered": true })),
+            ("photo.png", 4 * MIB, "image/png", 3_145_728, json!({ "type": "MustCompress" })),
+            ("clip.mp4", 2 * MIB, "video/mp4", 1_048_576, json!({
+                "type": "Reject",
+                "reason": "it is 2 MB and the limit for this kind of file is 1 MB",
+            })),
+        ] {
+            assert_eq!(
+                serde_json::to_value(inspect(name, size, Some(limits))).unwrap(),
+                json!({ "mimetype": mimetype, "limit": limit, "verdict": verdict }),
+                "{name} at {size} bytes",
+            );
+        }
     }
 
     #[tokio::test]

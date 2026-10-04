@@ -7,28 +7,36 @@ use matrix_sdk::ruma::api::MatrixVersion;
 use matrix_sdk::store::RoomLoadSettings;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-/// A local homeserver stand-in that answers every request with the same response and
-/// records what it was sent.
+/// A local homeserver stand-in that answers each request by its request line and records
+/// what it was sent.
 pub(crate) struct CannedHomeserver {
     pub url: String,
     requests: Arc<Mutex<Vec<String>>>,
 }
 
 impl CannedHomeserver {
-    pub async fn start(status: &'static str, body: &'static str) -> Self {
+    pub fn start(status: &'static str, body: &'static str) -> impl Future<Output = Self> {
+        Self::answering(move |_| (status, body))
+    }
+
+    /// `respond` maps a request line to the status and body to answer it with.
+    pub async fn answering(
+        respond: impl Fn(&str) -> (&'static str, &'static str) + Send + 'static,
+    ) -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let requests = Arc::new(Mutex::new(Vec::new()));
         let log = requests.clone();
-        let response = format!(
-            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
-             Connection: close\r\n\r\n{body}",
-            body.len(),
-        );
         tokio::spawn(async move {
             while let Ok((mut socket, _)) = listener.accept().await {
                 let request_line = read_request(&mut socket).await;
+                let (status, body) = respond(&request_line);
                 log.lock().unwrap().push(request_line);
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+                     Connection: close\r\n\r\n{body}",
+                    body.len(),
+                );
                 let _ = socket.write_all(response.as_bytes()).await;
             }
         });
