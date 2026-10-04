@@ -21,6 +21,8 @@ env:
   MUMBLE_RELEASE_URL: https://github.com/guillermofbriceno/mumble/releases/download/etch-mumble-patch/mumble-linux-x86_64.tar.gz
   MUMBLE_ARTIFACT: mumble-linux-x86_64.tar.gz
   MUMBLE_SHA256: 1744d5a48a8d38160d5392dd11a00861526026244aaf3b09bad97cf1c89619e5
+  # Pinned because the AppImage step runs the linuxdeploy this CLI caches, by file name.
+  TAURI_CLI_VERSION: '2.11.5'
 
 jobs:
   build-linux:
@@ -146,7 +148,7 @@ jobs:
       - name: Build deb/rpm (local/act)
         if: ${{ env.ACT == 'true' }}
         run: |
-          cargo install tauri-cli --locked
+          cargo install tauri-cli --locked --version "$TAURI_CLI_VERSION"
           cd client/etch-gui && cargo tauri build --bundles deb,rpm
 
       # ---- Build AppImage ----
@@ -156,7 +158,7 @@ jobs:
       # run linuxdeploy on just the Etch binary, then restore and re-package.
 
       - name: Install Tauri CLI
-        run: cargo install tauri-cli --locked
+        run: cargo install tauri-cli --locked --version "$TAURI_CLI_VERSION"
 
       - name: Build AppImage
         env:
@@ -180,6 +182,7 @@ jobs:
 
           # Run linuxdeploy on the clean AppDir
           LINUXDEPLOY=$(find /home/runner/.cache/tauri -name 'linuxdeploy-x86_64.AppImage' | head -1)
+          if [ -z "$LINUXDEPLOY" ]; then echo "ERROR: linuxdeploy not found in Tauri's cache" && exit 1; fi
           "$LINUXDEPLOY" --appdir "$APPDIR" --plugin gtk
 
           # Restore Mumble into AppDir
