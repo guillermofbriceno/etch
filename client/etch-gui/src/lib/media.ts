@@ -1,3 +1,4 @@
+import { invoke } from '@tauri-apps/api/core';
 import { PLATFORM_WINDOWS } from './platform';
 
 /** Convert an mxc:// URL to the app's etch-media:// protocol. Non-mxc URLs pass through unchanged.
@@ -51,4 +52,16 @@ export async function fetchBlob(url: string): Promise<Uint8Array> {
     const res = await fetch(url);
     if (!res.ok) throw new Error(`Fetch failed (${res.status})`);
     return new Uint8Array(await res.arrayBuffer());
+}
+
+const named = (name: string) => ({ headers: { 'file-name': encodeURIComponent(name) } });
+
+/** The shell asks where to save and writes the file, because the webview may not write files. Resolves false if cancelled. */
+export function saveFileAs(name: string, bytes: Uint8Array): Promise<boolean> {
+    return invoke<boolean>('save_file_as', bytes, named(name));
+}
+
+/** The shell writes the bytes to a temp file of its own and opens it in the system's viewer. */
+export function openInDefaultApp(name: string, bytes: Uint8Array): Promise<void> {
+    return invoke('open_in_default_app', bytes, named(name));
 }

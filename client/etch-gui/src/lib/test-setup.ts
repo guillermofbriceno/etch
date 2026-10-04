@@ -45,18 +45,11 @@ vi.mock('@tauri-apps/api/app', () => ({
     getVersion: vi.fn().mockResolvedValue('0.0.0-test'),
 }));
 
-vi.mock('@tauri-apps/api/path', () => ({
-    tempDir: vi.fn().mockResolvedValue('/tmp'),
-    join: vi.fn((...parts: string[]) => Promise.resolve(parts.join('/'))),
-}));
-
 vi.mock('@tauri-apps/plugin-dialog', () => ({
     open: vi.fn(),
-    save: vi.fn(),
 }));
 
 vi.mock('@tauri-apps/plugin-fs', () => ({
-    writeFile: vi.fn(),
     remove: vi.fn().mockResolvedValue(undefined),
     // There is no filesystem under jsdom; a test that needs file contents supplies them.
     readFile: vi.fn().mockRejectedValue(new Error('no such file')),
@@ -65,7 +58,6 @@ vi.mock('@tauri-apps/plugin-fs', () => ({
 
 vi.mock('@tauri-apps/plugin-opener', () => ({
     openUrl: vi.fn(),
-    openPath: vi.fn(),
 }));
 
 vi.mock('@tauri-apps/plugin-process', () => ({

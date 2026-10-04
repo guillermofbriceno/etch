@@ -1,9 +1,6 @@
 <script lang="ts">
     import { showToast } from '$lib/stores';
-    import { fetchBlob } from '$lib/media';
-    import { writeFile } from '@tauri-apps/plugin-fs';
-    import { tempDir, join } from '@tauri-apps/api/path';
-    import { openPath } from '@tauri-apps/plugin-opener';
+    import { fetchBlob, openInDefaultApp } from '$lib/media';
 
     export let url: string;
 
@@ -15,11 +12,7 @@
             const urlExt = urlPath.includes('.') ? urlPath.split('.').pop() : null;
             const ext = urlExt || 'png';
 
-            const tmp = await tempDir();
-            const tmpPath = await join(tmp, `etch-preview-${Date.now()}.${ext}`);
-
-            await writeFile(tmpPath, bytes);
-            await openPath(tmpPath);
+            await openInDefaultApp(`etch-preview.${ext}`, bytes);
         } catch (e) {
             showToast(`Failed to open image: ${e}`);
         }

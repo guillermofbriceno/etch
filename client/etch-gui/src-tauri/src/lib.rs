@@ -7,6 +7,8 @@ use etch_core::commands::{CoreCommand, MediaRequest};
 use etch_core::temp_uploads::TempUploads;
 use tauri::{AppHandle, Manager, State};
 use tauri::Emitter;
+use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_updater::UpdaterExt;
 use std::io::Cursor;
 use std::path::Path;
@@ -87,11 +89,7 @@ fn inspect_attachment(name: String, size: u64, limits: Option<UploadLimits>) -> 
 }
 
 /// The body is the file's bytes; its percent-encoded name travels in the `file-name` header.
-#[tauri::command]
-async fn save_pasted_file(
-    request: tauri::ipc::Request<'_>,
-    temp_uploads: State<'_, TempUploads>,
-) -> Result<String, String> {
+fn named_bytes(request: &tauri::ipc::Request<'_>) -> Result<(String, Vec<u8>), String> {
     let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
         return Err("expected the file's bytes".into());
     };
@@ -99,11 +97,66 @@ async fn save_pasted_file(
         .and_then(|value| value.to_str().ok())
         .and_then(media::percent_decode)
         .unwrap_or_default();
-    let (temp_uploads, bytes) = (temp_uploads.inner().clone(), bytes.clone());
+    Ok((name, bytes.clone()))
+}
+
+#[tauri::command]
+async fn save_pasted_file(
+    request: tauri::ipc::Request<'_>,
+    temp_uploads: State<'_, TempUploads>,
+) -> Result<String, String> {
+    let (name, bytes) = named_bytes(&request)?;
+    let temp_uploads = temp_uploads.inner().clone();
     tokio::task::spawn_blocking(move || temp_uploads.create(&name, &bytes))
         .await
         .map_err(|e| e.to_string())?
         .map(|path| path.to_string_lossy().into_owned())
+        .map_err(|e| e.to_string())
+}
+
+/// The destination comes only from the dialog the user answers, so the webview never
+/// chooses what is written over. `false` means the user cancelled.
+#[tauri::command]
+async fn save_file_as(window: tauri::Window, request: tauri::ipc::Request<'_>) -> Result<bool, String> {
+    let (name, bytes) = named_bytes(&request)?;
+    let suggested = Path::new(&name).file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "attachment".into());
+
+    let (chosen_tx, chosen_rx) = tokio::sync::oneshot::channel();
+    window.dialog().file()
+        .set_file_name(suggested)
+        .set_parent(&window)
+        .save_file(move |path| {
+            let _ = chosen_tx.send(path);
+        });
+    let Some(path) = chosen_rx.await.map_err(|e| e.to_string())? else {
+        return Ok(false);
+    };
+    let path = path.into_path().map_err(|e| e.to_string())?;
+
+    tokio::task::spawn_blocking(move || std::fs::write(&path, &bytes))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+/// Writes the bytes to a new temp file of Etch's own and hands it to the system's viewer.
+#[tauri::command]
+async fn open_in_default_app(
+    app: AppHandle,
+    request: tauri::ipc::Request<'_>,
+    temp_uploads: State<'_, TempUploads>,
+) -> Result<(), String> {
+    let (name, bytes) = named_bytes(&request)?;
+    let temp_uploads = temp_uploads.inner().clone();
+    let path = tokio::task::spawn_blocking(move || temp_uploads.create(&name, &bytes))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    app.opener()
+        .open_path(path.to_string_lossy(), None::<&str>)
         .map_err(|e| e.to_string())
 }
 
@@ -335,6 +388,8 @@ pub fn run() {
             inspect_attachment,
             save_pasted_file,
             discard_temp_upload,
+            save_file_as,
+            open_in_default_app,
             play_sfx,
             load_custom_css,
             check_for_update
@@ -363,14 +418,24 @@ pub fn run() {
 mod tests {
     use tauri::ipc::Origin;
 
-    // Other fs permissions the app holds include `remove`, so only the explicit denial keeps it from the webview.
+    // `open` is here because it can truncate a file as it opens it.
     #[test]
-    fn the_webview_is_never_allowed_to_delete_a_file() {
+    fn the_webview_can_read_a_file_but_never_change_one() {
         let mut context: tauri::Context<tauri::Wry> = tauri::generate_context!(test = true);
         let authority = context.runtime_authority_mut();
-        let allowed = |command: &str| authority.resolve_access(command, "main", "main", &Origin::Local).is_some();
+        let allowed = |command: &str| {
+            let command = format!("plugin:fs|{command}");
+            authority.resolve_access(&command, "main", "main", &Origin::Local).is_some()
+        };
 
-        assert!(allowed("plugin:fs|stat"), "the composer reads a picked file's size, so this command name resolves");
-        assert!(!allowed("plugin:fs|remove"), "deleting is the shell's alone, and only for files Etch created");
+        for command in ["read_file", "stat"] {
+            assert!(allowed(command), "the composer needs {command} for a picked file");
+        }
+        for command in [
+            "write_file", "write_text_file", "write", "open", "create", "mkdir", "copy_file",
+            "remove", "rename", "truncate", "ftruncate",
+        ] {
+            assert!(!allowed(command), "{command} would let the webview change the user's files");
+        }
     }
 }

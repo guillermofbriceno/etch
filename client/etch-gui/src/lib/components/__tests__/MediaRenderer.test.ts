@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
+import { invoke } from '@tauri-apps/api/core';
 import MediaRenderer from '../MediaRenderer.svelte';
 
 const SRC = 'etch-media://example.org/abc123';
@@ -112,6 +113,19 @@ describe('MediaRenderer', () => {
             expect(container.querySelector('img, video, audio'), mimetype).not.toBeInTheDocument();
             expect(container.querySelector('.file-download'), mimetype).toBeInTheDocument();
         }
+    });
+
+    // The webview may not write files, so the shell is given the bytes and asks where to put them.
+    it('hands a download to the shell with its bytes and its name', async () => {
+        const { container } = renderMedia({ mimetype: 'application/pdf', body: 'résumé.pdf' });
+
+        await fireEvent.click(container.querySelector('.file-download')!);
+
+        await waitFor(() => expect(invoke).toHaveBeenCalledWith(
+            'save_file_as',
+            new Uint8Array([0, 0, 0, 24]),
+            { headers: { 'file-name': 'r%C3%A9sum%C3%A9.pdf' } },
+        ));
     });
 
     it('reserves the scaled size of media before it loads, when the dimensions are known', () => {

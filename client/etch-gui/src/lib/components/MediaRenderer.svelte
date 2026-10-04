@@ -2,9 +2,7 @@
     import { onDestroy } from 'svelte';
     import { openImage, showToast } from '$lib/stores';
     import Icon from './Icon.svelte';
-    import { fetchBlob, fitWithin, formatSize } from '$lib/media';
-    import { save } from '@tauri-apps/plugin-dialog';
-    import { writeFile } from '@tauri-apps/plugin-fs';
+    import { fetchBlob, fitWithin, formatSize, saveFileAs } from '$lib/media';
 
     export let src: string;
     export let mimetype: string;
@@ -66,12 +64,8 @@
     $: reserved = box ? `width: ${box.width}px; aspect-ratio: ${width} / ${height};` : undefined;
 
     async function downloadFile() {
-        const dest = await save({ defaultPath: body || 'attachment' });
-        if (!dest) return;
-
         try {
-            const bytes = await fetchBlob(src);
-            await writeFile(dest, bytes);
+            await saveFileAs(body || 'attachment', await fetchBlob(src));
         } catch (e) {
             showToast(`Failed to download file: ${e}`);
         }
