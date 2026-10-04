@@ -72,8 +72,8 @@ impl TestHarness {
 
         let settings = crate::settings::load(data_dir.path());
         let dispatcher = Arc::new(ScriptDispatcher::from_settings(&settings));
-        let temp_uploads = crate::temp_uploads::TempUploads::new(data_dir.path().to_path_buf());
-        let matrix = MatrixService::new(event_tx.clone(), data_dir.path().to_path_buf(), dispatcher, temp_uploads);
+        let temp_files = crate::temp_files::TempFiles::new(data_dir.path().to_path_buf());
+        let matrix = MatrixService::new(event_tx.clone(), data_dir.path().to_path_buf(), dispatcher, temp_files);
         let voice = MockVoice::new();
         let engine = CoreEngine::new(
             cmd_rx, media_rx, event_tx, matrix, voice,

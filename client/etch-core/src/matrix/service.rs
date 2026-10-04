@@ -12,7 +12,7 @@ use matrix_sdk::send_queue::SendQueueRoomError;
 use crate::commands::{AttachmentSend, MatrixCommand, ServerConnectionForm};
 use crate::events::{CoreEvent, MatrixEvent, InternalEvent, InternalMatrixEvent};
 use crate::matrix::attachment::{self, UploadLimits};
-use crate::temp_uploads::TempUploads;
+use crate::temp_files::TempFiles;
 use crate::matrix::client::{session_path, start_matrix_client, ConnectionResult};
 use crate::matrix::retry::credentials_rejected;
 use crate::matrix::timeline::TimelineManager;
@@ -204,7 +204,7 @@ pub struct MatrixService {
     data_dir: PathBuf,
     dispatcher: Arc<ScriptDispatcher>,
     limits_fetch: Option<UploadLimitsFetch>,
-    temp_uploads: TempUploads,
+    temp_files: TempFiles,
 }
 
 impl MatrixService {
@@ -212,7 +212,7 @@ impl MatrixService {
         event_tx: mpsc::Sender<CoreEvent>,
         data_dir: PathBuf,
         dispatcher: Arc<ScriptDispatcher>,
-        temp_uploads: TempUploads,
+        temp_files: TempFiles,
     ) -> Self {
         let timeline_manager = TimelineManager::new(event_tx.clone(), dispatcher.clone());
         Self {
@@ -222,7 +222,7 @@ impl MatrixService {
             data_dir,
             dispatcher,
             limits_fetch: None,
-            temp_uploads,
+            temp_files,
         }
     }
 
@@ -246,7 +246,7 @@ impl MatrixService {
     async fn send_attachment(&self, request: AttachmentSend) {
         let AttachmentSend { room_id, path, compress, media_info } = request;
         let outcome = match self.serving_client("SendAttachment") {
-            Some(client) => match attachment::prepare(&path, compress, self.upload_limits(), media_info, &self.temp_uploads).await {
+            Some(client) => match attachment::prepare(&path, compress, self.upload_limits(), media_info, &self.temp_files).await {
                 Ok(prepared) => {
                     Self::resume_send_queue(&client, &room_id);
                     attachment::send(&client, &room_id, prepared).await
@@ -254,7 +254,7 @@ impl MatrixService {
                 Err(reason) => Err(reason),
             },
             None => {
-                attachment::discard(&self.temp_uploads, &path).await;
+                attachment::discard(&self.temp_files, &path).await;
                 Err(attachment::NOT_CONNECTED.into())
             }
         };
@@ -831,7 +831,7 @@ mod tests {
     fn service(dir: &std::path::Path) -> MatrixService {
         let (tx, _rx) = mpsc::channel(1);
         let dispatcher = Arc::new(ScriptDispatcher::empty());
-        MatrixService::new(tx, dir.to_path_buf(), dispatcher, TempUploads::new(dir.to_path_buf()))
+        MatrixService::new(tx, dir.to_path_buf(), dispatcher, TempFiles::new(dir.to_path_buf()))
     }
 
     fn parked_task() -> (AbortOnDrop, tokio::task::AbortHandle) {
@@ -1065,7 +1065,7 @@ mod tests {
     }
 
     fn temp_upload(service: &MatrixService, name: &str, len: usize) -> std::path::PathBuf {
-        service.temp_uploads.create(name, &vec![0u8; len]).unwrap()
+        service.temp_files.create(name, &vec![0u8; len]).unwrap()
     }
 
     fn attachment_failure(event_rx: &mut mpsc::Receiver<CoreEvent>) -> (String, String, String) {

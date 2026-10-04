@@ -224,7 +224,7 @@ describe('sending an attachment', () => {
 
 describe('pasting', () => {
     it('has the shell write a pasted file, under its own name, and attaches the result', async () => {
-        commands.save_pasted_file = () => '/tmp/etch-upload-1/résumé.pdf';
+        commands.save_pasted_file = () => '/tmp/etch-temp-1/résumé.pdf';
         render(MessageInput);
 
         await pasteFiles([clipboardFile('résumé.pdf', 3)]);
@@ -237,7 +237,7 @@ describe('pasting', () => {
         await send();
 
         await vi.waitFor(() => expect(sentCommands()).toHaveLength(1));
-        expect(sentCommands()[0].data.path).toBe('/tmp/etch-upload-1/résumé.pdf');
+        expect(sentCommands()[0].data.path).toBe('/tmp/etch-temp-1/résumé.pdf');
     });
 
     it('prefers a clipboard bitmap over the file list', async () => {
@@ -263,7 +263,7 @@ describe('pasting', () => {
     });
 
     it('never deletes a file itself, even one picked from a folder named like a temp one', async () => {
-        commands.paste_clipboard_image = () => ['/tmp/etch-upload-1/image.png', 1000];
+        commands.paste_clipboard_image = () => ['/tmp/etch-temp-1/image.png', 1000];
         render(MessageInput);
         await pick('/home/user/etch-paste-holiday/photo.png', 1000);
         await vi.waitFor(() => expect(screen.getByText('photo.png')).toBeInTheDocument());

@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::commands::OutgoingMediaInfo;
 use crate::matrix::compress::{self, OutputFormat};
-use crate::temp_uploads::TempUploads;
+use crate::temp_files::TempFiles;
 
 const MIB: u64 = 1024 * 1024;
 const COMPRESS_THRESHOLD_BYTES: u64 = 256_000;
@@ -171,9 +171,9 @@ pub(crate) fn sanitize_mime(path: &Path) -> Mime {
     }
 }
 
-pub(crate) async fn discard(temp_uploads: &TempUploads, path: &Path) {
-    let (temp_uploads, path) = (temp_uploads.clone(), path.to_owned());
-    let _ = tokio::task::spawn_blocking(move || temp_uploads.discard(&path)).await;
+pub(crate) async fn discard(temp_files: &TempFiles, path: &Path) {
+    let (temp_files, path) = (temp_files.clone(), path.to_owned());
+    let _ = tokio::task::spawn_blocking(move || temp_files.discard(&path)).await;
 }
 
 /// Keyed on the top-level type because that is what the SDK picks the message type
@@ -215,10 +215,10 @@ pub(crate) async fn prepare(
     compress_requested: bool,
     limits: UploadLimits,
     media: Option<OutgoingMediaInfo>,
-    temp_uploads: &TempUploads,
+    temp_files: &TempFiles,
 ) -> Result<Attachment, String> {
     let prepared = prepare_file(path, compress_requested, limits, media).await;
-    discard(temp_uploads, path).await;
+    discard(temp_files, path).await;
     prepared
 }
 
@@ -450,17 +450,17 @@ mod tests {
         assert_eq!((info.width, info.height, info.duration, info.size), (None, None, None, size));
     }
 
-    fn uploads(root: &Path) -> TempUploads {
-        TempUploads::new(root.to_path_buf())
+    fn temp_files(root: &Path) -> TempFiles {
+        TempFiles::new(root.to_path_buf())
     }
 
     #[tokio::test]
     async fn a_temp_upload_is_read_and_then_removed_with_its_directory() {
         let tmp = tempfile::tempdir().unwrap();
-        let uploads = uploads(tmp.path());
-        let path = uploads.create("photo.png", &[0u8; 1000]).unwrap();
+        let temp_files = temp_files(tmp.path());
+        let path = temp_files.create("photo.png", &[0u8; 1000]).unwrap();
 
-        let attachment = prepare(&path, true, UploadLimits::ETCH_CAPS, None, &uploads).await
+        let attachment = prepare(&path, true, UploadLimits::ETCH_CAPS, None, &temp_files).await
             .expect("a small image should load");
 
         assert_eq!(attachment.file_name, "photo.png");
@@ -474,15 +474,15 @@ mod tests {
     #[tokio::test]
     async fn a_file_of_the_users_own_is_never_removed_whatever_its_folder_is_called() {
         let tmp = tempfile::tempdir().unwrap();
-        let uploads = uploads(tmp.path());
-        let ours = uploads.create("ours.png", &[0u8; 10]).unwrap();
+        let temp_files = temp_files(tmp.path());
+        let ours = temp_files.create("ours.png", &[0u8; 10]).unwrap();
         let sent = ours.parent().unwrap().join("photo.png");
         let rejected = tmp.path().join("etch-paste-abc").join("big.pdf");
         write_file(&sent, 10);
         write_file(&rejected, 3 * MIB as usize);
 
-        prepare(&sent, true, UploadLimits::ETCH_CAPS, None, &uploads).await.expect("a small image should load");
-        prepare(&rejected, true, UploadLimits::ETCH_CAPS, None, &uploads).await.expect_err("a large file should be rejected");
+        prepare(&sent, true, UploadLimits::ETCH_CAPS, None, &temp_files).await.expect("a small image should load");
+        prepare(&rejected, true, UploadLimits::ETCH_CAPS, None, &temp_files).await.expect_err("a large file should be rejected");
 
         assert!(sent.exists() && rejected.exists(), "only a file Etch created may be deleted");
     }
@@ -490,7 +490,7 @@ mod tests {
     #[tokio::test]
     async fn an_image_over_its_limit_is_sent_compressed_and_every_image_reports_its_upright_size() {
         let tmp = tempfile::tempdir().unwrap();
-        let uploads = uploads(tmp.path());
+        let temp_files = temp_files(tmp.path());
         let sideways = jpeg_with_orientation(&opaque(3000, 1000), 6);
         let sized = |info: &AttachmentInfo| match info {
             AttachmentInfo::Image(info) => (info.width, info.height),
@@ -499,8 +499,8 @@ mod tests {
         let px = |n: u32| Some(UInt::from(n));
 
         let tight = UploadLimits { image_bytes: sideways.len() as u64 - 1, other_bytes: MIB };
-        let path = uploads.create("photo.jpeg", &sideways).unwrap();
-        let attachment = prepare(&path, false, tight, None, &uploads).await
+        let path = temp_files.create("photo.jpeg", &sideways).unwrap();
+        let attachment = prepare(&path, false, tight, None, &temp_files).await
             .expect("an image over its limit should be compressed to fit");
 
         assert_eq!((attachment.file_name.as_str(), &attachment.content_type), ("photo.jpg", &mime::IMAGE_JPEG));
@@ -508,8 +508,8 @@ mod tests {
         assert_eq!(sized(&attachment.info), (px(683), px(2048)));
 
         let roomy = UploadLimits { image_bytes: 20 * MIB, other_bytes: MIB };
-        let path = uploads.create("photo.jpeg", &sideways).unwrap();
-        let attachment = prepare(&path, false, roomy, None, &uploads).await
+        let path = temp_files.create("photo.jpeg", &sideways).unwrap();
+        let attachment = prepare(&path, false, roomy, None, &temp_files).await
             .expect("an image within its limit should be sent as is");
 
         assert_eq!(attachment.data, sideways);
@@ -519,21 +519,21 @@ mod tests {
     #[tokio::test]
     async fn a_requested_compression_is_applied_above_the_offer_threshold_and_ignored_below_it() {
         let tmp = tempfile::tempdir().unwrap();
-        let uploads = uploads(tmp.path());
+        let temp_files = temp_files(tmp.path());
         let large = uncompressed_png(&opaque(600, 400));
         let small = uncompressed_png(&opaque(200, 200));
         assert!(large.len() as u64 > COMPRESS_THRESHOLD_BYTES && small.len() as u64 <= COMPRESS_THRESHOLD_BYTES);
 
-        let path = uploads.create("photo.png", &large).unwrap();
-        let attachment = prepare(&path, true, UploadLimits::ETCH_CAPS, None, &uploads).await
+        let path = temp_files.create("photo.png", &large).unwrap();
+        let attachment = prepare(&path, true, UploadLimits::ETCH_CAPS, None, &temp_files).await
             .expect("an image within its limit should be sent");
 
         assert_eq!((attachment.file_name.as_str(), &attachment.content_type), ("photo.jpg", &mime::IMAGE_JPEG));
         assert!(attachment.data.len() < large.len(), "the user asked for the smaller file");
 
         // The composer sends `compress: true` whenever its checkbox is hidden, which it is for a small image.
-        let path = uploads.create("photo.png", &small).unwrap();
-        let attachment = prepare(&path, true, UploadLimits::ETCH_CAPS, None, &uploads).await
+        let path = temp_files.create("photo.png", &small).unwrap();
+        let attachment = prepare(&path, true, UploadLimits::ETCH_CAPS, None, &temp_files).await
             .expect("a small image should be sent");
 
         assert_eq!((attachment.file_name.as_str(), &attachment.content_type), ("photo.png", &mime::IMAGE_PNG));
@@ -543,14 +543,14 @@ mod tests {
     #[tokio::test]
     async fn an_image_still_over_its_limit_after_compression_is_refused_and_says_so() {
         let tmp = tempfile::tempdir().unwrap();
-        let uploads = uploads(tmp.path());
+        let temp_files = temp_files(tmp.path());
         let noisy = uncompressed_png(&noise(400, 400));
         let compressed = compress::compress(&noisy).expect("noise should still shrink as a JPEG").bytes.len() as u64;
         let limits = UploadLimits { image_bytes: 100_000, other_bytes: 100_000 };
         assert!(compressed > limits.image_bytes, "the fixture has to stay over the limit once compressed");
-        let path = uploads.create("photo.png", &noisy).unwrap();
+        let path = temp_files.create("photo.png", &noisy).unwrap();
 
-        let reason = prepare(&path, true, limits, None, &uploads).await
+        let reason = prepare(&path, true, limits, None, &temp_files).await
             .expect_err("nothing over the limit may be handed to the send queue");
 
         assert_eq!(

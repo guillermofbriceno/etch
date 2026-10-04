@@ -4,7 +4,7 @@ mod sfx;
 use etch_core::init_core;
 use etch_core::attachment::{self, Inspection, UploadLimits};
 use etch_core::commands::{CoreCommand, MediaRequest};
-use etch_core::temp_uploads::TempUploads;
+use etch_core::temp_files::TempFiles;
 use tauri::{AppHandle, Manager, State};
 use tauri::Emitter;
 use tauri_plugin_dialog::DialogExt;
@@ -58,8 +58,8 @@ fn load_custom_css(path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-async fn paste_clipboard_image(temp_uploads: State<'_, TempUploads>) -> Result<Option<(String, u64)>, String> {
-    let temp_uploads = temp_uploads.inner().clone();
+async fn paste_clipboard_image(temp_files: State<'_, TempFiles>) -> Result<Option<(String, u64)>, String> {
+    let temp_files = temp_files.inner().clone();
     tokio::task::spawn_blocking(move || {
         let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
         let img_data = match clipboard.get_image() {
@@ -77,7 +77,7 @@ async fn paste_clipboard_image(temp_uploads: State<'_, TempUploads>) -> Result<O
         img.write_to(&mut buf, image::ImageFormat::Png).map_err(|e| e.to_string())?;
         let bytes = buf.into_inner();
         let size = bytes.len() as u64;
-        let path = temp_uploads.create("image.png", &bytes).map_err(|e| e.to_string())?;
+        let path = temp_files.create("image.png", &bytes).map_err(|e| e.to_string())?;
 
         Ok(Some((path.to_string_lossy().into_owned(), size)))
     }).await.map_err(|e| e.to_string())?
@@ -103,11 +103,11 @@ fn named_bytes(request: &tauri::ipc::Request<'_>) -> Result<(String, Vec<u8>), S
 #[tauri::command]
 async fn save_pasted_file(
     request: tauri::ipc::Request<'_>,
-    temp_uploads: State<'_, TempUploads>,
+    temp_files: State<'_, TempFiles>,
 ) -> Result<String, String> {
     let (name, bytes) = named_bytes(&request)?;
-    let temp_uploads = temp_uploads.inner().clone();
-    tokio::task::spawn_blocking(move || temp_uploads.create(&name, &bytes))
+    let temp_files = temp_files.inner().clone();
+    tokio::task::spawn_blocking(move || temp_files.create(&name, &bytes))
         .await
         .map_err(|e| e.to_string())?
         .map(|path| path.to_string_lossy().into_owned())
@@ -147,11 +147,11 @@ async fn save_file_as(window: tauri::Window, request: tauri::ipc::Request<'_>) -
 async fn open_in_default_app(
     app: AppHandle,
     request: tauri::ipc::Request<'_>,
-    temp_uploads: State<'_, TempUploads>,
+    temp_files: State<'_, TempFiles>,
 ) -> Result<(), String> {
     let (name, bytes) = named_bytes(&request)?;
-    let temp_uploads = temp_uploads.inner().clone();
-    let path = tokio::task::spawn_blocking(move || temp_uploads.create(&name, &bytes))
+    let temp_files = temp_files.inner().clone();
+    let path = tokio::task::spawn_blocking(move || temp_files.create(&name, &bytes))
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())?;
@@ -161,9 +161,9 @@ async fn open_in_default_app(
 }
 
 #[tauri::command]
-async fn discard_temp_upload(path: String, temp_uploads: State<'_, TempUploads>) -> Result<(), String> {
-    let temp_uploads = temp_uploads.inner().clone();
-    tokio::task::spawn_blocking(move || temp_uploads.discard(Path::new(&path)))
+async fn discard_temp_upload(path: String, temp_files: State<'_, TempFiles>) -> Result<(), String> {
+    let temp_files = temp_files.inner().clone();
+    tokio::task::spawn_blocking(move || temp_files.discard(Path::new(&path)))
         .await
         .map_err(|e| e.to_string())
 }
@@ -357,11 +357,11 @@ pub fn run() {
             let logger = build_logger(&log_path);
 
             let sfx_player = SfxPlayer::new(&data_dir);
-            let temp_uploads = TempUploads::new(std::env::temp_dir());
-            app.manage(temp_uploads.clone());
+            let temp_files = TempFiles::new(std::env::temp_dir());
+            app.manage(temp_files.clone());
             // `setup` runs outside a Tokio context, and `init_core` spawns tasks.
             let (mut core_handle, engine) = tauri::async_runtime::block_on(async {
-                init_core(data_dir, resource_dir, cmd_tx, cmd_rx, media_rx, temp_uploads, logger)
+                init_core(data_dir, resource_dir, cmd_tx, cmd_rx, media_rx, temp_files, logger)
             });
             app.manage(TauriState::new(core_handle.cmd_tx));
             app.manage(sfx_player);
