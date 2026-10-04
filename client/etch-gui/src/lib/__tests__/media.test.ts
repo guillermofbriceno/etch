@@ -1,17 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { fitWithin, formatMB, formatSize } from '../media';
-
-describe('formatMB', () => {
-    // The same sizes as core's format_mb test, because the two texts must agree byte for byte.
-    it('rounds to tenths, half up, and drops the decimal only for a whole number of MiB', () => {
-        expect(formatMB(2_097_152)).toBe('2 MB');
-        expect(formatMB(2_097_153)).toBe('2.0 MB');
-        expect(formatMB(1_310_720)).toBe('1.3 MB');
-        expect(formatMB(2_359_296)).toBe('2.3 MB');
-        expect(formatMB(3_565_158)).toBe('3.4 MB');
-        expect(formatMB(50_000_000)).toBe('47.7 MB');
-    });
-});
+import { fitWithin, formatSize } from '../media';
 
 describe('formatSize', () => {
     it('uses the largest unit that fits and never shows 1024 of a smaller one', () => {

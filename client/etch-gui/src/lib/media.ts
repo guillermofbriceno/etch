@@ -21,17 +21,15 @@ export function fitWithin(width: number, height: number, maxWidth: number, maxHe
     return { width: Math.round(width * scale), height: Math.round(height * scale) };
 }
 
+/** Larger video and audio are offered as a download instead of being played inline. */
+export const INLINE_PLAYBACK_MAX_BYTES = 20 * 1024 ** 2;
+
 const SIZE_UNITS = ['B', 'KB', 'MB', 'GB', 'TB'];
 
-// Integer rounding to tenths, half up, so the text matches core's reasons byte for byte.
 function inUnit(bytes: number, unitBytes: number): string {
     if (bytes % unitBytes === 0) return String(bytes / unitBytes);
     const tenths = Math.floor((bytes * 10 + unitBytes / 2) / unitBytes);
     return `${Math.floor(tenths / 10)}.${tenths % 10}`;
-}
-
-export function formatMB(bytes: number): string {
-    return `${inUnit(bytes, 1024 ** 2)} MB`;
 }
 
 export function formatSize(bytes: number): string {

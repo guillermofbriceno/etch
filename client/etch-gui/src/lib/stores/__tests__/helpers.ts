@@ -12,7 +12,6 @@ import { activeOverlay, overlayImageUrl, settingsTab, showRoomIds } from '../ove
 import { replyingTo, editingMessage } from '../compose';
 import { serverBookmarks, selectedBookmarkId, connectingBookmark, passwordRequested, matrixConnecting, mediaBaseUrl } from '../servers';
 import { compactChat } from '../layout';
-import { uploadLimits } from '../uploads';
 
 /**
  * Reset all stores to their initial values.
@@ -71,7 +70,4 @@ export function resetStores(): void {
 
     // Layout
     compactChat.set(false);
-
-    // Uploads
-    uploadLimits.set(null);
 }

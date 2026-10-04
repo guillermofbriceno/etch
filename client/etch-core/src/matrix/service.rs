@@ -1,5 +1,5 @@
 use tokio::sync::{broadcast, mpsc, oneshot};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::Duration;
 use matrix_sdk::Client;
 use matrix_sdk::config::SyncSettings;
@@ -11,7 +11,7 @@ use matrix_sdk::ruma::{RoomId, UserId};
 use matrix_sdk::send_queue::SendQueueRoomError;
 use crate::commands::{AttachmentSend, MatrixCommand, ServerConnectionForm};
 use crate::events::{CoreEvent, MatrixEvent, InternalEvent, InternalMatrixEvent};
-use crate::matrix::attachment::{self, UploadLimits};
+use crate::matrix::attachment;
 use crate::temp_files::TempFiles;
 use crate::matrix::client::{session_path, start_matrix_client, ConnectionResult};
 use crate::matrix::retry::credentials_rejected;
@@ -151,30 +151,6 @@ impl MatrixSession {
     }
 }
 
-/// Each session fetches into a cell of its own, so a fetch that outlives its session
-/// writes where nobody reads.
-struct UploadLimitsFetch {
-    limits: Arc<OnceLock<UploadLimits>>,
-    _task: AbortOnDrop,
-}
-
-impl UploadLimitsFetch {
-    fn spawn(client: Client, internal_tx: mpsc::Sender<InternalEvent>, generation: u64) -> Self {
-        let limits = Arc::new(OnceLock::new());
-        let cell = limits.clone();
-        let task = AbortOnDrop::new(tokio::spawn(async move {
-            let fetched = attachment::fetch_upload_limits(&client).await;
-            let _ = cell.set(fetched);
-            let _ = internal_tx.send(InternalEvent::Matrix(InternalMatrixEvent::UploadLimits {
-                generation,
-                image_bytes: fetched.image_bytes,
-                other_bytes: fetched.other_bytes,
-            })).await;
-        }));
-        Self { limits, _task: task }
-    }
-}
-
 async fn report_send_errors(
     mut errors: broadcast::Receiver<SendQueueRoomError>,
     event_tx: mpsc::Sender<CoreEvent>,
@@ -202,7 +178,6 @@ pub struct MatrixService {
     timeline_manager: TimelineManager,
     event_tx: mpsc::Sender<CoreEvent>,
     data_dir: PathBuf,
-    limits_fetch: Option<UploadLimitsFetch>,
     temp_files: TempFiles,
 }
 
@@ -219,16 +194,8 @@ impl MatrixService {
             timeline_manager,
             event_tx,
             data_dir,
-            limits_fetch: None,
             temp_files,
         }
-    }
-
-    /// The Etch caps until the homeserver's own limit has been fetched.
-    fn upload_limits(&self) -> UploadLimits {
-        self.limits_fetch.as_ref()
-            .and_then(|fetch| fetch.limits.get().copied())
-            .unwrap_or(UploadLimits::ETCH_CAPS)
     }
 
     /// A failed send disables its room's queue, so sending there again retries what it held back, in order.
@@ -244,13 +211,16 @@ impl MatrixService {
     async fn send_attachment(&self, request: AttachmentSend) {
         let AttachmentSend { room_id, path, compress, media_info } = request;
         let outcome = match self.serving_client("SendAttachment") {
-            Some(client) => match attachment::prepare(&path, compress, self.upload_limits(), media_info, &self.temp_files).await {
-                Ok(prepared) => {
-                    Self::resume_send_queue(&client, &room_id);
-                    attachment::send(&client, &room_id, prepared).await
+            Some(client) => {
+                let server_limit = attachment::server_upload_limit(&client).await;
+                match attachment::prepare(&path, compress, server_limit, media_info, &self.temp_files).await {
+                    Ok(prepared) => {
+                        Self::resume_send_queue(&client, &room_id);
+                        attachment::send(&client, &room_id, prepared).await
+                    }
+                    Err(reason) => Err(reason),
                 }
-                Err(reason) => Err(reason),
-            },
+            }
             None => {
                 attachment::discard(&self.temp_files, &path).await;
                 Err(attachment::NOT_CONNECTED.into())
@@ -526,7 +496,6 @@ impl MatrixBackend for MatrixService {
         let send_errors = AbortOnDrop::new(tokio::spawn(report_send_errors(send_errors, self.event_tx.clone())));
 
         self.session.go_live(sync, pagination, send_errors);
-        self.limits_fetch = Some(UploadLimitsFetch::spawn(client, internal_tx, generation));
 
         ConnectOutcome::Connected(voice_server)
     }
@@ -781,7 +750,6 @@ impl MatrixBackend for MatrixService {
 
     async fn reset(&mut self) {
         self.session.stand_down();
-        self.limits_fetch = None;
         self.timeline_manager.clear();
     }
 }
@@ -1070,29 +1038,38 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_attachment_over_the_limit_is_reported_and_its_temp_directory_removed() {
+    async fn an_attachment_over_the_homeservers_limit_is_reported_and_its_temp_directory_removed() {
         let tmp = tempfile::tempdir().unwrap();
-        let (mut service, _sync_abort, _pagination_abort) = connected_service(tmp.path()).await;
+        let server = CannedHomeserver::start("200 OK", r#"{"m.upload.size":3145728}"#).await;
+        let client = server.client_for("@alice:example.com").await;
+        let mut service = service(tmp.path());
         let (event_tx, mut event_rx) = mpsc::channel(16);
         service.event_tx = event_tx;
+        let (sync, _sync_abort) = parked_task();
+        let (pagination, _pagination_abort) = parked_task();
+        let (send_errors, _) = parked_task();
+        service.session = MatrixSession::Live {
+            key: SessionKey::of(&client, &test_form()), client,
+            _sync: sync, _pagination: pagination, _send_errors: send_errors,
+        };
         let path = temp_upload(&service, "clip.mp4", 3_565_158);
 
         service.handle_command(send_attachment_command("!a:b", &path)).await;
 
         assert_eq!(
             attachment_failure(&mut event_rx),
-            ("!a:b".into(), "clip.mp4".into(), "it is 3.4 MB and the limit for this kind of file is 2 MB".into()),
+            ("!a:b".into(), "clip.mp4".into(), "it is 3.4 MB and the server's limit is 3 MB".into()),
         );
         assert!(!path.parent().unwrap().exists(), "the temp directory should be removed");
     }
 
     #[tokio::test]
-    async fn an_image_exactly_at_its_limit_gets_past_the_size_check() {
+    async fn an_attachment_for_an_unknown_room_is_reported_and_its_temp_directory_removed() {
         let tmp = tempfile::tempdir().unwrap();
         let (mut service, _sync_abort, _pagination_abort) = connected_service(tmp.path()).await;
         let (event_tx, mut event_rx) = mpsc::channel(16);
         service.event_tx = event_tx;
-        let path = temp_upload(&service, "photo.png", 5_242_880);
+        let path = temp_upload(&service, "photo.png", 10);
 
         service.handle_command(send_attachment_command("!unknown:example.com", &path)).await;
 
@@ -1241,18 +1218,14 @@ mod tests {
         let mut service = service(tmp.path());
         let (event_tx, mut event_rx) = mpsc::channel(64);
         service.event_tx = event_tx;
-        let (internal_tx, mut internal_rx) = mpsc::channel(64);
+        let (internal_tx, _internal_rx) = mpsc::channel(64);
         let client = server.client_for("@alice:example.com").await;
         service.session.install(SessionKey::of(&client, &form), client);
         let outcome = service.connect(form, internal_tx, 1).await;
         assert!(matches!(outcome, ConnectOutcome::Connected(_)), "the canned server should accept the connect");
-        // Once the limits are known the next request to meet the outage is the upload itself.
-        tokio::time::timeout(Duration::from_secs(5), async {
-            while !matches!(
-                internal_rx.recv().await,
-                Some(InternalEvent::Matrix(InternalMatrixEvent::UploadLimits { .. })),
-            ) {}
-        }).await.expect("UploadLimits should follow a successful connect");
+        // Asked while the server still answers, so the next request to meet the outage is the upload itself.
+        let client = service.session.live_client().cloned().expect("the session should be live");
+        assert_eq!(attachment::server_upload_limit(&client).await, Some(52_428_800));
 
         unavailable.store(true, Ordering::SeqCst);
         let path = temp_upload(&service, "photo.png", 10);
@@ -1295,41 +1268,4 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn a_connect_publishes_the_effective_upload_limits_and_enforces_them() {
-        let tmp = tempfile::tempdir().unwrap();
-        let server = CannedHomeserver::start("200 OK", r#"{"next_batch":"s1","m.upload.size":3145728}"#).await;
-        let form = ServerConnectionForm { homeserver_url: Some(server.url.clone()), ..test_form() };
-        let mut service = service(tmp.path());
-        let (event_tx, mut event_rx) = mpsc::channel(64);
-        service.event_tx = event_tx;
-        let (internal_tx, mut internal_rx) = mpsc::channel(64);
-        let client = server.client_for("@alice:example.com").await;
-        service.session.install(SessionKey::of(&client, &form), client);
-
-        let outcome = service.connect(form, internal_tx, 7).await;
-        assert!(matches!(outcome, ConnectOutcome::Connected(_)), "the canned server should accept the connect");
-
-        let limits = tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                if let Some(InternalEvent::Matrix(InternalMatrixEvent::UploadLimits {
-                    generation, image_bytes, other_bytes,
-                })) = internal_rx.recv().await {
-                    return (generation, image_bytes, other_bytes);
-                }
-            }
-        }).await.expect("UploadLimits should follow a successful connect");
-        assert_eq!(
-            limits, (7, 3_145_728, 2_097_152),
-            "the limits should carry the connect's generation, and the server's limit only lowers a cap",
-        );
-
-        let path = temp_upload(&service, "photo.png", 3_670_016);
-        service.handle_command(send_attachment_command("!a:b", &path)).await;
-        let (_, _, reason) = attachment_failure(&mut event_rx);
-        assert_eq!(reason, "it could not be compressed to fit the 3 MB limit");
-
-        service.reset().await;
-        assert_eq!(service.upload_limits(), UploadLimits::ETCH_CAPS, "a reset must not carry the old server's limits");
-    }
 }

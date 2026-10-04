@@ -6,9 +6,9 @@ import { invoke } from '@tauri-apps/api/core';
 import { stat, remove } from '@tauri-apps/plugin-fs';
 import { open } from '@tauri-apps/plugin-dialog';
 import { getCurrentWebview, type DragDropEvent } from '@tauri-apps/api/webview';
-import { activeChannelId, setEditing, clearEditing, toastError, activeOverlay, uploadLimits } from '$lib/stores';
+import { activeChannelId, setEditing, clearEditing, toastError, activeOverlay } from '$lib/stores';
 import { resetStores } from '$lib/stores/__tests__/helpers';
-import { probeMediaInfo, type Inspection, type Verdict } from '$lib/attachments';
+import { probeMediaInfo, type Inspection } from '$lib/attachments';
 import MessageInput from '../MessageInput.svelte';
 
 vi.mock('$lib/markdown', () => ({
@@ -23,13 +23,12 @@ vi.mock('$lib/attachments', async (importOriginal) => ({
 
 const ROOM = 'room1';
 const MIB = 1024 * 1024;
-const LIMITS = { image_bytes: 5 * MIB, other_bytes: 2 * MIB };
 
 let fileSizes: Record<string, number>;
 let commands: Record<string, (args: Record<string, unknown>) => unknown>;
 
-function inspection(mimetype: string, verdict: Verdict, limit = 5 * MIB): Inspection {
-    return { mimetype, limit, verdict };
+function inspection(mimetype: string, compress_offered = false): Inspection {
+    return { mimetype, compress_offered };
 }
 
 beforeEach(() => {
@@ -38,7 +37,7 @@ beforeEach(() => {
     fileSizes = {};
     commands = {
         paste_clipboard_image: () => null,
-        inspect_attachment: () => inspection('application/octet-stream', { type: 'Accept', compress_offered: false }),
+        inspect_attachment: () => inspection('application/octet-stream'),
     };
     vi.mocked(probeMediaInfo).mockReset();
     vi.mocked(probeMediaInfo).mockResolvedValue(null);
@@ -113,35 +112,6 @@ function compressCheckbox(container: HTMLElement): HTMLInputElement | null {
 }
 
 describe('attaching', () => {
-    it("rejects a file core rejects, with core's reason, and attaches nothing", async () => {
-        uploadLimits.set(LIMITS);
-        commands.inspect_attachment = () => inspection('video/mp4', {
-            type: 'Reject', reason: 'it is 3 MB and the limit for this kind of file is 2 MB',
-        }, 2 * MIB);
-        render(MessageInput);
-
-        await pick('/home/user/clip.mp4', 3 * MIB);
-
-        await expectToast("Couldn't attach clip.mp4: it is 3 MB and the limit for this kind of file is 2 MB");
-        expect(invoke).toHaveBeenCalledWith('inspect_attachment', { name: 'clip.mp4', size: 3 * MIB, limits: LIMITS });
-        expect(screen.queryByText('clip.mp4')).not.toBeInTheDocument();
-        await send();
-        expect(sentCommands()).toEqual([]);
-    });
-
-    it('rejects a pasted file core rejects without writing it anywhere', async () => {
-        commands.inspect_attachment = () => inspection('video/mp4', {
-            type: 'Reject', reason: 'it is 3 MB and the limit for this kind of file is 2 MB',
-        }, 2 * MIB);
-        render(MessageInput);
-
-        await pasteFiles([clipboardFile('clip.mp4', 3 * MIB)]);
-
-        await expectToast("Couldn't attach clip.mp4: it is 3 MB and the limit for this kind of file is 2 MB");
-        expect(invocations('save_pasted_file')).toEqual([]);
-        expect(screen.queryByText('clip.mp4')).not.toBeInTheDocument();
-    });
-
     it('keeps the newer file when an older attach finishes late', async () => {
         let finishOlder!: (meta: Awaited<ReturnType<typeof stat>>) => void;
         vi.mocked(stat).mockImplementationOnce(() => new Promise((resolve) => { finishOlder = resolve; }));
@@ -162,34 +132,13 @@ describe('attaching', () => {
 });
 
 describe('sending an attachment', () => {
-    it('forces compression on an image core says must be compressed', async () => {
-        commands.inspect_attachment = () => inspection('image/png', { type: 'MustCompress' });
-        const { container } = render(MessageInput);
-
-        await pick('/home/user/photo.png', 9 * MIB);
-
-        await vi.waitFor(() => expect(screen.getByText('photo.png')).toBeInTheDocument());
-        const checkbox = compressCheckbox(container)!;
-        expect(checkbox.checked).toBe(true);
-        expect(checkbox.disabled).toBe(true);
-        expect(screen.getByText('Must be compressed to fit the 5 MB limit')).toBeInTheDocument();
-
-        await send();
-
-        await vi.waitFor(() => expect(sentCommands()).toHaveLength(1));
-        expect(sentCommands()[0]).toEqual({
-            type: 'SendAttachment',
-            data: { room_id: ROOM, path: '/home/user/photo.png', compress: true, media_info: null },
-        });
-    });
-
     it('sends the image uncompressed when the user turns the offered compression off', async () => {
-        commands.inspect_attachment = () => inspection('image/png', { type: 'Accept', compress_offered: true });
+        commands.inspect_attachment = () => inspection('image/png', true);
         const { container } = render(MessageInput);
         await pick('/home/user/photo.png', 400_000);
         await vi.waitFor(() => expect(screen.getByText('photo.png')).toBeInTheDocument());
         const checkbox = compressCheckbox(container)!;
-        expect(checkbox.disabled).toBe(false);
+        expect(checkbox.checked).toBe(true);
 
         await fireEvent.click(checkbox);
         await send();
@@ -199,11 +148,12 @@ describe('sending an attachment', () => {
     });
 
     it('probes a video as the type core named and sends what it measured', async () => {
-        commands.inspect_attachment = () => inspection('video/mp4', { type: 'Accept', compress_offered: false }, 2 * MIB);
+        commands.inspect_attachment = () => inspection('video/mp4');
         vi.mocked(probeMediaInfo).mockResolvedValue({ width: 1280, height: 720, duration_ms: 4000 });
         const { container } = render(MessageInput);
         await pick('/home/user/clip.mp4', MIB);
         await vi.waitFor(() => expect(screen.getByText('clip.mp4')).toBeInTheDocument());
+        expect(invoke).toHaveBeenCalledWith('inspect_attachment', { name: 'clip.mp4', size: MIB });
         expect(compressCheckbox(container)).toBeNull();
 
         await send();

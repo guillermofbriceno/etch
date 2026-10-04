@@ -8,6 +8,7 @@ import { playSfx } from './sfx';
 import { appFocused } from './eventRouter';
 import { activeChannelId, emitUnreadMessage } from './activeChannel';
 import { registerSessionStore, declareStores } from './session';
+import { showToast } from './errors';
 
 let lastNotifTime = 0;
 const NOTIF_COOLDOWN_MS = 20_000;
@@ -239,5 +240,11 @@ export function handleMatrixEvent(me: MatrixEvent): void {
             });
             break;
         }
+        case 'AttachmentFailed':
+            showToast(`Couldn't send ${me.data.file_name}: ${me.data.reason}`);
+            break;
+        case 'SendFailed':
+            showToast(`Couldn't send a message: ${me.data.reason}`);
+            break;
     }
 }

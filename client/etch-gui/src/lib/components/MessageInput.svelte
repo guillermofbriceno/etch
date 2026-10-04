@@ -6,7 +6,7 @@
     import { invoke } from '@tauri-apps/api/core';
     import { getCurrentWebview, type DragDropEvent } from '@tauri-apps/api/webview';
     import type { Event as TauriEvent } from '@tauri-apps/api/event';
-    import { sendMessage, sendAttachment, editMessage, activeChannelId, activeChannel, activeWindow, replyingTo, clearReply, editingMessage, clearEditing, activeOverlay, uploadLimits, showToast } from '$lib/stores';
+    import { sendMessage, sendAttachment, editMessage, activeChannelId, activeChannel, activeWindow, replyingTo, clearReply, editingMessage, clearEditing, activeOverlay, showToast } from '$lib/stores';
     import { composeHtml, insertMentionLinks } from '$lib/markdown';
     import {
         discardTempFile,
@@ -16,7 +16,7 @@
         type AttachedFile,
         type Inspection,
     } from '$lib/attachments';
-    import { formatMB, formatSize } from '$lib/media';
+    import { formatSize } from '$lib/media';
     import Icon from './Icon.svelte';
     import { customScrollbar } from '$lib/scrollbar';
 
@@ -30,10 +30,7 @@
     let composeLock = false;
     let dragActive = false;
 
-    $: verdict = pendingAttachment?.inspection.verdict ?? null;
-    $: mustCompress = verdict?.type === 'MustCompress';
-    $: if (mustCompress) compressAttachment = true;
-    $: showCompress = mustCompress || (verdict?.type === 'Accept' && verdict.compress_offered);
+    $: showCompress = pendingAttachment?.inspection.compress_offered ?? false;
     $: inputActive = $activeChannelId !== null && $activeOverlay === 'none' && !$editingMessage;
 
     // Tab-completion state
@@ -182,21 +179,19 @@
         if (previous && previous.path !== next?.path) discardTempFile(previous.path);
     }
 
-    /** Null, after telling the user why, for a file that cannot be attached. */
+    /** Null, after telling the user, when core could not be asked about the file. */
     async function inspect(name: string, size: number): Promise<Inspection | null> {
         try {
-            const inspection = await inspectAttachment(name, size, get(uploadLimits));
-            if (inspection.verdict.type !== 'Reject') return inspection;
-            showToast(`Couldn't attach ${name}: ${inspection.verdict.reason}`);
+            return await inspectAttachment(name, size);
         } catch (e) {
             showToast(`Couldn't attach ${name}: ${e}`);
+            return null;
         }
-        return null;
     }
 
     // A slower attach that finishes after a newer one must not replace it.
     let attachSeq = 0;
-    async function attach(path: string, knownSize?: number, knownInspection?: Inspection) {
+    async function attach(path: string, knownSize?: number) {
         const seq = ++attachSeq;
         const name = fileName(path);
         let size = knownSize;
@@ -209,7 +204,7 @@
             }
         }
         if (seq === attachSeq) {
-            const inspection = knownInspection ?? await inspect(name, size);
+            const inspection = await inspect(name, size);
             if (inspection && seq === attachSeq) {
                 setPending({ path, size, inspection });
                 return;
@@ -220,8 +215,6 @@
 
     async function attachPastedFile(file: File) {
         const name = file.name || 'attachment';
-        const inspection = await inspect(name, file.size);
-        if (!inspection) return;
         let path: string;
         try {
             path = await writeTempAttachment(name, new Uint8Array(await file.arrayBuffer()));
@@ -229,7 +222,7 @@
             showToast(`Couldn't attach ${name}: the file could not be read`);
             return;
         }
-        await attach(path, file.size, inspection);
+        await attach(path, file.size);
     }
 
     async function pickFile() {
@@ -552,11 +545,8 @@
             </div>
             <div class="attachment-actions">
                 {#if showCompress}
-                    {#if mustCompress}
-                        <span class="compress-note">Must be compressed to fit the {formatMB(pendingAttachment.inspection.limit)} limit</span>
-                    {/if}
-                    <label class="compress-option" class:forced={mustCompress}>
-                        <input type="checkbox" bind:checked={compressAttachment} disabled={mustCompress} />
+                    <label class="compress-option">
+                        <input type="checkbox" bind:checked={compressAttachment} />
                         Compress
                     </label>
                 {/if}
@@ -766,15 +756,6 @@
         height: 14px;
         margin: 0;
         cursor: pointer;
-    }
-
-    .compress-option.forced,
-    .compress-option.forced input[type="checkbox"] { cursor: default; }
-
-    .compress-note {
-        color: var(--text-muted);
-        font-size: 12px;
-        white-space: nowrap;
     }
 
     .attachment-size {

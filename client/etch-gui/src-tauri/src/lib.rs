@@ -2,7 +2,7 @@ mod media;
 mod sfx;
 
 use etch_core::init_core;
-use etch_core::attachment::{self, Inspection, UploadLimits};
+use etch_core::attachment::{self, Inspection};
 use etch_core::commands::{CoreCommand, MediaRequest};
 use etch_core::temp_files::TempFiles;
 use tauri::{AppHandle, Manager, State};
@@ -84,8 +84,8 @@ async fn paste_clipboard_image(temp_files: State<'_, TempFiles>) -> Result<Optio
 }
 
 #[tauri::command]
-fn inspect_attachment(name: String, size: u64, limits: Option<UploadLimits>) -> Inspection {
-    attachment::inspect(&name, size, limits)
+fn inspect_attachment(name: String, size: u64) -> Inspection {
+    attachment::inspect(&name, size)
 }
 
 /// The body is the file's bytes; its percent-encoded name travels in the `file-name` header.

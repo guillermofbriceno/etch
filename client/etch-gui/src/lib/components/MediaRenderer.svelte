@@ -2,7 +2,7 @@
     import { onDestroy } from 'svelte';
     import { openImage, showToast } from '$lib/stores';
     import Icon from './Icon.svelte';
-    import { fetchBlob, fitWithin, formatSize, saveFileAs } from '$lib/media';
+    import { INLINE_PLAYBACK_MAX_BYTES, fetchBlob, fitWithin, formatSize, saveFileAs } from '$lib/media';
 
     export let src: string;
     export let mimetype: string;
@@ -13,7 +13,6 @@
 
     const MAX_WIDTH = 400;
     const MAX_HEIGHT = 300;
-    const INLINE_PLAYBACK_MAX = 20 * 1024 * 1024;
 
     // A format the webview cannot play still has to be downloadable.
     let playbackFailed = false;
@@ -25,7 +24,7 @@
         : mimetype.startsWith('video/') ? 'video'
         : mimetype.startsWith('audio/') ? 'audio'
         : 'file';
-    $: playable = (baseKind === 'video' || baseKind === 'audio') && size <= INLINE_PLAYBACK_MAX;
+    $: playable = (baseKind === 'video' || baseKind === 'audio') && size <= INLINE_PLAYBACK_MAX_BYTES;
     $: kind = baseKind === 'image' ? 'image' : playable && !playbackFailed ? baseKind : 'file';
 
     $: loadPlayback(playable ? src : null, mimetype);

@@ -1,29 +1,21 @@
 import { invoke } from '@tauri-apps/api/core';
 import { readFile } from '@tauri-apps/plugin-fs';
 import type { OutgoingMediaInfo } from './ipc';
-import type { UploadLimits } from './stores/uploads';
+import { INLINE_PLAYBACK_MAX_BYTES } from './media';
 
-/** Core's verdict on a file of this name and size; it decides again at send time with the session's real limits. */
-export type Verdict =
-    | { type: 'Accept'; compress_offered: boolean }
-    | { type: 'MustCompress' }
-    | { type: 'Reject'; reason: string };
-
-export type Inspection = { mimetype: string; limit: number; verdict: Verdict };
+/** What core says about a file of this name and size. */
+export type Inspection = { mimetype: string; compress_offered: boolean };
 
 export type AttachedFile = { path: string; size: number; inspection: Inspection };
 
 const PROBE_TIMEOUT_MS = 3000;
 
-// The probe reads the whole file into the webview, and nothing above the largest Etch cap can be sent anyway.
-const PROBE_MAX_BYTES = 5 * 1024 ** 2;
-
 export function fileName(path: string): string {
     return path.split(/[\\/]/).pop() || path;
 }
 
-export function inspectAttachment(name: string, size: number, limits: UploadLimits | null): Promise<Inspection> {
-    return invoke<Inspection>('inspect_attachment', { name, size, limits });
+export function inspectAttachment(name: string, size: number): Promise<Inspection> {
+    return invoke<Inspection>('inspect_attachment', { name, size });
 }
 
 function mediaInfo(width: number, height: number, seconds: number): OutgoingMediaInfo | null {
@@ -45,7 +37,8 @@ function metadataLoaded(media: HTMLMediaElement): Promise<void> {
 /** Video and audio only: core reads an image's dimensions itself. */
 export async function probeMediaInfo(path: string, size: number, mimetype: string): Promise<OutgoingMediaInfo | null> {
     const kind = mimetype.slice(0, mimetype.indexOf('/'));
-    if (size > PROBE_MAX_BYTES || (kind !== 'video' && kind !== 'audio')) return null;
+    // The probe reads the whole file into the webview, and a file too large to play inline needs no measurements.
+    if (size > INLINE_PLAYBACK_MAX_BYTES || (kind !== 'video' && kind !== 'audio')) return null;
 
     let timer: ReturnType<typeof setTimeout> | undefined;
     const deadline = new Promise<never>((_, reject) => {

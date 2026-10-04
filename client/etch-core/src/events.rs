@@ -29,7 +29,6 @@ pub enum MatrixEvent {
     PasswordRequest,
     PaginationComplete(String, bool),
     ConnectionState(ConnectionState),
-    UploadLimits { image_bytes: u64, other_bytes: u64 },
     AttachmentFailed { room_id: String, file_name: String, reason: String },
     SendFailed { room_id: String, reason: String },
 }
@@ -107,9 +106,6 @@ pub enum InternalMatrixEvent {
         display_name: Option<String>,
         avatar_url: Option<String>,
     },
-    /// Forwarded only while `generation` is the latest connect, so it cannot follow a newer
-    /// `ServerReset`.
-    UploadLimits { generation: u64, image_bytes: u64, other_bytes: u64 },
 }
 
 #[derive(Debug)]
