@@ -18,20 +18,20 @@ beforeEach(() => {
 
 describe('messages IPC commands', () => {
     it('sendMessage sends Matrix > SendMessage', async () => {
-        await sendMessage('room1', 'hello', '<p>hello</p>', '/tmp/file.png');
+        await sendMessage('room1', 'hello', '<p>hello</p>');
 
         expect(invoke).toHaveBeenCalledWith('core_command', {
             command: {
                 type: 'Matrix',
                 data: {
                     type: 'SendMessage',
-                    data: { room_id: 'room1', text: 'hello', html_body: '<p>hello</p>', attachment_path: '/tmp/file.png' },
+                    data: { room_id: 'room1', text: 'hello', html_body: '<p>hello</p>' },
                 },
             },
         });
     });
 
-    it('sendMessage defaults html_body and attachment_path to null', async () => {
+    it('sendMessage defaults html_body to null', async () => {
         await sendMessage('room1', 'plain text');
 
         expect(invoke).toHaveBeenCalledWith('core_command', {
@@ -39,7 +39,7 @@ describe('messages IPC commands', () => {
                 type: 'Matrix',
                 data: {
                     type: 'SendMessage',
-                    data: { room_id: 'room1', text: 'plain text', html_body: null, attachment_path: null },
+                    data: { room_id: 'room1', text: 'plain text', html_body: null },
                 },
             },
         });

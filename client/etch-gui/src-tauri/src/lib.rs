@@ -1,9 +1,14 @@
+mod media;
 mod sfx;
 
 use etch_core::init_core;
+use etch_core::attachment::{self, Inspection, UploadLimits};
 use etch_core::commands::{CoreCommand, MediaRequest};
+use etch_core::temp_files::TempFiles;
 use tauri::{AppHandle, Manager, State};
 use tauri::Emitter;
+use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_updater::UpdaterExt;
 use std::io::Cursor;
 use std::path::Path;
@@ -53,8 +58,9 @@ fn load_custom_css(path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-async fn paste_clipboard_image() -> Result<Option<(String, u64)>, String> {
-    tokio::task::spawn_blocking(|| {
+async fn paste_clipboard_image(temp_files: State<'_, TempFiles>) -> Result<Option<(String, u64)>, String> {
+    let temp_files = temp_files.inner().clone();
+    tokio::task::spawn_blocking(move || {
         let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
         let img_data = match clipboard.get_image() {
             Ok(data) => data,
@@ -67,57 +73,99 @@ async fn paste_clipboard_image() -> Result<Option<(String, u64)>, String> {
             img_data.bytes.into_owned(),
         ).ok_or("Failed to create image from clipboard data")?;
 
-        let path = std::env::temp_dir().join(format!("etch-paste-{}.png", std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis()));
-
         let mut buf = Cursor::new(Vec::new());
         img.write_to(&mut buf, image::ImageFormat::Png).map_err(|e| e.to_string())?;
         let bytes = buf.into_inner();
         let size = bytes.len() as u64;
-        std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+        let path = temp_files.create("image.png", &bytes).map_err(|e| e.to_string())?;
 
         Ok(Some((path.to_string_lossy().into_owned(), size)))
     }).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-async fn compress_image(path: String) -> Result<String, String> {
-    tokio::task::spawn_blocking(move || {
-        let data = std::fs::read(&path).map_err(|e| e.to_string())?;
+fn inspect_attachment(name: String, size: u64, limits: Option<UploadLimits>) -> Inspection {
+    attachment::inspect(&name, size, limits)
+}
 
-        let img = image::ImageReader::new(Cursor::new(&data))
-            .with_guessed_format()
-            .map_err(|e| e.to_string())?
-            .decode()
-            .map_err(|e| e.to_string())?;
+/// The body is the file's bytes; its percent-encoded name travels in the `file-name` header.
+fn named_bytes(request: &tauri::ipc::Request<'_>) -> Result<(String, Vec<u8>), String> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("expected the file's bytes".into());
+    };
+    let name = request.headers().get("file-name")
+        .and_then(|value| value.to_str().ok())
+        .and_then(media::percent_decode)
+        .unwrap_or_default();
+    Ok((name, bytes.clone()))
+}
 
-        let stem = Path::new(&path)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("image");
+#[tauri::command]
+async fn save_pasted_file(
+    request: tauri::ipc::Request<'_>,
+    temp_files: State<'_, TempFiles>,
+) -> Result<String, String> {
+    let (name, bytes) = named_bytes(&request)?;
+    let temp_files = temp_files.inner().clone();
+    tokio::task::spawn_blocking(move || temp_files.create(&name, &bytes))
+        .await
+        .map_err(|e| e.to_string())?
+        .map(|path| path.to_string_lossy().into_owned())
+        .map_err(|e| e.to_string())
+}
 
-        let out_path = std::env::temp_dir().join(format!("etch-paste-{}.jpg", stem));
+/// The destination comes only from the dialog the user answers, so the webview never
+/// chooses what is written over. `false` means the user cancelled.
+#[tauri::command]
+async fn save_file_as(window: tauri::Window, request: tauri::ipc::Request<'_>) -> Result<bool, String> {
+    let (name, bytes) = named_bytes(&request)?;
+    let suggested = Path::new(&name).file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "attachment".into());
 
-        let mut buf = Cursor::new(Vec::new());
-        let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 80);
-        img.write_with_encoder(encoder).map_err(|e| e.to_string())?;
-        std::fs::write(&out_path, buf.into_inner()).map_err(|e| e.to_string())?;
+    let (chosen_tx, chosen_rx) = tokio::sync::oneshot::channel();
+    window.dialog().file()
+        .set_file_name(suggested)
+        .set_parent(&window)
+        .save_file(move |path| {
+            let _ = chosen_tx.send(path);
+        });
+    let Some(path) = chosen_rx.await.map_err(|e| e.to_string())? else {
+        return Ok(false);
+    };
+    let path = path.into_path().map_err(|e| e.to_string())?;
 
-        // Clean up the original temp file if it was from a paste
-        if Path::new(&path)
-            .file_name()
-            .and_then(|f| f.to_str())
-            .is_some_and(|f| f.starts_with("etch-paste-"))
-        {
-            let _ = std::fs::remove_file(&path);
-        }
+    tokio::task::spawn_blocking(move || std::fs::write(&path, &bytes))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    Ok(true)
+}
 
-        Ok(out_path.to_string_lossy().into_owned())
-    })
-    .await
-    .map_err(|e| e.to_string())?
+/// Writes the bytes to a new temp file of Etch's own and hands it to the system's viewer.
+#[tauri::command]
+async fn open_in_default_app(
+    app: AppHandle,
+    request: tauri::ipc::Request<'_>,
+    temp_files: State<'_, TempFiles>,
+) -> Result<(), String> {
+    let (name, bytes) = named_bytes(&request)?;
+    let temp_files = temp_files.inner().clone();
+    let path = tokio::task::spawn_blocking(move || temp_files.create(&name, &bytes))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    app.opener()
+        .open_path(path.to_string_lossy(), None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn discard_temp_upload(path: String, temp_files: State<'_, TempFiles>) -> Result<(), String> {
+    let temp_files = temp_files.inner().clone();
+    tokio::task::spawn_blocking(move || temp_files.discard(Path::new(&path)))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -261,18 +309,7 @@ pub fn run() {
         .register_asynchronous_uri_scheme_protocol("etch-media", move |_ctx, request, responder| {
             let media_tx = media_tx.clone();
             tauri::async_runtime::spawn(async move {
-                let uri = request.uri();
-                let raw_host = uri.host().unwrap_or_default();
-                let raw_path = uri.path().trim_start_matches('/');
-
-                // On Windows, wry reverts http://<scheme>.localhost/<path>
-                // back to <scheme>://localhost/<path>, so the URI host is
-                // "localhost" and the real Matrix server is the first path segment.
-                let mxc_url = if raw_host == "localhost" {
-                    format!("mxc://{}", raw_path)
-                } else {
-                    format!("mxc://{}/{}", raw_host, raw_path)
-                };
+                let mxc_url = media::mxc_url(request.uri(), cfg!(windows));
 
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 let _ = media_tx.send(MediaRequest { mxc_url, respond: tx }).await;
@@ -320,9 +357,11 @@ pub fn run() {
             let logger = build_logger(&log_path);
 
             let sfx_player = SfxPlayer::new(&data_dir);
+            let temp_files = TempFiles::new(std::env::temp_dir());
+            app.manage(temp_files.clone());
             // `setup` runs outside a Tokio context, and `init_core` spawns tasks.
             let (mut core_handle, engine) = tauri::async_runtime::block_on(async {
-                init_core(data_dir, resource_dir, cmd_tx, cmd_rx, media_rx, logger)
+                init_core(data_dir, resource_dir, cmd_tx, cmd_rx, media_rx, temp_files, logger)
             });
             app.manage(TauriState::new(core_handle.cmd_tx));
             app.manage(sfx_player);
@@ -346,7 +385,11 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             core_command,
             paste_clipboard_image,
-            compress_image,
+            inspect_attachment,
+            save_pasted_file,
+            discard_temp_upload,
+            save_file_as,
+            open_in_default_app,
             play_sfx,
             load_custom_css,
             check_for_update
@@ -369,4 +412,30 @@ pub fn run() {
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use tauri::ipc::Origin;
+
+    // `open` is here because it can truncate a file as it opens it.
+    #[test]
+    fn the_webview_can_read_a_file_but_never_change_one() {
+        let mut context: tauri::Context<tauri::Wry> = tauri::generate_context!(test = true);
+        let authority = context.runtime_authority_mut();
+        let allowed = |command: &str| {
+            let command = format!("plugin:fs|{command}");
+            authority.resolve_access(&command, "main", "main", &Origin::Local).is_some()
+        };
+
+        for command in ["read_file", "stat"] {
+            assert!(allowed(command), "the composer needs {command} for a picked file");
+        }
+        for command in [
+            "write_file", "write_text_file", "write", "open", "create", "mkdir", "copy_file",
+            "remove", "rename", "truncate", "ftruncate",
+        ] {
+            assert!(!allowed(command), "{command} would let the webview change the user's files");
+        }
+    }
 }

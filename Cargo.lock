@@ -1664,6 +1664,7 @@ dependencies = [
  "bridge-types",
  "futures",
  "futures-util",
+ "image",
  "interprocess",
  "keyring",
  "libc",

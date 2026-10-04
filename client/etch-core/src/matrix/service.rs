@@ -1,5 +1,5 @@
-use tokio::sync::{mpsc, oneshot};
-use std::sync::Arc;
+use tokio::sync::{broadcast, mpsc, oneshot};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use matrix_sdk::Client;
 use matrix_sdk::config::SyncSettings;
@@ -7,9 +7,12 @@ use matrix_sdk::media::{MediaRequestParameters, MediaFormat};
 use matrix_sdk::ruma::api::client::room::create_room::v3::{Request as CreateRoomRequest, RoomPreset};
 use matrix_sdk::ruma::api::client::{account::change_password, uiaa};
 use matrix_sdk::ruma::events::room::MediaSource;
-use matrix_sdk::ruma::UserId;
-use crate::commands::{MatrixCommand, ServerConnectionForm};
+use matrix_sdk::ruma::{RoomId, UserId};
+use matrix_sdk::send_queue::SendQueueRoomError;
+use crate::commands::{AttachmentSend, MatrixCommand, ServerConnectionForm};
 use crate::events::{CoreEvent, MatrixEvent, InternalEvent, InternalMatrixEvent};
+use crate::matrix::attachment::{self, UploadLimits};
+use crate::temp_files::TempFiles;
 use crate::matrix::client::{session_path, start_matrix_client, ConnectionResult};
 use crate::matrix::retry::credentials_rejected;
 use crate::matrix::timeline::TimelineManager;
@@ -76,13 +79,14 @@ impl std::fmt::Display for SessionKey {
 enum MatrixSession {
     None,
     Idle { key: SessionKey, client: Client },
-    /// Owning both tasks means leaving `Live` aborts them instead of stranding them
+    /// Owning its tasks means leaving `Live` aborts them instead of stranding them
     /// against a replaced client.
     Live {
         key: SessionKey,
         client: Client,
         _sync: AbortOnDrop,
         _pagination: AbortOnDrop,
+        _send_errors: AbortOnDrop,
     },
 }
 
@@ -124,7 +128,7 @@ impl MatrixSession {
         *self = Self::Idle { key, client };
     }
 
-    fn go_live(&mut self, sync: AbortOnDrop, pagination: AbortOnDrop) {
+    fn go_live(&mut self, sync: AbortOnDrop, pagination: AbortOnDrop, send_errors: AbortOnDrop) {
         let (key, client) = match std::mem::replace(self, Self::None) {
             Self::Idle { key, client } | Self::Live { key, client, .. } => (key, client),
             Self::None => {
@@ -132,7 +136,7 @@ impl MatrixSession {
                 return;
             }
         };
-        *self = Self::Live { key, client, _sync: sync, _pagination: pagination };
+        *self = Self::Live { key, client, _sync: sync, _pagination: pagination, _send_errors: send_errors };
     }
 
     fn stand_down(&mut self) {
@@ -147,16 +151,69 @@ impl MatrixSession {
     }
 }
 
+/// Each session fetches into a cell of its own, so a fetch that outlives its session
+/// writes where nobody reads.
+struct UploadLimitsFetch {
+    limits: Arc<OnceLock<UploadLimits>>,
+    _task: AbortOnDrop,
+}
+
+impl UploadLimitsFetch {
+    fn spawn(client: Client, internal_tx: mpsc::Sender<InternalEvent>, generation: u64) -> Self {
+        let limits = Arc::new(OnceLock::new());
+        let cell = limits.clone();
+        let task = AbortOnDrop::new(tokio::spawn(async move {
+            let fetched = attachment::fetch_upload_limits(&client).await;
+            let _ = cell.set(fetched);
+            let _ = internal_tx.send(InternalEvent::Matrix(InternalMatrixEvent::UploadLimits {
+                generation,
+                image_bytes: fetched.image_bytes,
+                other_bytes: fetched.other_bytes,
+            })).await;
+        }));
+        Self { limits, _task: task }
+    }
+}
+
+async fn report_send_errors(
+    mut errors: broadcast::Receiver<SendQueueRoomError>,
+    event_tx: mpsc::Sender<CoreEvent>,
+) {
+    loop {
+        match errors.recv().await {
+            Ok(SendQueueRoomError { room_id, error, is_recoverable }) => {
+                log::warn!("Failed to send to {room_id} (recoverable: {is_recoverable}): {error}");
+                let reason = attachment::send_failure_reason(&error, is_recoverable);
+                let event = MatrixEvent::SendFailed { room_id: room_id.to_string(), reason };
+                if event_tx.send(CoreEvent::Matrix(event)).await.is_err() {
+                    return;
+                }
+            }
+            Err(broadcast::error::RecvError::Lagged(missed)) => {
+                log::warn!("Missed {missed} send queue errors");
+            }
+            Err(broadcast::error::RecvError::Closed) => return,
+        }
+    }
+}
+
 pub struct MatrixService {
     session: MatrixSession,
     timeline_manager: TimelineManager,
     event_tx: mpsc::Sender<CoreEvent>,
     data_dir: PathBuf,
     dispatcher: Arc<ScriptDispatcher>,
+    limits_fetch: Option<UploadLimitsFetch>,
+    temp_files: TempFiles,
 }
 
 impl MatrixService {
-    pub fn new(event_tx: mpsc::Sender<CoreEvent>, data_dir: PathBuf, dispatcher: Arc<ScriptDispatcher>) -> Self {
+    pub fn new(
+        event_tx: mpsc::Sender<CoreEvent>,
+        data_dir: PathBuf,
+        dispatcher: Arc<ScriptDispatcher>,
+        temp_files: TempFiles,
+    ) -> Self {
         let timeline_manager = TimelineManager::new(event_tx.clone(), dispatcher.clone());
         Self {
             session: MatrixSession::None,
@@ -164,7 +221,50 @@ impl MatrixService {
             event_tx,
             data_dir,
             dispatcher,
+            limits_fetch: None,
+            temp_files,
         }
+    }
+
+    /// The Etch caps until the homeserver's own limit has been fetched.
+    fn upload_limits(&self) -> UploadLimits {
+        self.limits_fetch.as_ref()
+            .and_then(|fetch| fetch.limits.get().copied())
+            .unwrap_or(UploadLimits::ETCH_CAPS)
+    }
+
+    /// A failed send disables its room's queue, so sending there again retries what it held back, in order.
+    fn resume_send_queue(client: &Client, room_id: &str) {
+        let Some(room) = RoomId::parse(room_id).ok().and_then(|id| client.get_room(&id)) else { return };
+        let queue = room.send_queue();
+        if !queue.is_enabled() {
+            log::info!("Resuming the send queue for {room_id}");
+            queue.set_enabled(true);
+        }
+    }
+
+    async fn send_attachment(&self, request: AttachmentSend) {
+        let AttachmentSend { room_id, path, compress, media_info } = request;
+        let outcome = match self.serving_client("SendAttachment") {
+            Some(client) => match attachment::prepare(&path, compress, self.upload_limits(), media_info, &self.temp_files).await {
+                Ok(prepared) => {
+                    Self::resume_send_queue(&client, &room_id);
+                    attachment::send(&client, &room_id, prepared).await
+                }
+                Err(reason) => Err(reason),
+            },
+            None => {
+                attachment::discard(&self.temp_files, &path).await;
+                Err(attachment::NOT_CONNECTED.into())
+            }
+        };
+        let Err(reason) = outcome else { return };
+
+        let file_name = attachment::display_name(&path);
+        log::warn!("Did not send {file_name} to {room_id}: {reason}");
+        let _ = self.event_tx.send(CoreEvent::Matrix(MatrixEvent::AttachmentFailed {
+            room_id, file_name, reason,
+        })).await;
     }
 
     async fn find_existing_dm(client: &Client, target: &UserId) -> Option<String> {
@@ -313,6 +413,8 @@ impl MatrixBackend for MatrixService {
             Ok(client) => client,
             Err(outcome) => return outcome,
         };
+        // Subscribed first because a send left over from an earlier run resumes as soon as its room's timeline opens.
+        let send_errors = client.send_queue().subscribe_errors();
 
         let homeserver = client.homeserver().to_string();
         let homeserver = homeserver.trim_end_matches('/').to_string();
@@ -423,7 +525,10 @@ impl MatrixBackend for MatrixService {
             }
         }));
 
-        self.session.go_live(sync, pagination);
+        let send_errors = AbortOnDrop::new(tokio::spawn(report_send_errors(send_errors, self.event_tx.clone())));
+
+        self.session.go_live(sync, pagination, send_errors);
+        self.limits_fetch = Some(UploadLimitsFetch::spawn(client, internal_tx, generation));
 
         ConnectOutcome::Connected(voice_server)
     }
@@ -433,22 +538,19 @@ impl MatrixBackend for MatrixService {
             MatrixCommand::SendMessage(msg) => {
                 log::debug!("[MATRIX] TX -> {}: {}", msg.room_id, msg.text);
                 let Some(client) = self.serving_client("SendMessage") else { return };
-                if msg.attachment_path.is_some() {
-                    // Attachments still go through Room::send_attachment
-                    matrix::send_message(msg.text, msg.html_body, msg.room_id, msg.attachment_path, &client).await;
-                } else {
-                    // Text messages go through Timeline::send for immediate local echo
-                    use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
-                    let content: matrix_sdk::ruma::events::AnyMessageLikeEventContent = match &msg.html_body {
-                        Some(html) => RoomMessageEventContent::text_html(&msg.text, html).into(),
-                        None => RoomMessageEventContent::text_plain(&msg.text).into(),
-                    };
-                    if !self.timeline_manager.send_message(&msg.room_id, content).await {
-                        log::warn!("No timeline for room {}, falling back to Room::send", msg.room_id);
-                        matrix::send_message(msg.text, msg.html_body, msg.room_id, None, &client).await;
-                    }
+                Self::resume_send_queue(&client, &msg.room_id);
+                // Text messages go through Timeline::send for immediate local echo
+                use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
+                let content: matrix_sdk::ruma::events::AnyMessageLikeEventContent = match &msg.html_body {
+                    Some(html) => RoomMessageEventContent::text_html(&msg.text, html).into(),
+                    None => RoomMessageEventContent::text_plain(&msg.text).into(),
+                };
+                if !self.timeline_manager.send_message(&msg.room_id, content).await {
+                    log::warn!("No timeline for room {}, falling back to Room::send", msg.room_id);
+                    matrix::send_message(msg.text, msg.html_body, msg.room_id, &client).await;
                 }
             }
+            MatrixCommand::SendAttachment(request) => self.send_attachment(request).await,
             MatrixCommand::EditMessage { room_id, event_id, text, html_body } => {
                 if self.serving_client("EditMessage").is_none() { return }
                 self.timeline_manager.edit_message(&room_id, &event_id, &text, html_body.as_deref()).await;
@@ -690,12 +792,15 @@ impl MatrixBackend for MatrixService {
 
     async fn reset(&mut self) {
         self.session.stand_down();
+        self.limits_fetch = None;
         self.timeline_manager.clear();
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
     use super::*;
     use crate::commands::ChatMessageSend;
     use crate::matrix::test_server::CannedHomeserver;
@@ -726,7 +831,7 @@ mod tests {
     fn service(dir: &std::path::Path) -> MatrixService {
         let (tx, _rx) = mpsc::channel(1);
         let dispatcher = Arc::new(ScriptDispatcher::empty());
-        MatrixService::new(tx, dir.to_path_buf(), dispatcher)
+        MatrixService::new(tx, dir.to_path_buf(), dispatcher, TempFiles::new(dir.to_path_buf()))
     }
 
     fn parked_task() -> (AbortOnDrop, tokio::task::AbortHandle) {
@@ -745,7 +850,10 @@ mod tests {
         let key = SessionKey::of(&client, &test_form());
         let (sync, sync_abort) = parked_task();
         let (pagination, pagination_abort) = parked_task();
-        service.session = MatrixSession::Live { key, client, _sync: sync, _pagination: pagination };
+        let (send_errors, _) = parked_task();
+        service.session = MatrixSession::Live {
+            key, client, _sync: sync, _pagination: pagination, _send_errors: send_errors,
+        };
         (service, sync_abort, pagination_abort)
     }
 
@@ -882,8 +990,10 @@ mod tests {
         let client = server.client_for("@alice:example.com").await;
         let (sync, _sync_abort) = parked_task();
         let (pagination, _pagination_abort) = parked_task();
+        let (send_errors, _) = parked_task();
         service.session = MatrixSession::Live {
-            key: SessionKey::of(&client, &test_form()), client, _sync: sync, _pagination: pagination,
+            key: SessionKey::of(&client, &test_form()), client,
+            _sync: sync, _pagination: pagination, _send_errors: send_errors,
         };
 
         service.handle_command(MatrixCommand::SetDisplayName("while live".into())).await;
@@ -915,7 +1025,6 @@ mod tests {
                 room_id: room_id.into(),
                 text: "hello".into(),
                 html_body: None,
-                attachment_path: None,
             })).await;
         }
 
@@ -944,5 +1053,294 @@ mod tests {
 
         assert!(sync_abort.is_finished(), "the previous sync task should be aborted");
         assert!(pagination_abort.is_finished(), "the previous pagination task should be aborted");
+    }
+
+    fn send_attachment_command(room_id: &str, path: &std::path::Path) -> MatrixCommand {
+        MatrixCommand::SendAttachment(AttachmentSend {
+            room_id: room_id.into(),
+            path: path.to_path_buf(),
+            compress: false,
+            media_info: None,
+        })
+    }
+
+    fn temp_upload(service: &MatrixService, name: &str, len: usize) -> std::path::PathBuf {
+        service.temp_files.create(name, &vec![0u8; len]).unwrap()
+    }
+
+    fn attachment_failure(event_rx: &mut mpsc::Receiver<CoreEvent>) -> (String, String, String) {
+        loop {
+            match event_rx.try_recv() {
+                Ok(CoreEvent::Matrix(MatrixEvent::AttachmentFailed { room_id, file_name, reason })) => {
+                    return (room_id, file_name, reason);
+                }
+                Ok(_) => continue,
+                Err(e) => panic!("no AttachmentFailed was emitted: {e:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn an_attachment_over_the_limit_is_reported_and_its_temp_directory_removed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut service, _sync_abort, _pagination_abort) = connected_service(tmp.path()).await;
+        let (event_tx, mut event_rx) = mpsc::channel(16);
+        service.event_tx = event_tx;
+        let path = temp_upload(&service, "clip.mp4", 3_565_158);
+
+        service.handle_command(send_attachment_command("!a:b", &path)).await;
+
+        assert_eq!(
+            attachment_failure(&mut event_rx),
+            ("!a:b".into(), "clip.mp4".into(), "it is 3.4 MB and the limit for this kind of file is 2 MB".into()),
+        );
+        assert!(!path.parent().unwrap().exists(), "the temp directory should be removed");
+    }
+
+    #[tokio::test]
+    async fn an_image_exactly_at_its_limit_gets_past_the_size_check() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut service, _sync_abort, _pagination_abort) = connected_service(tmp.path()).await;
+        let (event_tx, mut event_rx) = mpsc::channel(16);
+        service.event_tx = event_tx;
+        let path = temp_upload(&service, "photo.png", 5_242_880);
+
+        service.handle_command(send_attachment_command("!unknown:example.com", &path)).await;
+
+        let (_, file_name, reason) = attachment_failure(&mut event_rx);
+        assert_eq!((file_name.as_str(), reason.as_str()), ("photo.png", "the room could not be found"));
+        assert!(!path.parent().unwrap().exists(), "the temp directory should be removed");
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_attachment_is_reported() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut service, _sync_abort, _pagination_abort) = connected_service(tmp.path()).await;
+        let (event_tx, mut event_rx) = mpsc::channel(16);
+        service.event_tx = event_tx;
+
+        service.handle_command(send_attachment_command("!a:b", &tmp.path().join("missing.pdf"))).await;
+
+        let (_, file_name, reason) = attachment_failure(&mut event_rx);
+        assert_eq!((file_name.as_str(), reason.as_str()), ("missing.pdf", "the file could not be read"));
+    }
+
+    #[tokio::test]
+    async fn an_attachment_is_refused_and_cleaned_up_while_the_session_is_not_live() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut service, _sync_abort, _pagination_abort) = connected_service(tmp.path()).await;
+        let (event_tx, mut event_rx) = mpsc::channel(16);
+        service.event_tx = event_tx;
+        service.reset().await;
+        let path = temp_upload(&service, "photo.png", 10);
+
+        service.handle_command(send_attachment_command("!a:b", &path)).await;
+
+        let (_, _, reason) = attachment_failure(&mut event_rx);
+        assert_eq!(reason, "not connected to the server");
+        assert!(!path.parent().unwrap().exists(), "the temp directory should be removed");
+    }
+
+    #[tokio::test]
+    async fn an_attachment_the_send_queue_refuses_is_reported_and_its_temp_file_removed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let server = CannedHomeserver::start(
+            "200 OK", r#"{"next_batch":"s1","rooms":{"leave":{"!left:example.com":{}}}}"#,
+        ).await;
+        let client = server.client_for("@alice:example.com").await;
+        client.sync_once(SyncSettings::default().timeout(Duration::ZERO)).await
+            .expect("the canned sync should make the room known");
+        let mut service = service(tmp.path());
+        let (event_tx, mut event_rx) = mpsc::channel(16);
+        service.event_tx = event_tx;
+        let (sync, _sync_abort) = parked_task();
+        let (pagination, _pagination_abort) = parked_task();
+        let (send_errors, _) = parked_task();
+        service.session = MatrixSession::Live {
+            key: SessionKey::of(&client, &test_form()), client,
+            _sync: sync, _pagination: pagination, _send_errors: send_errors,
+        };
+        let path = temp_upload(&service, "photo.png", 10);
+
+        service.handle_command(send_attachment_command("!left:example.com", &path)).await;
+
+        let (room_id, _, reason) = attachment_failure(&mut event_rx);
+        assert_eq!((room_id.as_str(), reason.as_str()), ("!left:example.com", "you are not in this room"));
+        assert!(!path.parent().unwrap().exists(), "the temp directory should be removed");
+    }
+
+    /// The room of the next `SendFailed`, or `None` if none arrives in time.
+    async fn send_failure(event_rx: &mut mpsc::Receiver<CoreEvent>) -> Option<String> {
+        send_failure_and_reason(event_rx).await.map(|(room_id, _)| room_id)
+    }
+
+    async fn send_failure_and_reason(event_rx: &mut mpsc::Receiver<CoreEvent>) -> Option<(String, String)> {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(CoreEvent::Matrix(MatrixEvent::SendFailed { room_id, reason })) = event_rx.recv().await {
+                    return (room_id, reason);
+                }
+            }
+        }).await.ok()
+    }
+
+    #[tokio::test]
+    async fn a_send_that_fails_after_queuing_is_reported_and_the_next_send_to_the_room_is_tried() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Every request gets this sync body, so every send the queue attempts in the room fails.
+        let server = CannedHomeserver::start(
+            "200 OK", r#"{"next_batch":"s1","rooms":{"join":{"!joined:example.com":{}}}}"#,
+        ).await;
+        let form = ServerConnectionForm { homeserver_url: Some(server.url.clone()), ..test_form() };
+        let mut service = service(tmp.path());
+        let (event_tx, mut event_rx) = mpsc::channel(64);
+        service.event_tx = event_tx;
+        let (internal_tx, _internal_rx) = mpsc::channel(64);
+        let client = server.client_for("@alice:example.com").await;
+        service.session.install(SessionKey::of(&client, &form), client);
+        let outcome = service.connect(form, internal_tx, 1).await;
+        assert!(matches!(outcome, ConnectOutcome::Connected(_)), "the canned server should accept the connect");
+
+        let path = temp_upload(&service, "photo.png", 10);
+        service.handle_command(send_attachment_command("!joined:example.com", &path)).await;
+        assert_eq!(
+            send_failure(&mut event_rx).await.as_deref(), Some("!joined:example.com"),
+            "the failed upload should be reported",
+        );
+        let room_id = RoomId::parse("!joined:example.com").unwrap();
+        let room = service.session.live_client().and_then(|client| client.get_room(&room_id)).unwrap();
+        assert!(!room.send_queue().is_enabled(), "the failure should have disabled the room's queue");
+
+        service.handle_command(MatrixCommand::SendMessage(ChatMessageSend {
+            room_id: "!joined:example.com".into(),
+            text: "hello".into(),
+            html_body: None,
+        })).await;
+        assert_eq!(
+            send_failure(&mut event_rx).await.as_deref(), Some("!joined:example.com"),
+            "the next message should have been tried, not held in the disabled queue",
+        );
+        assert!(!room.send_queue().is_enabled(), "that failure should have disabled the queue again");
+
+        let path = temp_upload(&service, "photo.png", 10);
+        service.handle_command(send_attachment_command("!joined:example.com", &path)).await;
+        assert_eq!(
+            send_failure(&mut event_rx).await.as_deref(), Some("!joined:example.com"),
+            "the next attachment should have been tried too",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_send_the_server_was_too_busy_to_take_is_held_and_goes_out_first_with_the_next_send() {
+        // One body that answers a sync, the media config, an upload and an event send alike.
+        const SUCCESS: &str = r#"{"next_batch":"s1","rooms":{"join":{"!joined:example.com":{}}},"m.upload.size":52428800,"content_uri":"mxc://example.com/uploaded","event_id":"$sent"}"#;
+        let tmp = tempfile::tempdir().unwrap();
+        let unavailable = Arc::new(AtomicBool::new(false));
+        let server = CannedHomeserver::answering({
+            let unavailable = unavailable.clone();
+            move |request| {
+                if unavailable.load(Ordering::SeqCst) {
+                    ("503 Service Unavailable", "{}")
+                } else if request.contains("/state/m.room.encryption") {
+                    ("404 Not Found", r#"{"errcode":"M_NOT_FOUND","error":"Event not found"}"#)
+                } else {
+                    ("200 OK", SUCCESS)
+                }
+            }
+        }).await;
+        let form = ServerConnectionForm { homeserver_url: Some(server.url.clone()), ..test_form() };
+        let mut service = service(tmp.path());
+        let (event_tx, mut event_rx) = mpsc::channel(64);
+        service.event_tx = event_tx;
+        let (internal_tx, mut internal_rx) = mpsc::channel(64);
+        let client = server.client_for("@alice:example.com").await;
+        service.session.install(SessionKey::of(&client, &form), client);
+        let outcome = service.connect(form, internal_tx, 1).await;
+        assert!(matches!(outcome, ConnectOutcome::Connected(_)), "the canned server should accept the connect");
+        // Once the limits are known the next request to meet the outage is the upload itself.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !matches!(
+                internal_rx.recv().await,
+                Some(InternalEvent::Matrix(InternalMatrixEvent::UploadLimits { .. })),
+            ) {}
+        }).await.expect("UploadLimits should follow a successful connect");
+
+        unavailable.store(true, Ordering::SeqCst);
+        let path = temp_upload(&service, "photo.png", 10);
+        service.handle_command(send_attachment_command("!joined:example.com", &path)).await;
+        assert_eq!(
+            send_failure_and_reason(&mut event_rx).await,
+            Some((
+                "!joined:example.com".into(),
+                "the server could not be reached; it will be retried when you next send to this room".into(),
+            )),
+        );
+
+        unavailable.store(false, Ordering::SeqCst);
+        let already_logged = server.requests().len();
+        service.handle_command(MatrixCommand::SendMessage(ChatMessageSend {
+            room_id: "!joined:example.com".into(),
+            text: "hello".into(),
+            html_body: None,
+        })).await;
+
+        let delivered = || -> Vec<&'static str> {
+            server.requests()[already_logged..].iter().filter_map(|request| {
+                if request.contains("/media/v3/upload") {
+                    Some("upload")
+                } else if request.contains("/send/m.room.message/") {
+                    Some("event")
+                } else {
+                    None
+                }
+            }).collect()
+        };
+        let _ = tokio::time::timeout(Duration::from_secs(5), async {
+            while delivered().len() < 3 {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }).await;
+        assert_eq!(
+            delivered(), ["upload", "event", "event"],
+            "the held attachment should go out first, then the message that resumed the queue",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_connect_publishes_the_effective_upload_limits_and_enforces_them() {
+        let tmp = tempfile::tempdir().unwrap();
+        let server = CannedHomeserver::start("200 OK", r#"{"next_batch":"s1","m.upload.size":3145728}"#).await;
+        let form = ServerConnectionForm { homeserver_url: Some(server.url.clone()), ..test_form() };
+        let mut service = service(tmp.path());
+        let (event_tx, mut event_rx) = mpsc::channel(64);
+        service.event_tx = event_tx;
+        let (internal_tx, mut internal_rx) = mpsc::channel(64);
+        let client = server.client_for("@alice:example.com").await;
+        service.session.install(SessionKey::of(&client, &form), client);
+
+        let outcome = service.connect(form, internal_tx, 7).await;
+        assert!(matches!(outcome, ConnectOutcome::Connected(_)), "the canned server should accept the connect");
+
+        let limits = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(InternalEvent::Matrix(InternalMatrixEvent::UploadLimits {
+                    generation, image_bytes, other_bytes,
+                })) = internal_rx.recv().await {
+                    return (generation, image_bytes, other_bytes);
+                }
+            }
+        }).await.expect("UploadLimits should follow a successful connect");
+        assert_eq!(
+            limits, (7, 3_145_728, 2_097_152),
+            "the limits should carry the connect's generation, and the server's limit only lowers a cap",
+        );
+
+        let path = temp_upload(&service, "photo.png", 3_670_016);
+        service.handle_command(send_attachment_command("!a:b", &path)).await;
+        let (_, _, reason) = attachment_failure(&mut event_rx);
+        assert_eq!(reason, "it could not be compressed to fit the 3 MB limit");
+
+        service.reset().await;
+        assert_eq!(service.upload_limits(), UploadLimits::ETCH_CAPS, "a reset must not carry the old server's limits");
     }
 }

@@ -18,6 +18,9 @@ export type MatrixEvent =
     | { type: 'CurrentUser'; data: { username: string; matrix_id: string; display_name: string | null; avatar_url: string | null } }
     | { type: 'PasswordRequest' }
     | { type: 'PaginationComplete'; data: [string, boolean] }
+    | { type: 'UploadLimits'; data: { image_bytes: number; other_bytes: number } }
+    | { type: 'AttachmentFailed'; data: { room_id: string; file_name: string; reason: string } }
+    | { type: 'SendFailed'; data: { room_id: string; reason: string } }
     | { type: 'ConnectionState'; data: { type: 'Disconnected' } | { type: 'Connecting' } | { type: 'Connected' } | { type: 'Failed'; reason: string; retries: number; retry_in_secs: number } };
 
 export type MumbleEvent =
@@ -48,8 +51,11 @@ export type CoreEvent =
 
 // --- Command envelope types (Frontend → Rust) ---
 
+export type OutgoingMediaInfo = { width: number | null; height: number | null; duration_ms: number | null };
+
 export type MatrixCommand =
-    | { type: 'SendMessage'; data: { room_id: string; text: string; html_body: string | null; attachment_path: string | null } }
+    | { type: 'SendMessage'; data: { room_id: string; text: string; html_body: string | null } }
+    | { type: 'SendAttachment'; data: { room_id: string; path: string; compress: boolean; media_info: OutgoingMediaInfo | null } }
     | { type: 'EditMessage'; data: { room_id: string; event_id: string; text: string; html_body: string | null } }
     | { type: 'RedactMessage'; data: { room_id: string; event_id: string } }
     | { type: 'ToggleReaction'; data: { room_id: string; event_id: string; key: string } }

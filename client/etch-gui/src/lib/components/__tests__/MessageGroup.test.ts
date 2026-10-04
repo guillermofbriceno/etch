@@ -250,3 +250,34 @@ describe('MessageGroup compact mode', () => {
         expect(fallback.style.fontSize).toBe('10px');
     });
 });
+
+describe('MessageGroup media', () => {
+    function mediaMsg(body: string, mimetype: string, extra: Partial<NonNullable<ChatMessage['media']>> = {}) {
+        return makeMsg({
+            body,
+            media: { mxc_url: 'mxc://example.org/abc123', mimetype, size: 0, width: 0, height: 0, duration: 0, ...extra },
+        });
+    }
+
+    it('hands message media to the renderer with its mimetype, size and dimensions, and leaves the avatar url alone', () => {
+        const photo = render(MessageGroup, {
+            props: {
+                msg: mediaMsg('photo.png', 'image/png', { width: 800, height: 600 }),
+                sender: { ...sender, avatar_url: 'mxc://example.org/avatar' },
+                continuation: false,
+                roomId: '!room:test',
+            },
+        }).container;
+        expect(photo.querySelector('.avatar img')?.getAttribute('src')).toBe('etch-media://example.org/avatar');
+        const img = photo.querySelector('.image-btn img') as HTMLElement;
+        expect(img.getAttribute('src')).toBe('etch-media://example.org/abc123');
+        expect(img.style.width).toBe('400px');
+
+        // Only the size keeps a long video from being fetched whole for inline playback.
+        const video = render(MessageGroup, {
+            props: { msg: mediaMsg('long.mp4', 'video/mp4', { size: 21 * 1024 * 1024 }), sender, continuation: false, roomId: '!room:test' },
+        }).container;
+        expect(video.querySelector('.file-download')).toBeInTheDocument();
+        expect(video.querySelector('video')).not.toBeInTheDocument();
+    });
+});

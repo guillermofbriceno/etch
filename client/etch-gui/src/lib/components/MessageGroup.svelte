@@ -185,6 +185,9 @@
                     src={mediaSrc}
                     mimetype={msg.media.mimetype}
                     body={msg.body}
+                    size={msg.media.size}
+                    width={msg.media.width}
+                    height={msg.media.height}
                 />
             {/if}
         {/if}

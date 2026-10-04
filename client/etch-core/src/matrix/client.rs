@@ -15,37 +15,10 @@ use crate::commands::ServerConnectionForm;
 use crate::matrix;
 use crate::models::{RoomInfo, RoomType};
 use std::path::{Path, PathBuf};
-use matrix_sdk::attachment::AttachmentConfig;
 // TODO: enable once keyring backend is configured
 // use keyring::Entry;
 // use rand::RngExt;
 // use rand::distr::Alphanumeric;
-
-/// Guess the MIME type for a file, correcting known misidentifications.
-///
-/// `mime_guess` maps several source-code extensions to media types (e.g. `.ts`
-/// becomes `video/mp2t`). This function falls back to `application/octet-stream`
-/// for any extension that is obviously not a real video/audio file.
-fn sanitize_mime(path: &Path) -> mime_guess::mime::Mime {
-    use mime_guess::mime;
-
-    let guess = mime_guess::from_path(path).first_or_octet_stream();
-
-    // If mime_guess says it's video or audio, verify via a small allowlist of
-    // extensions that are genuinely media files. Anything else (e.g. .ts, .m4)
-    // gets demoted to octet-stream so the frontend renders it as a file download.
-    let is_misidentified = match (guess.type_(), guess.subtype().as_str()) {
-        (mime::VIDEO, sub) => !matches!(sub, "mp4" | "webm" | "ogg" | "quicktime" | "x-matroska" | "x-msvideo" | "mpeg"),
-        (mime::AUDIO, sub) => !matches!(sub, "mpeg" | "ogg" | "wav" | "webm" | "aac" | "flac" | "mp4" | "x-flac"),
-        _ => false,
-    };
-
-    if is_misidentified {
-        mime::APPLICATION_OCTET_STREAM
-    } else {
-        guess
-    }
-}
 
 pub enum ConnectionResult {
     Ok(Client),
@@ -264,7 +237,7 @@ fn register_event_handlers(client: &Client, tx: mpsc::Sender<InternalEvent>, eve
     );
 }
 
-pub async fn send_message(text: String, html_body: Option<String>, room_id_str: String, attachment_path: Option<String>, client: &Client) {
+pub async fn send_message(text: String, html_body: Option<String>, room_id_str: String, client: &Client) {
     let Ok(room_id) = RoomId::parse(&room_id_str) else {
         log::warn!("Not sending a message to an invalid room ID: {room_id_str}");
         return;
@@ -274,38 +247,11 @@ pub async fn send_message(text: String, html_body: Option<String>, room_id_str: 
         return;
     };
 
-    match attachment_path {
-        Some(path) => {
-            let path = Path::new(&path);
-            let data = match std::fs::read(path) {
-                Ok(bytes) => bytes,
-                Err(e) => {
-                    log::error!("Failed to read attachment file: {:?}", e);
-                    return;
-                }
-            };
-            let filename = path.file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("attachment");
-            let content_type = sanitize_mime(path);
-
-            // Clean up temp files from clipboard paste now that we've read the data
-            if filename.starts_with("etch-paste-") {
-                let _ = std::fs::remove_file(path);
-            }
-
-            if let Err(e) = room.send_attachment(filename, &content_type, data, AttachmentConfig::new()).await {
-                log::error!("Failed to send attachment: {:?}", e);
-            }
-        }
-        None => {
-            let content = match html_body {
-                Some(html) => RoomMessageEventContent::text_html(text, html),
-                None => RoomMessageEventContent::text_plain(text),
-            };
-            if let Err(e) = room.send(content).await {
-                log::error!("Failed to send message: {:?}", e);
-            }
-        }
+    let content = match html_body {
+        Some(html) => RoomMessageEventContent::text_html(text, html),
+        None => RoomMessageEventContent::text_plain(text),
+    };
+    if let Err(e) = room.send(content).await {
+        log::error!("Failed to send message: {:?}", e);
     }
 }

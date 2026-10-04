@@ -5,6 +5,7 @@ import type { CoreEvent } from '$lib/ipc';
 import { handleMatrixEvent as messagesHandleMatrix } from './messages';
 import { handleMatrixEvent as channelsHandleMatrix } from './channels';
 import { handleMatrixEvent as serversHandleMatrix } from './servers';
+import { handleMatrixEvent as uploadsHandleMatrix } from './uploads';
 import { handleMatrixEvent as userHandleMatrix, handleSystemEvent as userHandleSystem } from './user';
 import { handleSystemEvent as serversHandleSystem } from './servers';
 import { handleSystemEvent as errorsHandleSystem } from './errors';
@@ -33,6 +34,7 @@ export function initEventRouter(): void {
                 channelsHandleMatrix(ce.data);
                 serversHandleMatrix(ce.data);
                 userHandleMatrix(ce.data);
+                uploadsHandleMatrix(ce.data);
                 break;
             case 'Mumble':
                 handleMumbleEvent(ce.data);

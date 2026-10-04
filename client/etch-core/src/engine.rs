@@ -2,7 +2,7 @@ use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration, Instant, Sleep};
 use crate::actor::{LaunchRequest, MatrixHandle, MatrixRequest, VoiceHandle, VoiceRequest};
 use crate::connection::MatrixConnection;
-use crate::events::{CoreEvent, InternalEvent, InternalMatrixEvent, InternalMumbleEvent, LaunchOutcome, MumbleEvent, SyncEnd, SystemEvent};
+use crate::events::{CoreEvent, InternalEvent, InternalMatrixEvent, InternalMumbleEvent, LaunchOutcome, MatrixEvent, MumbleEvent, SyncEnd, SystemEvent};
 use crate::commands::{CoreCommand, MediaRequest, MumbleCommand, ServerConnectionForm, SystemCommand};
 use crate::models::{ConnectOutcome, ConnectionState, VoiceServerConfig};
 use crate::settings::{Settings, SettingsStore};
@@ -376,6 +376,16 @@ impl CoreEngine {
                     }
                     InternalMatrixEvent::ConnectFinished { generation, outcome } => {
                         self.finish_connect(generation, outcome, retry_timer).await;
+                    }
+                    InternalMatrixEvent::UploadLimits { generation, image_bytes, other_bytes } => {
+                        if generation == self.connect_generation {
+                            let _ = self.event_tx.send(CoreEvent::Matrix(MatrixEvent::UploadLimits {
+                                image_bytes,
+                                other_bytes,
+                            })).await;
+                        } else {
+                            log::debug!("Discarding upload limits from superseded connect #{generation}");
+                        }
                     }
                     InternalMatrixEvent::VoiceUserResolved {
                         session_id, name, volume_db, display_name, avatar_url,
@@ -2195,6 +2205,49 @@ mod tests {
             "only the connect's own failure may count toward the backoff, got Connecting \
              then {states:?}",
         );
+    }
+
+    fn upload_limit_events(events: &[CoreEvent]) -> Vec<(u64, u64)> {
+        events.iter().filter_map(|e| match e {
+            CoreEvent::Matrix(MatrixEvent::UploadLimits { image_bytes, other_bytes }) => {
+                Some((*image_bytes, *other_bytes))
+            }
+            _ => None,
+        }).collect()
+    }
+
+    #[tokio::test]
+    async fn upload_limits_from_the_replaced_session_do_not_follow_its_server_reset() {
+        let events = replaced_session_report_during_a_connect(
+            ConnectOutcome::Connected(None),
+            InternalMatrixEvent::UploadLimits { generation: 1, image_bytes: 1_048_576, other_bytes: 1_048_576 },
+        ).await;
+
+        assert_eq!(
+            upload_limit_events(&events), vec![],
+            "the old session's limits arrived after the new connect's ServerReset and must be dropped",
+        );
+    }
+
+    #[tokio::test]
+    async fn upload_limits_for_the_current_connect_reach_the_frontend_even_before_it_answers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (events, _) = own_report_before_the_connect_answers(
+            tmp.path(),
+            vec![|generation| InternalMatrixEvent::UploadLimits {
+                generation,
+                image_bytes: 3_145_728,
+                other_bytes: 2_097_152,
+            }],
+            Duration::ZERO,
+        ).await;
+
+        assert_eq!(upload_limit_events(&events), vec![(3_145_728, 2_097_152)]);
+        let reset = events.iter().position(|e| matches!(e, CoreEvent::System(SystemEvent::ServerReset)))
+            .expect("the connect should have reset the frontend");
+        let limits = events.iter().position(|e| matches!(e, CoreEvent::Matrix(MatrixEvent::UploadLimits { .. })))
+            .expect("the limits should have been forwarded");
+        assert!(reset < limits, "the limits must follow the reset they belong after");
     }
 
     async fn own_report_before_the_connect_answers(

@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use serde::Deserialize;
 use crate::models::ServerBookmark;
 
@@ -21,6 +23,7 @@ pub struct MediaRequest {
 #[serde(tag = "type", content = "data")]
 pub enum MatrixCommand {
     SendMessage(ChatMessageSend),
+    SendAttachment(AttachmentSend),
     EditMessage { room_id: String, event_id: String, text: String, html_body: Option<String> },
     RedactMessage { room_id: String, event_id: String },
     ToggleReaction { room_id: String, event_id: String, key: String },
@@ -102,5 +105,24 @@ pub struct ChatMessageSend {
     pub room_id: String,
     pub text: String,
     pub html_body: Option<String>,
-    pub attachment_path: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Deserialize)]
+pub struct AttachmentSend {
+    pub room_id: String,
+    pub path: PathBuf,
+    pub compress: bool,
+    /// Measured by the frontend for video and audio; core reads an image's own size.
+    #[serde(default)]
+    pub media_info: Option<OutgoingMediaInfo>,
+}
+
+#[derive(Debug, PartialEq, Deserialize, Default)]
+pub struct OutgoingMediaInfo {
+    #[serde(default)]
+    pub width: Option<u32>,
+    #[serde(default)]
+    pub height: Option<u32>,
+    #[serde(default)]
+    pub duration_ms: Option<u64>,
 }

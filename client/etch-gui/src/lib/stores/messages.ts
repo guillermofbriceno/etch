@@ -2,6 +2,7 @@ import { writable, derived, get } from 'svelte/store';
 import type { TimelineEntry } from '$lib/types';
 import type { MatrixEvent } from '$lib/ipc';
 import { sendCoreCommand } from '$lib/ipc';
+import { probeMediaInfo, type AttachedFile } from '$lib/attachments';
 import { currentUser } from './user';
 import { playSfx } from './sfx';
 import { appFocused } from './eventRouter';
@@ -73,13 +74,19 @@ export function loadOlder(): void {
     });
 }
 
-export async function sendMessage(room_id: string, text: string, htmlBody: string | null = null, attachmentPath: string | null = null): Promise<void> {
+export async function sendMessage(room_id: string, text: string, htmlBody: string | null = null): Promise<void> {
     await sendCoreCommand({
         type: 'Matrix',
-        data: {
-            type: 'SendMessage',
-            data: { room_id, text, html_body: htmlBody, attachment_path: attachmentPath },
-        },
+        data: { type: 'SendMessage', data: { room_id, text, html_body: htmlBody } },
+    });
+}
+
+/** Core owns the file from here on, including discarding it; only a throw means it never got there. */
+export async function sendAttachment(roomId: string, file: AttachedFile, compress: boolean): Promise<void> {
+    const mediaInfo = await probeMediaInfo(file.path, file.size, file.inspection.mimetype);
+    await sendCoreCommand({
+        type: 'Matrix',
+        data: { type: 'SendAttachment', data: { room_id: roomId, path: file.path, compress, media_info: mediaInfo } },
     });
 }
 

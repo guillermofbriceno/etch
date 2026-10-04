@@ -26,6 +26,7 @@ import { activeOverlay } from '../overlay';
 import { transmissionMode } from '../voiceSettings';
 import { errorLog } from '../errors';
 import { userVolumes } from '../userVolumes';
+import { uploadLimits } from '../uploads';
 import { voiceChannels, voiceUsers, talkingUsers, mumbleStatus, certChangeRequest } from '../voiceState';
 
 // Capture the core_event callback registered by initEventRouter.
@@ -199,6 +200,13 @@ const MATRIX_PROBES: SessionStoreProbe[] = [
             certChangeRequest.set({ host: 'voice.example.org', port: 64738, new_fingerprint: 'aa:bb:cc' });
         },
         expectCleared: () => { expect(get(certChangeRequest)).toBeNull(); },
+    },
+    {
+        name: 'uploadLimits',
+        populate: () => {
+            fireMatrixEvent({ type: 'UploadLimits', data: { image_bytes: 5_242_880, other_bytes: 2_097_152 } });
+        },
+        expectCleared: () => { expect(get(uploadLimits)).toBeNull(); },
     },
     {
         name: 'messageWindows',

@@ -9,9 +9,10 @@ import { errorLog, toastError } from '../errors';
 import { userVolumes } from '../userVolumes';
 import { transmissionMode, vadThreshold, voiceHold, useMumbleSettings, deafenSuppressesNotifs } from '../voiceSettings';
 import { activeOverlay, overlayImageUrl, settingsTab, showRoomIds } from '../overlay';
-import { replyingTo } from '../compose';
+import { replyingTo, editingMessage } from '../compose';
 import { serverBookmarks, selectedBookmarkId, connectingBookmark, passwordRequested, matrixConnecting, mediaBaseUrl } from '../servers';
 import { compactChat } from '../layout';
+import { uploadLimits } from '../uploads';
 
 /**
  * Reset all stores to their initial values.
@@ -58,6 +59,7 @@ export function resetStores(): void {
 
     // Compose
     replyingTo.set(null);
+    editingMessage.set(null);
 
     // Servers
     serverBookmarks.set([]);
@@ -69,4 +71,7 @@ export function resetStores(): void {
 
     // Layout
     compactChat.set(false);
+
+    // Uploads
+    uploadLimits.set(null);
 }

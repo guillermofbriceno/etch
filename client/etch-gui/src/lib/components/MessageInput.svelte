@@ -4,8 +4,19 @@
     import { open } from '@tauri-apps/plugin-dialog';
     import { stat } from '@tauri-apps/plugin-fs';
     import { invoke } from '@tauri-apps/api/core';
-    import { sendMessage, editMessage, activeChannelId, activeChannel, activeWindow, replyingTo, clearReply, editingMessage, clearEditing } from '$lib/stores';
+    import { getCurrentWebview, type DragDropEvent } from '@tauri-apps/api/webview';
+    import type { Event as TauriEvent } from '@tauri-apps/api/event';
+    import { sendMessage, sendAttachment, editMessage, activeChannelId, activeChannel, activeWindow, replyingTo, clearReply, editingMessage, clearEditing, activeOverlay, uploadLimits, showToast } from '$lib/stores';
     import { composeHtml, insertMentionLinks } from '$lib/markdown';
+    import {
+        discardTempFile,
+        fileName,
+        inspectAttachment,
+        writeTempAttachment,
+        type AttachedFile,
+        type Inspection,
+    } from '$lib/attachments';
+    import { formatMB, formatSize } from '$lib/media';
     import Icon from './Icon.svelte';
     import { customScrollbar } from '$lib/scrollbar';
 
@@ -13,16 +24,17 @@
     let showEmojiPicker = false;
     let textareaEl: HTMLTextAreaElement;
     let pickerAnchorEl: HTMLDivElement;
-    let pendingAttachment: { path: string; temp: boolean; size: number } | null = null;
+    let pendingAttachment: AttachedFile | null = null;
     let compressAttachment = true;
     let processingPaste = false;
     let composeLock = false;
+    let dragActive = false;
 
-    const imageExtensions = ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'tiff', 'tif'];
-    function isImage(path: string): boolean {
-        const ext = path.split('.').pop()?.toLowerCase() ?? '';
-        return imageExtensions.includes(ext);
-    }
+    $: verdict = pendingAttachment?.inspection.verdict ?? null;
+    $: mustCompress = verdict?.type === 'MustCompress';
+    $: if (mustCompress) compressAttachment = true;
+    $: showCompress = mustCompress || (verdict?.type === 'Accept' && verdict.compress_offered);
+    $: inputActive = $activeChannelId !== null && $activeOverlay === 'none' && !$editingMessage;
 
     // Tab-completion state
     let tabPrefix = '';
@@ -163,37 +175,110 @@
         textareaEl.style.overflowY = textareaEl.scrollHeight > max ? 'auto' : 'hidden';
     }
 
+    function setPending(next: AttachedFile | null) {
+        const previous = pendingAttachment;
+        pendingAttachment = next;
+        compressAttachment = true;
+        if (previous && previous.path !== next?.path) discardTempFile(previous.path);
+    }
+
+    /** Null, after telling the user why, for a file that cannot be attached. */
+    async function inspect(name: string, size: number): Promise<Inspection | null> {
+        try {
+            const inspection = await inspectAttachment(name, size, get(uploadLimits));
+            if (inspection.verdict.type !== 'Reject') return inspection;
+            showToast(`Couldn't attach ${name}: ${inspection.verdict.reason}`);
+        } catch (e) {
+            showToast(`Couldn't attach ${name}: ${e}`);
+        }
+        return null;
+    }
+
+    // A slower attach that finishes after a newer one must not replace it.
+    let attachSeq = 0;
+    async function attach(path: string, knownSize?: number, knownInspection?: Inspection) {
+        const seq = ++attachSeq;
+        const name = fileName(path);
+        let size = knownSize;
+        if (size === undefined) {
+            try {
+                size = (await stat(path)).size;
+            } catch {
+                if (seq === attachSeq) showToast(`Couldn't attach ${name}: the file could not be read`);
+                return;
+            }
+        }
+        if (seq === attachSeq) {
+            const inspection = knownInspection ?? await inspect(name, size);
+            if (inspection && seq === attachSeq) {
+                setPending({ path, size, inspection });
+                return;
+            }
+        }
+        discardTempFile(path);
+    }
+
+    async function attachPastedFile(file: File) {
+        const name = file.name || 'attachment';
+        const inspection = await inspect(name, file.size);
+        if (!inspection) return;
+        let path: string;
+        try {
+            path = await writeTempAttachment(name, new Uint8Array(await file.arrayBuffer()));
+        } catch {
+            showToast(`Couldn't attach ${name}: the file could not be read`);
+            return;
+        }
+        await attach(path, file.size, inspection);
+    }
+
     async function pickFile() {
         const selected = await open({ multiple: false, directory: false });
-        if (selected) {
-            const meta = await stat(selected as string);
-            pendingAttachment = { path: selected as string, temp: false, size: meta.size };
-        }
+        if (selected) await attach(selected);
     }
 
     function clearAttachment() {
-        pendingAttachment = null;
-    }
-
-    function fileName(path: string): string {
-        return path.split('/').pop() ?? path;
+        setPending(null);
     }
 
     let pasteInFlight = false;
     async function handlePaste(event: ClipboardEvent) {
         if (pasteInFlight) return;
+        // The clipboard's file list is emptied once the event returns.
+        const files = Array.from(event.clipboardData?.files ?? []);
         pasteInFlight = true;
         const spinnerDelay = setTimeout(() => { processingPaste = true; }, 100);
         try {
-            const result = await invoke<[string, number] | null>('paste_clipboard_image');
-            if (result) {
-                const [path, size] = result;
-                pendingAttachment = { path, temp: true, size };
+            // The shell answers null when there is no image, and errors only when the clipboard or its image could not be read.
+            let failure: unknown = null;
+            const bitmap = await invoke<[string, number] | null>('paste_clipboard_image').catch((e) => {
+                failure = e;
+                return null;
+            });
+            if (bitmap) {
+                const [path, size] = bitmap;
+                await attach(path, size);
+            } else if (files.length > 0) {
+                await attachPastedFile(files[0]);
+            } else if (failure !== null) {
+                showToast(`Couldn't paste the image: ${failure}`);
             }
         } finally {
             clearTimeout(spinnerDelay);
             processingPaste = false;
             pasteInFlight = false;
+        }
+    }
+
+    function handleDragDrop(event: TauriEvent<DragDropEvent>) {
+        const drag = event.payload;
+        if (drag.type === 'enter') {
+            dragActive = inputActive && drag.paths.length > 0;
+        } else if (drag.type === 'leave') {
+            dragActive = false;
+        } else if (drag.type === 'drop') {
+            dragActive = false;
+            if (inputActive && drag.paths.length > 0) attach(drag.paths[0]);
         }
     }
 
@@ -203,10 +288,21 @@
         }
     }
 
+    let destroyed = false;
+    let stopDragDrop: (() => void) | null = null;
+
     onMount(() => {
         document.addEventListener('click', handleClickOutside, true);
+        getCurrentWebview().onDragDropEvent(handleDragDrop).then((unlisten) => {
+            if (destroyed) unlisten();
+            else stopDragDrop = unlisten;
+        });
     });
-    onDestroy(() => document.removeEventListener('click', handleClickOutside, true));
+    onDestroy(() => {
+        destroyed = true;
+        document.removeEventListener('click', handleClickOutside, true);
+        stopDragDrop?.();
+    });
 
     const EMOJI_CATEGORIES: { label: string; emojis: string[] }[] = [
         { label: 'Smileys', emojis: [
@@ -278,6 +374,19 @@
         autoResize();
     }
 
+    // Anything typed or attached while the send was in flight wins over the restored draft.
+    function restoreText(text: string, mentions: Map<string, string>) {
+        if (!text.trim() || messageText.trim() || get(editingMessage)) return;
+        messageText = text;
+        for (const [k, v] of mentions) mentionMap.set(k, v);
+        requestAnimationFrame(autoResize);
+    }
+
+    function restoreAttachment(attachment: AttachedFile) {
+        if (pendingAttachment === null) pendingAttachment = attachment;
+        else discardTempFile(attachment.path);
+    }
+
     async function submit() {
         const trimmed = messageText.trim();
         if (!trimmed && !pendingAttachment) return;
@@ -313,9 +422,7 @@
         const shouldCompress = compressAttachment;
         const mentions = new Map(mentionMap);
 
-        // Save state for recovery on failure
         const savedText = messageText;
-        const savedAttachment = pendingAttachment;
         const savedMentions = new Map(mentionMap);
 
         // Optimistic clear
@@ -326,26 +433,24 @@
         clearReply();
         requestAnimationFrame(autoResize);
 
+        let textSent = false;
+        let failing = 'your message';
         try {
             if (body) {
                 const rawHtml = composeHtml(body);
                 const withMentions = insertMentionLinks(rawHtml, mentions);
                 const needsHtml = mentions.size > 0 || withMentions !== `<p>${body}</p>\n`;
-                await sendMessage(roomId, body, needsHtml ? withMentions : null, null);
+                await sendMessage(roomId, body, needsHtml ? withMentions : null);
+                textSent = true;
             }
             if (attachment) {
-                let attachPath = attachment.path;
-                if (shouldCompress && isImage(attachment.path) && attachment.size > 256_000) {
-                    attachPath = await invoke<string>('compress_image', { path: attachment.path });
-                }
-                await sendMessage(roomId, '', null, attachPath);
+                failing = fileName(attachment.path);
+                await sendAttachment(roomId, attachment, shouldCompress);
             }
-        } catch {
-            // Restore draft so the user doesn't lose their message
-            messageText = savedText;
-            pendingAttachment = savedAttachment;
-            for (const [k, v] of savedMentions) mentionMap.set(k, v);
-            requestAnimationFrame(autoResize);
+        } catch (e) {
+            showToast(`Couldn't send ${failing}: ${e}`);
+            if (!textSent) restoreText(savedText, savedMentions);
+            if (attachment) restoreAttachment(attachment);
         }
     }
 
@@ -406,7 +511,7 @@
     }
 </script>
 
-<div class="input-wrapper" class:compose-locked={composeLock}>
+<div class="input-wrapper" class:compose-locked={composeLock} class:drop-target={dragActive && inputActive}>
     {#if $editingMessage}
         <div class="reply-preview editing-preview">
             <div class="reply-info">
@@ -443,11 +548,15 @@
             <div class="attachment-info">
                 <Icon name="file" size={14} class="attachment-icon" />
                 <span class="attachment-name">{fileName(pendingAttachment.path)}</span>
+                <span class="attachment-size">{formatSize(pendingAttachment.size)}</span>
             </div>
             <div class="attachment-actions">
-                {#if isImage(pendingAttachment.path) && pendingAttachment.size > 256_000}
-                    <label class="compress-option">
-                        <input type="checkbox" bind:checked={compressAttachment} />
+                {#if showCompress}
+                    {#if mustCompress}
+                        <span class="compress-note">Must be compressed to fit the {formatMB(pendingAttachment.inspection.limit)} limit</span>
+                    {/if}
+                    <label class="compress-option" class:forced={mustCompress}>
+                        <input type="checkbox" bind:checked={compressAttachment} disabled={mustCompress} />
                         Compress
                     </label>
                 {/if}
@@ -559,6 +668,11 @@
         border-color: var(--accent);
     }
 
+    .input-wrapper.drop-target {
+        border-color: var(--accent);
+        border-style: dashed;
+    }
+
     .reply-preview {
         display: flex;
         align-items: center;
@@ -652,6 +766,21 @@
         height: 14px;
         margin: 0;
         cursor: pointer;
+    }
+
+    .compress-option.forced,
+    .compress-option.forced input[type="checkbox"] { cursor: default; }
+
+    .compress-note {
+        color: var(--text-muted);
+        font-size: 12px;
+        white-space: nowrap;
+    }
+
+    .attachment-size {
+        flex-shrink: 0;
+        color: var(--text-muted);
+        font-size: 12px;
     }
 
     .spinner {
