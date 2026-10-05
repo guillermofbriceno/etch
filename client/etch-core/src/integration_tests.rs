@@ -3,6 +3,7 @@
 //! Run with: cargo test -p etch-core --features integration-tests -- --test-threads=1
 //! Or via the orchestrator: ./tests/integration/run.sh
 
+use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -14,6 +15,7 @@ use crate::commands::{
 };
 use crate::engine::CoreEngine;
 use crate::events::{CoreEvent, MatrixEvent, SystemEvent};
+use crate::matrix::encryption::{self, EncryptionStatus, Secret};
 use crate::matrix::name_colors::{self, Fetched, NameColor, UserNameColor};
 use crate::matrix::service::MatrixService;
 use crate::matrix::timeline::{TimelineEntry, TimelineEntryKind};
@@ -348,6 +350,54 @@ impl TestHarness {
                 out.push(msg.body.clone());
             }
         }
+    }
+
+    /// The status and the connection arrive in either order, so both are waited for at once.
+    /// Returns every status reported on the way.
+    async fn connect_and_expect_status(
+        &mut self,
+        form: ServerConnectionForm,
+        wanted: EncryptionStatus,
+    ) -> Vec<EncryptionStatus> {
+        let (connected, reported) = (Cell::new(false), RefCell::new(Vec::new()));
+        self.send(CoreCommand::System(SystemCommand::ConnectToServer(form))).await;
+        self.expect_event(|e| {
+            match e {
+                CoreEvent::Matrix(MatrixEvent::ConnectionState(ConnectionState::Connected)) => connected.set(true),
+                CoreEvent::Matrix(MatrixEvent::EncryptionStatus(status)) => reported.borrow_mut().push(status.clone()),
+                _ => {}
+            }
+            (connected.get() && reported.borrow().last() == Some(&wanted)).then_some(())
+        }, CONNECT_TIMEOUT).await;
+        reported.into_inner()
+    }
+
+    async fn expect_status(&mut self, wanted: EncryptionStatus) {
+        self.expect_event(|e| match e {
+            CoreEvent::Matrix(MatrixEvent::EncryptionStatus(status)) if *status == wanted => Some(()),
+            _ => None,
+        }, CONNECT_TIMEOUT).await;
+    }
+
+    async fn expect_encryption_failure(&mut self) -> String {
+        self.expect_event(|e| match e {
+            CoreEvent::Matrix(MatrixEvent::EncryptionActionFailed { reason }) => Some(reason.clone()),
+            _ => None,
+        }, CONNECT_TIMEOUT).await
+    }
+
+    /// Creates a recovery key and confirms it as saved, as the dialog does.
+    async fn create_recovery_key(&mut self) -> Secret {
+        self.send(CoreCommand::Matrix(MatrixCommand::CreateRecoveryKey)).await;
+        let key = self.expect_event(|e| match e {
+            CoreEvent::Matrix(MatrixEvent::EncryptionStatus(EncryptionStatus::RecoveryKeyPending { key })) => {
+                Some(key.clone())
+            }
+            _ => None,
+        }, CONNECT_TIMEOUT).await;
+        self.send(CoreCommand::Matrix(MatrixCommand::ConfirmRecoveryKeySaved)).await;
+        self.expect_status(EncryptionStatus::Ready).await;
+        key
     }
 
     /// Drop the command sender and wait for the engine to finish.
@@ -1380,4 +1430,136 @@ async fn logging_in_again_after_the_token_is_revoked_connects_without_adding_a_d
     );
 
     h.shutdown().await;
+}
+
+/// How many message keys the account's backup on the server holds.
+async fn backed_up_keys(client: &matrix_sdk::Client) -> u64 {
+    use matrix_sdk::ruma::api::client::backup::get_latest_backup_info;
+
+    client.send(get_latest_backup_info::v3::Request::new()).await
+        .map(|backup| backup.count.into())
+        .unwrap_or(0)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_device_reads_an_earlier_message_once_it_has_the_recovery_key() {
+    let form = register_fresh_user("recovery").await;
+    let password = form.password.clone().expect("the fresh user's form carries the password");
+
+    let mut first = TestHarness::new();
+    let reported = first.connect_and_expect_status(form.clone(), EncryptionStatus::NeedsRecoverySetup).await;
+    assert!(
+        reported.iter().all(|status| matches!(status, EncryptionStatus::Unknown | EncryptionStatus::NeedsRecoverySetup)),
+        "a first login must not be shown any other prompt on the way to its recovery key, got {reported:?}",
+    );
+    let replaced_key = first.create_recovery_key().await;
+    let key = first.create_recovery_key().await;
+
+    first.send(CoreCommand::Matrix(MatrixCommand::CreateDirectMessage {
+        target_user_id: format!("@{}:{}", bob_connection_form().username, form.hostname),
+    })).await;
+    let room = first.expect_event(|e| match e {
+        CoreEvent::Matrix(MatrixEvent::DmCreated(room)) => Some(room.clone()),
+        _ => None,
+    }, EVENT_TIMEOUT).await;
+    assert!(room.is_encrypted, "the test needs an encrypted room");
+    let body = first.send_unique_message(&room.id, "sent-before-the-new-device").await;
+    let is_the_message = |e: &CoreEvent| {
+        timeline_entries(e).is_some_and(|(room_id, entries)| {
+            room_id == room.id && entries.iter().any(|entry| {
+                matches!(&entry.kind, TimelineEntryKind::Message(msg) if msg.body == body && msg.id.starts_with('$'))
+            })
+        })
+    };
+    first.expect_event(|e| is_the_message(e).then_some(()), EVENT_TIMEOUT).await;
+
+    let observer = logged_in_reader(&form.username, &password).await;
+    timeout(CONNECT_TIMEOUT, async {
+        while backed_up_keys(&observer).await == 0 {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }).await.expect("the first device should back the message's key up");
+    // Gone before the new device exists, so the key can only reach it through the backup.
+    first.shutdown().await;
+
+    let mut second = TestHarness::new();
+    let mut read_without_the_key = Vec::new();
+    let (connected, asked_for_the_key) = (Cell::new(false), Cell::new(false));
+    second.send(CoreCommand::System(SystemCommand::ConnectToServer(form))).await;
+    second.expect_event_collecting(&room.id, &mut read_without_the_key, |e| {
+        match e {
+            CoreEvent::Matrix(MatrixEvent::ConnectionState(ConnectionState::Connected)) => connected.set(true),
+            CoreEvent::Matrix(MatrixEvent::EncryptionStatus(status)) => {
+                asked_for_the_key.set(*status == EncryptionStatus::NeedsRecoveryKey);
+            }
+            _ => {}
+        }
+        (connected.get() && asked_for_the_key.get()).then_some(())
+    }, CONNECT_TIMEOUT).await;
+
+    second.send(CoreCommand::Matrix(MatrixCommand::SubmitRecoveryKey { key: replaced_key })).await;
+    let reason = second.expect_event_collecting(&room.id, &mut read_without_the_key, |e| match e {
+        CoreEvent::Matrix(MatrixEvent::EncryptionActionFailed { reason }) => Some(reason.clone()),
+        _ => None,
+    }, CONNECT_TIMEOUT).await;
+    assert_eq!(reason, encryption::WRONG_KEY, "a key that was since replaced must be refused as wrong");
+    assert!(
+        !read_without_the_key.contains(&body),
+        "the earlier message must not be readable before the right key is entered",
+    );
+
+    second.send(CoreCommand::Matrix(MatrixCommand::SubmitRecoveryKey { key })).await;
+    let (ready, readable) = (Cell::new(false), Cell::new(false));
+    second.expect_event(|e| {
+        if matches!(e, CoreEvent::Matrix(MatrixEvent::EncryptionStatus(EncryptionStatus::Ready))) {
+            ready.set(true);
+        }
+        if is_the_message(e) {
+            readable.set(true);
+        }
+        (ready.get() && readable.get()).then_some(())
+    }, CONNECT_TIMEOUT).await;
+
+    second.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn resetting_encryption_gives_a_device_that_could_not_be_verified_a_new_identity() {
+    let form = register_fresh_user("reset").await;
+    let password = form.password.clone().expect("the fresh user's form carries the password");
+    let owner = matrix_sdk::ruma::UserId::parse(format!("@{}:{}", form.username, form.hostname)).unwrap();
+    let onlooker = logged_in_reader("admin", "admin_password").await;
+
+    let mut first = TestHarness::new();
+    first.connect_and_expect_status(form.clone(), EncryptionStatus::NeedsRecoverySetup).await;
+    first.create_recovery_key().await;
+    let (identity, _) = identity_seen_by(&onlooker, &owner).await;
+
+    // It has the password but not the recovery key, which is what a reset is for.
+    let mut stranded = TestHarness::new();
+    stranded.connect_and_expect_status(form, EncryptionStatus::NeedsRecoveryKey).await;
+
+    stranded.send(CoreCommand::Matrix(MatrixCommand::ResetEncryption {
+        password: "not the password".to_owned().into(),
+    })).await;
+    assert_eq!(stranded.expect_encryption_failure().await, encryption::WRONG_PASSWORD);
+
+    stranded.send(CoreCommand::Matrix(MatrixCommand::ResetEncryption { password: password.into() })).await;
+    stranded.expect_status(EncryptionStatus::NeedsRecoverySetup).await;
+
+    let (identity_after, devices) = identity_seen_by(&onlooker, &owner).await;
+    assert!(identity.is_some() && identity_after.is_some(), "the account should have an identity throughout");
+    assert_ne!(identity_after, identity, "a reset should replace the account's identity");
+    assert_eq!(
+        devices.iter().filter(|(_, signed)| *signed).count(), 1,
+        "only the device that reset should be signed by the new identity, got {devices:?}",
+    );
+
+    let new_key = stranded.create_recovery_key().await;
+    first.expect_status(EncryptionStatus::NeedsRecoveryKey).await;
+    first.send(CoreCommand::Matrix(MatrixCommand::SubmitRecoveryKey { key: new_key })).await;
+    first.expect_status(EncryptionStatus::Ready).await;
+
+    first.shutdown().await;
+    stranded.shutdown().await;
 }

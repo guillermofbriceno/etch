@@ -1,6 +1,7 @@
 pub mod attachment;
 pub(crate) mod compress;
 pub mod client;
+pub mod encryption;
 pub mod name_colors;
 pub(crate) mod retry;
 pub(crate) mod saved_session;

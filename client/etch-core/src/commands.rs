@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use serde::Deserialize;
+use crate::matrix::encryption::Secret;
 use crate::matrix::name_colors::NameColor;
 use crate::models::ServerBookmark;
 
@@ -38,6 +39,11 @@ pub enum MatrixCommand {
     SendReadReceipt { room_id: String, event_id: String },
     PaginateBackwards { room_id: String },
     EnableEncryption { room_id: String },
+    /// The first key when recovery is off, a replacement when it is on.
+    CreateRecoveryKey,
+    ConfirmRecoveryKeySaved,
+    SubmitRecoveryKey { key: Secret },
+    ResetEncryption { password: Secret },
 }
 
 #[derive(Debug, PartialEq, Deserialize)]

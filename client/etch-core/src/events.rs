@@ -1,5 +1,6 @@
 use serde::Serialize;
 use crate::models::{ConnectionState, RoomInfo};
+use crate::matrix::encryption::EncryptionStatus;
 use crate::matrix::name_colors::UserNameColor;
 use crate::matrix::timeline::TimelineEntry;
 
@@ -35,6 +36,9 @@ pub enum MatrixEvent {
     /// Answers to `ResolveNameColors`, and changes nobody asked about.
     NameColors(Vec<UserNameColor>),
     Capabilities { name_color: bool },
+    EncryptionStatus(EncryptionStatus),
+    /// Success has no event of its own; it shows as a change of `EncryptionStatus`.
+    EncryptionActionFailed { reason: String },
 }
 
 #[derive(Debug, Serialize)]

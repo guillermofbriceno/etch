@@ -14,6 +14,7 @@ use crate::events::{CoreEvent, MatrixEvent, InternalEvent, InternalMatrixEvent};
 use crate::matrix::attachment;
 use crate::temp_files::TempFiles;
 use crate::matrix::client::{start_matrix_client, ConnectionResult};
+use crate::matrix::encryption::{self, EncryptionWorker};
 use crate::matrix::name_colors::{self, NameColorResolver, NameColorSender};
 use crate::matrix::retry::credentials_rejected;
 use crate::matrix::saved_session::{self, session_path};
@@ -80,13 +81,14 @@ impl std::fmt::Display for SessionKey {
 /// An `Idle` client may serve reads but nothing that writes.
 enum MatrixSession {
     None,
-    Idle { key: SessionKey, client: Client, name_colors: NameColorResolver },
+    Idle { key: SessionKey, client: Client, name_colors: NameColorResolver, encryption: EncryptionWorker },
     /// Owning its tasks means leaving `Live` aborts them instead of stranding them
     /// against a replaced client.
     Live {
         key: SessionKey,
         client: Client,
         name_colors: NameColorResolver,
+        encryption: EncryptionWorker,
         _sync: AbortOnDrop,
         _pagination: AbortOnDrop,
         _send_errors: AbortOnDrop,
@@ -106,6 +108,13 @@ impl MatrixSession {
         match self {
             Self::None => None,
             Self::Idle { name_colors, .. } | Self::Live { name_colors, .. } => Some(name_colors.sender()),
+        }
+    }
+
+    fn encryption(&self) -> Option<&EncryptionWorker> {
+        match self {
+            Self::None => None,
+            Self::Idle { encryption, .. } | Self::Live { encryption, .. } => Some(encryption),
         }
     }
 
@@ -135,28 +144,31 @@ impl MatrixSession {
     }
 
     fn install(&mut self, key: SessionKey, client: Client, event_tx: mpsc::Sender<CoreEvent>) {
-        let name_colors = NameColorResolver::spawn(client.clone(), event_tx);
-        *self = Self::Idle { key, client, name_colors };
+        let name_colors = NameColorResolver::spawn(client.clone(), event_tx.clone());
+        let encryption = EncryptionWorker::spawn(client.clone(), event_tx);
+        *self = Self::Idle { key, client, name_colors, encryption };
     }
 
     fn go_live(&mut self, sync: AbortOnDrop, pagination: AbortOnDrop, send_errors: AbortOnDrop) {
-        let (key, client, name_colors) = match std::mem::replace(self, Self::None) {
-            Self::Idle { key, client, name_colors }
-            | Self::Live { key, client, name_colors, .. } => (key, client, name_colors),
+        let (key, client, name_colors, encryption) = match std::mem::replace(self, Self::None) {
+            Self::Idle { key, client, name_colors, encryption }
+            | Self::Live { key, client, name_colors, encryption, .. } => (key, client, name_colors, encryption),
             Self::None => {
                 log::error!("No Matrix session to bring live; stopping the tasks just started");
                 return;
             }
         };
         *self = Self::Live {
-            key, client, name_colors,
+            key, client, name_colors, encryption,
             _sync: sync, _pagination: pagination, _send_errors: send_errors,
         };
     }
 
     fn stand_down(&mut self) {
         match std::mem::replace(self, Self::None) {
-            Self::Live { key, client, name_colors, .. } => *self = Self::Idle { key, client, name_colors },
+            Self::Live { key, client, name_colors, encryption, .. } => {
+                *self = Self::Idle { key, client, name_colors, encryption };
+            }
             other => *self = other,
         }
     }
@@ -390,6 +402,21 @@ impl MatrixService {
         self.timeline_manager.subscribe_to_room(room, name_colors).await;
     }
 
+    /// Hands the request to the worker without waiting for its round trips, and answers
+    /// one the worker will never see, because the frontend is waiting on an outcome.
+    async fn ask_encryption(&self, command: &str, request: encryption::Request) {
+        let reason = if self.serving_client(command).is_none() {
+            encryption::NOT_CONNECTED
+        } else if self.session.encryption().is_some_and(|worker| worker.ask(request)) {
+            return;
+        } else {
+            encryption::BUSY
+        };
+        let _ = self.event_tx.send(
+            CoreEvent::Matrix(MatrixEvent::EncryptionActionFailed { reason: reason.into() })
+        ).await;
+    }
+
     fn serving_client(&self, command: &str) -> Option<Client> {
         match self.session.live_client() {
             Some(client) => Some(client.clone()),
@@ -444,6 +471,11 @@ impl MatrixBackend for MatrixService {
         let _ = self.event_tx.send(
             CoreEvent::Matrix(MatrixEvent::Capabilities { name_color })
         ).await;
+
+        // The frontend dropped the status with the rest of the session's state, and the worker only speaks on a change.
+        if let Some(worker) = self.session.encryption() {
+            worker.ask(encryption::Request::Announce);
+        }
 
         // Enable the event cache BEFORE syncing so events from
         // sync_once are captured even without active Timeline subscriptions.
@@ -647,6 +679,18 @@ impl MatrixBackend for MatrixService {
                         log::error!("Failed to send read receipt: {:?}", e);
                     }
                 });
+            }
+            MatrixCommand::CreateRecoveryKey => {
+                self.ask_encryption("CreateRecoveryKey", encryption::Request::CreateRecoveryKey).await;
+            }
+            MatrixCommand::ConfirmRecoveryKeySaved => {
+                self.ask_encryption("ConfirmRecoveryKeySaved", encryption::Request::ConfirmRecoveryKeySaved).await;
+            }
+            MatrixCommand::SubmitRecoveryKey { key } => {
+                self.ask_encryption("SubmitRecoveryKey", encryption::Request::SubmitRecoveryKey(key)).await;
+            }
+            MatrixCommand::ResetEncryption { password } => {
+                self.ask_encryption("ResetEncryption", encryption::Request::Reset { password }).await;
             }
             MatrixCommand::EnableEncryption { room_id } => {
                 let Some(client) = self.serving_client("EnableEncryption") else { return };
