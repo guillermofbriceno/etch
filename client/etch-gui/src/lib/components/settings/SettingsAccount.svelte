@@ -1,6 +1,11 @@
 <script lang="ts">
-    import { currentUser, canSetNameColor } from '$lib/stores';
+    import {
+        currentUser, canSetNameColor, matrixConnected,
+        encryptionStatus, encryptionError, encryptionBusy,
+        createRecoveryKey, showEncryptionPrompt, openEncryptionReset,
+    } from '$lib/stores';
     import { sendCoreCommand } from '$lib/ipc';
+    import type { EncryptionStatus } from '$lib/types';
     import Icon from '../Icon.svelte';
     import AvatarFallback from '../AvatarFallback.svelte';
     import NameColorSetting from './NameColorSetting.svelte';
@@ -17,6 +22,18 @@
     let passwordLabel = 'Change Password';
     let passwordError = '';
     $: passwordValid = currentPassword.length > 0 && newPassword.length > 0 && newPassword === confirmPassword;
+
+    const ENCRYPTION_SUMMARY: Record<EncryptionStatus['type'], string> = {
+        Unknown: "Etch is still checking this account's encryption.",
+        Ready: 'This device can read your encrypted messages. If you generate a new recovery key, the old one stops working.',
+        NeedsRecoverySetup: 'You have not saved a recovery key yet.',
+        RecoveryKeyPending: 'Your new recovery key is waiting to be saved.',
+        NeedsRecoveryKey: 'This device needs your recovery key to read your encrypted messages.',
+        NeedsVerifiedDevice: 'This device cannot read your encrypted messages yet, and your account has no recovery key. Create one on another device where you are signed in, or reset encryption.',
+    };
+    $: encryptionState = $encryptionStatus.type;
+    $: encryptionSummary = $matrixConnected ? ENCRYPTION_SUMMARY[encryptionState] : 'Connect to a server to manage encryption.';
+    $: canResetEncryption = $matrixConnected && encryptionState !== 'Unknown' && encryptionState !== 'RecoveryKeyPending';
 
     async function pickAvatar() {
         const path = await open({
@@ -93,6 +110,26 @@
             <span class="password-error">{passwordError}</span>
         {/if}
         <button class="action-btn" on:click={changePassword} disabled={!passwordValid}>{passwordLabel}</button>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="setting-group" role="group" aria-label="Encryption">
+        <span class="setting-label">Encryption</span>
+        <p class="setting-desc">{encryptionSummary}</p>
+        {#if $encryptionError}
+            <span class="password-error" role="alert">{$encryptionError}</span>
+        {/if}
+        <div class="action-row">
+            {#if $matrixConnected && encryptionState === 'Ready'}
+                <button class="action-btn secondary" on:click={createRecoveryKey} disabled={$encryptionBusy}>Generate a new recovery key</button>
+            {:else if $matrixConnected && encryptionState === 'NeedsRecoverySetup'}
+                <button class="action-btn" on:click={showEncryptionPrompt}>Create recovery key</button>
+            {:else if $matrixConnected && encryptionState === 'NeedsRecoveryKey'}
+                <button class="action-btn" on:click={showEncryptionPrompt}>Enter recovery key</button>
+            {/if}
+            <button class="action-btn danger" on:click={openEncryptionReset} disabled={!canResetEncryption}>Reset encryption</button>
+        </div>
     </div>
 </div>
 

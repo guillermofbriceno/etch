@@ -19,6 +19,7 @@ declareStores('device', 'serverBookmarks', 'selectedBookmarkId', 'connectingBook
 
 export const passwordRequested = writable<boolean>(false);
 export const matrixConnecting = writable<boolean>(false);
+export const matrixConnected = writable<boolean>(false);
 export const mediaBaseUrl = writable<string | null>(null);
 
 export function loadSettings(): void {
@@ -95,10 +96,12 @@ export function removeBookmark(id: string): void {
 const clearMediaBaseUrl = (): void => { mediaBaseUrl.set(null); };
 const clearPasswordRequested = (): void => { passwordRequested.set(false); };
 const clearMatrixConnecting = (): void => { matrixConnecting.set(false); };
+const clearMatrixConnected = (): void => { matrixConnected.set(false); };
 
 registerSessionStore('matrix', 'mediaBaseUrl', clearMediaBaseUrl);
 registerSessionStore('matrix', 'passwordRequested', clearPasswordRequested);
 registerSessionStore('matrix', 'matrixConnecting', clearMatrixConnecting);
+registerSessionStore('matrix', 'matrixConnected', clearMatrixConnected);
 
 // Handlers called by eventRouter
 export function handleMatrixEvent(me: MatrixEvent): void {
@@ -108,6 +111,7 @@ export function handleMatrixEvent(me: MatrixEvent): void {
         mediaBaseUrl.set(me.data);
     } else if (me.type === 'ConnectionState') {
         matrixConnecting.set(me.data.type === 'Connecting');
+        matrixConnected.set(me.data.type === 'Connected');
         if (me.data.type === 'Connected') {
             closeOverlay();
         }

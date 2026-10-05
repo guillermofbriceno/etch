@@ -20,7 +20,8 @@ import { isMuted, isDeafened } from '../audio';
 import { channels, dmLastActivity, initHiddenDms, unhideDm } from '../channels';
 import { replyingTo, editingMessage } from '../compose';
 import { activeWindow, setActiveChannel } from '../messages';
-import { mediaBaseUrl, passwordRequested, matrixConnecting, serverBookmarks, selectedBookmarkId } from '../servers';
+import { mediaBaseUrl, passwordRequested, matrixConnecting, matrixConnected, serverBookmarks, selectedBookmarkId } from '../servers';
+import { encryptionStatus, encryptionError, encryptionPromptDismissed, encryptionResetOpen, encryptionBusy } from '../encryption';
 import { currentUser } from '../user';
 import { nameColors, canSetNameColor } from '../nameColors';
 import { activeOverlay } from '../overlay';
@@ -193,6 +194,37 @@ const MATRIX_PROBES: SessionStoreProbe[] = [
         name: 'matrixConnecting',
         populate: () => { matrixConnecting.set(true); },
         expectCleared: () => { expect(get(matrixConnecting)).toBe(false); },
+    },
+    {
+        name: 'matrixConnected',
+        populate: () => { fireMatrixEvent({ type: 'ConnectionState', data: { type: 'Connected' } }); },
+        expectCleared: () => { expect(get(matrixConnected)).toBe(false); },
+    },
+    // The two events come first: a status ends a request, and with it the reset view.
+    {
+        name: 'encryptionStatus',
+        populate: () => { fireMatrixEvent({ type: 'EncryptionStatus', data: { type: 'NeedsRecoveryKey' } }); },
+        expectCleared: () => { expect(get(encryptionStatus)).toEqual({ type: 'Unknown' }); },
+    },
+    {
+        name: 'encryptionError',
+        populate: () => { fireMatrixEvent({ type: 'EncryptionActionFailed', data: { reason: 'That did not work.' } }); },
+        expectCleared: () => { expect(get(encryptionError)).toBeNull(); },
+    },
+    {
+        name: 'encryptionPromptDismissed',
+        populate: () => { encryptionPromptDismissed.set(true); },
+        expectCleared: () => { expect(get(encryptionPromptDismissed)).toBe(false); },
+    },
+    {
+        name: 'encryptionResetOpen',
+        populate: () => { encryptionResetOpen.set(true); },
+        expectCleared: () => { expect(get(encryptionResetOpen)).toBe(false); },
+    },
+    {
+        name: 'encryptionBusy',
+        populate: () => { encryptionBusy.set(true); },
+        expectCleared: () => { expect(get(encryptionBusy)).toBe(false); },
     },
     {
         name: 'certChangeRequest',

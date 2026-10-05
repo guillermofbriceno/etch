@@ -217,34 +217,35 @@ async fn run(client: Client, mut requests: mpsc::Receiver<Request>, event_tx: mp
         }
 
         let failure = tokio::select! {
-            request = requests.recv() => match request {
-                None => return,
-                Some(Request::Announce) => {
-                    announced = None;
-                    None
-                }
-                Some(Request::ConfirmRecoveryKeySaved) => {
-                    pending_key = None;
-                    None
-                }
-                Some(Request::CreateRecoveryKey) => match create_recovery_key(&client).await {
-                    Ok(key) => {
-                        pending_key = Some(key);
-                        None
-                    }
-                    Err(reason) => Some(reason),
-                },
-                Some(Request::SubmitRecoveryKey(key)) => recovery.recover(key.expose().trim()).await
-                    .err()
-                    .map(|e| failure_reason(Action::EnterKey, &e)),
-                Some(Request::Reset { password }) => match reset(&client, &password).await {
-                    Ok(()) => {
-                        // It unlocked the recovery the reset just deleted.
+            request = requests.recv() => {
+                let Some(request) = request else { return };
+                // The frontend takes the next status as the answer to its request, so one follows even when nothing changed.
+                announced = None;
+                match request {
+                    Request::Announce => None,
+                    Request::ConfirmRecoveryKeySaved => {
                         pending_key = None;
                         None
                     }
-                    Err(reason) => Some(reason),
-                },
+                    Request::CreateRecoveryKey => match create_recovery_key(&client).await {
+                        Ok(key) => {
+                            pending_key = Some(key);
+                            None
+                        }
+                        Err(reason) => Some(reason),
+                    },
+                    Request::SubmitRecoveryKey(key) => recovery.recover(key.expose().trim()).await
+                        .err()
+                        .map(|e| failure_reason(Action::EnterKey, &e)),
+                    Request::Reset { password } => match reset(&client, &password).await {
+                        Ok(()) => {
+                            // It unlocked the recovery the reset just deleted.
+                            pending_key = None;
+                            None
+                        }
+                        Err(reason) => Some(reason),
+                    },
+                }
             },
             Some(_) = verification_changes.next() => None,
             Some(_) = recovery_changes.next() => None,
@@ -392,6 +393,10 @@ mod tests {
 
         assert!(worker.ask(Request::SubmitRecoveryKey(key())));
         assert_eq!(next_report(&mut events).await, Err(NO_RECOVERY.to_owned()));
+        assert_eq!(
+            next_report(&mut events).await, Ok(EncryptionStatus::NeedsVerifiedDevice),
+            "the frontend waits for a status to end every request, so one must follow even when nothing changed",
+        );
 
         assert!(worker.ask(Request::CreateRecoveryKey));
         assert_eq!(

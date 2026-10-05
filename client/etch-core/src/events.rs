@@ -37,7 +37,7 @@ pub enum MatrixEvent {
     NameColors(Vec<UserNameColor>),
     Capabilities { name_color: bool },
     EncryptionStatus(EncryptionStatus),
-    /// Success has no event of its own; it shows as a change of `EncryptionStatus`.
+    /// Success has no event of its own: an `EncryptionStatus` follows every request, after this one if it failed.
     EncryptionActionFailed { reason: String },
 }
 

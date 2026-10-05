@@ -11,7 +11,8 @@ import { userVolumes } from '../userVolumes';
 import { transmissionMode, vadThreshold, voiceHold, useMumbleSettings, deafenSuppressesNotifs } from '../voiceSettings';
 import { activeOverlay, overlayImageUrl, settingsTab, showRoomIds } from '../overlay';
 import { replyingTo, editingMessage } from '../compose';
-import { serverBookmarks, selectedBookmarkId, connectingBookmark, passwordRequested, matrixConnecting, mediaBaseUrl } from '../servers';
+import { serverBookmarks, selectedBookmarkId, connectingBookmark, passwordRequested, matrixConnecting, matrixConnected, mediaBaseUrl } from '../servers';
+import { encryptionStatus, encryptionError, encryptionPromptDismissed, encryptionResetOpen, encryptionBusy } from '../encryption';
 import { compactChat } from '../layout';
 
 /**
@@ -71,7 +72,15 @@ export function resetStores(): void {
     connectingBookmark.set(null);
     passwordRequested.set(false);
     matrixConnecting.set(false);
+    matrixConnected.set(false);
     mediaBaseUrl.set(null);
+
+    // Encryption
+    encryptionStatus.set({ type: 'Unknown' });
+    encryptionError.set(null);
+    encryptionPromptDismissed.set(false);
+    encryptionResetOpen.set(false);
+    encryptionBusy.set(false);
 
     // Layout
     compactChat.set(false);

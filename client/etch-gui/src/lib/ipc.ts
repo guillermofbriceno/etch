@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { TimelineEntry, RoomInfo, ServerBookmark, NameColor } from '$lib/types';
+import type { TimelineEntry, RoomInfo, ServerBookmark, NameColor, EncryptionStatus } from '$lib/types';
 
 // --- Event envelope types (Rust → Frontend) ---
 
@@ -22,7 +22,9 @@ export type MatrixEvent =
     | { type: 'SendFailed'; data: { room_id: string; reason: string } }
     | { type: 'ConnectionState'; data: { type: 'Disconnected' } | { type: 'Connecting' } | { type: 'Connected' } | { type: 'Failed'; reason: string; retries: number; retry_in_secs: number } }
     | { type: 'NameColors'; data: { user_id: string; color: NameColor | null }[] }
-    | { type: 'Capabilities'; data: { name_color: boolean } };
+    | { type: 'Capabilities'; data: { name_color: boolean } }
+    | { type: 'EncryptionStatus'; data: EncryptionStatus }
+    | { type: 'EncryptionActionFailed'; data: { reason: string } };
 
 export type MumbleEvent =
     | { type: 'LocalSession'; data: number }
@@ -68,7 +70,11 @@ export type MatrixCommand =
     | { type: 'ChangePassword'; data: { current_password: string; new_password: string } }
     | { type: 'SendReadReceipt'; data: { room_id: string; event_id: string } }
     | { type: 'PaginateBackwards'; data: { room_id: string } }
-    | { type: 'EnableEncryption'; data: { room_id: string } };
+    | { type: 'EnableEncryption'; data: { room_id: string } }
+    | { type: 'CreateRecoveryKey' }
+    | { type: 'ConfirmRecoveryKeySaved' }
+    | { type: 'SubmitRecoveryKey'; data: { key: string } }
+    | { type: 'ResetEncryption'; data: { password: string } };
 
 export type MumbleCommand =
     | { type: 'SwitchChannel'; data: number }
