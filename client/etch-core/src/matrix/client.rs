@@ -1,7 +1,9 @@
+use anyhow::Context;
 use matrix_sdk::{
     Client,
+    encryption::{BackupDownloadStrategy, EncryptionSettings},
     ruma::{UserId,
-        api::client::uiaa,
+        api::client::{keys::get_keys, uiaa},
         events::room::message::RoomMessageEventContent,
         events::room::member::{StrippedRoomMemberEvent, OriginalSyncRoomMemberEvent},
         RoomId},
@@ -13,8 +15,9 @@ use tokio::sync::mpsc;
 use crate::events::{InternalEvent, InternalMatrixEvent, CoreEvent, MatrixEvent, SystemEvent};
 use crate::commands::ServerConnectionForm;
 use crate::matrix;
+use crate::matrix::saved_session::{self, FreshStore, SavedSession};
 use crate::models::{RoomInfo, RoomType};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 // TODO: enable once keyring backend is configured
 // use keyring::Entry;
 // use rand::RngExt;
@@ -60,21 +63,17 @@ pub enum ConnectionResult {
 //     Ok(())
 // }
 
-fn server_dir(data_dir: &Path, form: &ServerConnectionForm) -> PathBuf {
-    data_dir.join("servers").join(format!("{}@{}", form.username, form.hostname))
-}
-
-/// `restore_session` never validates a saved session, so deleting this file is the only
-/// way to force a fresh login.
-pub(crate) fn session_path(data_dir: &Path, form: &ServerConnectionForm) -> PathBuf {
-    server_dir(data_dir, form).join("session.json")
-}
-
 async fn build_matrix_client(
     form: &ServerConnectionForm,
     store_path: impl AsRef<Path>,
 ) -> anyhow::Result<Client> {
-    let builder = Client::builder().sqlite_store(store_path, None);
+    // TODO: use get_or_create_passphrase() once keyring backend is configured
+    let builder = Client::builder()
+        .sqlite_store(store_path, None)
+        .with_encryption_settings(EncryptionSettings {
+            backup_download_strategy: BackupDownloadStrategy::OneShot,
+            ..Default::default()
+        });
     match &form.homeserver_url {
         Some(url) => Ok(builder.homeserver_url(url).build().await?),
         None => Ok(builder
@@ -86,82 +85,141 @@ async fn build_matrix_client(
 pub async fn start_matrix_client(tx: mpsc::Sender<InternalEvent>, event_tx: mpsc::Sender<CoreEvent>, conn_form: ServerConnectionForm, data_dir: &Path) -> anyhow::Result<ConnectionResult> {
     let user_id = UserId::parse(format!("@{}:{}", conn_form.username, conn_form.hostname))?;
 
-    let server_dir = server_dir(data_dir, &conn_form);
+    let server_dir = saved_session::server_dir(data_dir, &conn_form);
     std::fs::create_dir_all(&server_dir)?;
 
-    // TODO: use get_or_create_passphrase() once keyring backend is configured
-    let client = build_matrix_client(&conn_form, server_dir.join("matrix_store")).await?;
-
-    let session_path = session_path(data_dir, &conn_form);
-    let mut need_fresh_login = true;
-
-    if session_path.exists() {
-        match async {
-            let session_json = std::fs::read_to_string(&session_path)?;
-            let session = serde_json::from_str(&session_json)?;
-            client.matrix_auth().restore_session(session, RoomLoadSettings::default()).await?;
-            anyhow::Ok(())
-        }.await {
-            Ok(()) => { need_fresh_login = false; }
-            Err(e) => {
-                log::warn!("Stale session for {}, starting fresh: {e}", conn_form.hostname);
-                let _ = std::fs::remove_file(&session_path);
-                let _ = std::fs::remove_dir_all(server_dir.join("matrix_store"));
-
-                // Rebuild client with a clean store
-                let client_fresh = build_matrix_client(&conn_form, server_dir.join("matrix_store")).await?;
-                return start_fresh_login(client_fresh, user_id, conn_form, &session_path, tx, event_tx).await;
+    match SavedSession::load(&server_dir) {
+        Ok(Some(saved)) => {
+            let client = build_matrix_client(&conn_form, saved.store_dir(&server_dir)).await?;
+            match client.matrix_auth().restore_session(saved.session, RoomLoadSettings::default()).await {
+                Ok(()) => {
+                    register_event_handlers(&client, tx, event_tx);
+                    return Ok(ConnectionResult::Ok(client));
+                }
+                Err(e) => log::warn!("Stale session for {}, starting fresh: {e}", conn_form.hostname),
             }
+            forget_session(&server_dir);
+        }
+        Ok(None) => {}
+        Err(e) => {
+            log::warn!("Unreadable session for {}, starting fresh: {e}", conn_form.hostname);
+            forget_session(&server_dir);
         }
     }
 
-    if need_fresh_login {
-        return start_fresh_login(client, user_id, conn_form, &session_path, tx, event_tx).await;
+    start_fresh_login(user_id, conn_form, &server_dir, tx, event_tx).await
+}
+
+/// The store the session named is left where it is: a client may still have it open, so
+/// it is removed at the next startup instead.
+fn forget_session(server_dir: &Path) {
+    let _ = std::fs::remove_file(saved_session::session_file(server_dir));
+}
+
+async fn start_fresh_login(
+    user_id: matrix_sdk::ruma::OwnedUserId,
+    conn_form: ServerConnectionForm,
+    server_dir: &Path,
+    tx: mpsc::Sender<InternalEvent>,
+    event_tx: mpsc::Sender<CoreEvent>,
+) -> anyhow::Result<ConnectionResult> {
+    let Some(password) = conn_form.password.clone() else {
+        return Ok(ConnectionResult::NeedsPassword);
+    };
+
+    // Declared before the client so the client is dropped, and its files closed, first.
+    let mut store = FreshStore::create(server_dir)?;
+    let client = build_matrix_client(&conn_form, store.path()).await?;
+
+    if let Err(e) = log_in_and_save(&client, &user_id, &password, &store, server_dir).await {
+        log_out_abandoned_login(&client).await;
+        return Err(e);
     }
+    store.keep();
+
+    bootstrap_identity(&client, &user_id, password).await;
 
     register_event_handlers(&client, tx, event_tx);
     Ok(ConnectionResult::Ok(client))
 }
 
-async fn start_fresh_login(
-    client: Client,
-    user_id: matrix_sdk::ruma::OwnedUserId,
-    conn_form: ServerConnectionForm,
-    session_path: &Path,
-    tx: mpsc::Sender<InternalEvent>,
-    event_tx: mpsc::Sender<CoreEvent>,
-) -> anyhow::Result<ConnectionResult> {
-    let Some(password) = conn_form.password else {
-        return Ok(ConnectionResult::NeedsPassword);
+async fn log_in_and_save(
+    client: &Client,
+    user_id: &UserId,
+    password: &str,
+    store: &FreshStore,
+    server_dir: &Path,
+) -> anyhow::Result<()> {
+    client.matrix_auth()
+        .login_username(user_id, password)
+        .initial_device_display_name(&device_display_name())
+        .send()
+        .await?;
+    let session = client.matrix_auth().session().context("the login left no session to save")?;
+    SavedSession::new(session, store).save(server_dir)
+}
+
+fn device_display_name() -> String {
+    let os = match std::env::consts::OS {
+        "linux" => "Linux",
+        "windows" => "Windows",
+        "macos" => "macOS",
+        other => other,
+    };
+    format!("Etch ({os})")
+}
+
+/// The engine retries a failed connect with the same password, so a login the server
+/// accepted but that failed here would otherwise leave one more device behind per attempt.
+async fn log_out_abandoned_login(client: &Client) {
+    if client.access_token().is_none() {
+        return;
+    }
+    match client.matrix_auth().logout().await {
+        Ok(_) => log::info!("Logged out the device of a login that could not be completed"),
+        Err(e) => log::warn!("Could not log out the device of a login that could not be completed: {e}"),
+    }
+}
+
+/// Creates the account's cross-signing identity when it has none, and never replaces one.
+async fn bootstrap_identity(client: &Client, user_id: &UserId, password: String) {
+    let encryption = client.encryption();
+    let Err(e) = encryption.bootstrap_cross_signing_if_needed(None).await else { return };
+    let Some(challenge) = e.as_uiaa_response() else {
+        log::error!("Cross-signing bootstrap failed (non-UIA error): {e}");
+        return;
     };
 
-    client.matrix_auth().login_username(&user_id, &password).send().await?;
-    let session = client.matrix_auth().session().unwrap();
-    let session_json = serde_json::to_string(&session)?;
-    std::fs::write(session_path, session_json)?;
-
-    // Bootstrap cross-signing (establishes session trust)
-    if let Err(e) = client.encryption().bootstrap_cross_signing(None).await {
-        // WARNING: Retrying with password auth will OVERWRITE existing cross-signing
-        // keys on the server, invalidating all other verified sessions for this account.
-        log::warn!("Cross-signing bootstrap failed ({e}), retrying with password auth — this will reset existing cross-signing keys");
-        if let Some(response) = e.as_uiaa_response() {
-            let mut password_auth = uiaa::Password::new(
-                uiaa::UserIdentifier::UserIdOrLocalpart(user_id.to_string()),
-                password,
-            );
-            password_auth.session = response.session.clone();
-
-            if let Err(e) = client.encryption().bootstrap_cross_signing(Some(uiaa::AuthData::Password(password_auth))).await {
-                log::error!("Failed to bootstrap cross-signing with password auth: {e}");
-            }
-        } else {
-            log::error!("Cross-signing bootstrap failed (non-UIA error): {e}");
+    // A challenge can also mean another device created an identity in the meantime, which the retry would overwrite.
+    match account_has_identity(client, user_id).await {
+        Ok(false) => {}
+        Ok(true) => {
+            log::warn!("The account gained a cross-signing identity during login; leaving it in place");
+            return;
+        }
+        Err(e) => {
+            log::error!("Could not tell whether the account has a cross-signing identity ({e}); not uploading one");
+            return;
         }
     }
 
-    register_event_handlers(&client, tx, event_tx);
-    Ok(ConnectionResult::Ok(client))
+    let mut password_auth = uiaa::Password::new(
+        uiaa::UserIdentifier::UserIdOrLocalpart(user_id.to_string()),
+        password,
+    );
+    password_auth.session = challenge.session.clone();
+    // Not `_if_needed`: the challenged attempt already stored the new identity locally, so that would upload nothing.
+    if let Err(e) = encryption.bootstrap_cross_signing(Some(uiaa::AuthData::Password(password_auth))).await {
+        log::error!("Failed to bootstrap cross-signing with password auth: {e}");
+    }
+}
+
+/// Asked of the server directly, because the SDK's own lookup would find the identity a
+/// challenged upload left in the local store.
+async fn account_has_identity(client: &Client, user_id: &UserId) -> matrix_sdk::HttpResult<bool> {
+    let mut request = get_keys::v3::Request::new();
+    request.device_keys.insert(user_id.to_owned(), Vec::new());
+    Ok(client.send(request).await?.master_keys.contains_key(user_id))
 }
 
 fn register_event_handlers(client: &Client, tx: mpsc::Sender<InternalEvent>, event_tx: mpsc::Sender<CoreEvent>) {
@@ -253,5 +311,134 @@ pub async fn send_message(text: String, html_body: Option<String>, room_id_str: 
     };
     if let Err(e) = room.send(content).await {
         log::error!("Failed to send message: {:?}", e);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use super::*;
+    use crate::matrix::test_server::CannedHomeserver;
+
+    /// Answers a login, and the key uploads that follow one, by request line.
+    fn accept_login(request: &str) -> (&'static str, &'static str) {
+        if request.contains("/client/versions") {
+            ("200 OK", r#"{"versions":["v1.11"]}"#)
+        } else if request.contains("/login") {
+            ("200 OK", r#"{"user_id":"@alice:example.com","device_id":"FRESHDEVICE","access_token":"token"}"#)
+        } else if request.contains("/keys/upload") {
+            ("200 OK", r#"{"one_time_key_counts":{"signed_curve25519":50}}"#)
+        } else {
+            ("200 OK", "{}")
+        }
+    }
+
+    fn form(server: &CannedHomeserver, password: Option<&str>) -> ServerConnectionForm {
+        ServerConnectionForm {
+            username: "alice".into(),
+            hostname: "example.com".into(),
+            port: "8448".into(),
+            password: password.map(Into::into),
+            mumble_host: None,
+            mumble_port: None,
+            mumble_username: None,
+            mumble_password: None,
+            homeserver_url: Some(server.url.clone()),
+        }
+    }
+
+    async fn start(form: ServerConnectionForm, data_dir: &Path) -> anyhow::Result<ConnectionResult> {
+        let (tx, _rx) = mpsc::channel(1);
+        let (event_tx, _event_rx) = mpsc::channel(1);
+        start_matrix_client(tx, event_tx, form, data_dir).await
+    }
+
+    #[tokio::test]
+    async fn a_login_that_cannot_be_saved_locally_is_logged_out_again() {
+        let tmp = tempfile::tempdir().unwrap();
+        let server = CannedHomeserver::answering(accept_login).await;
+        let form = form(&server, Some("password"));
+        // A directory where the session file belongs makes the save fail once the server has accepted the login.
+        let server_dir = saved_session::server_dir(tmp.path(), &form);
+        std::fs::create_dir_all(saved_session::session_file(&server_dir)).unwrap();
+
+        let outcome = start(form, tmp.path()).await;
+
+        assert!(outcome.is_err(), "a login that was not saved must not be handed back as a session");
+        assert_eq!(server.requests_to("/login"), 1, "the server should have accepted one login");
+        assert_eq!(
+            server.requests_to("/logout"), 1,
+            "the device that login registered must not be left behind",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_saved_login_is_restored_from_its_own_store_on_the_next_start() {
+        let tmp = tempfile::tempdir().unwrap();
+        let server = CannedHomeserver::answering(accept_login).await;
+
+        let Ok(ConnectionResult::Ok(first)) = start(form(&server, Some("password")), tmp.path()).await else {
+            panic!("the canned server should accept the login");
+        };
+        let device_key = first.encryption().ed25519_key().await;
+        drop(first);
+
+        let Ok(ConnectionResult::Ok(restored)) = start(form(&server, None), tmp.path()).await else {
+            panic!("the saved session should be restored without asking for the password");
+        };
+
+        assert_eq!(server.requests_to("/login"), 1, "restoring must not log in again");
+        assert!(device_key.is_some(), "the login should have created the device's keys");
+        assert_eq!(
+            restored.encryption().ed25519_key().await, device_key,
+            "the session must come back with the store it logged in with",
+        );
+    }
+
+    /// How many times the identity is uploaded when the server challenges the first attempt.
+    async fn identity_uploads_when_challenged(another_device_created_one: bool) -> usize {
+        const CHALLENGE: &str = r#"{"flows":[{"stages":["m.login.password"]}],"params":{},"session":"challenge"}"#;
+        const HAS_IDENTITY: &str = r#"{"master_keys":{"@alice:example.com":{}}}"#;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let challenged = Arc::new(AtomicBool::new(false));
+        let server = CannedHomeserver::answering({
+            let challenged = challenged.clone();
+            move |request| {
+                if request.contains("/keys/device_signing/upload") {
+                    if challenged.swap(true, Ordering::SeqCst) {
+                        ("200 OK", "{}")
+                    } else {
+                        ("401 Unauthorized", CHALLENGE)
+                    }
+                } else if request.contains("/keys/query")
+                    && another_device_created_one
+                    && challenged.load(Ordering::SeqCst)
+                {
+                    ("200 OK", HAS_IDENTITY)
+                } else {
+                    accept_login(request)
+                }
+            }
+        }).await;
+
+        let outcome = start(form(&server, Some("password")), tmp.path()).await;
+
+        assert!(matches!(outcome, Ok(ConnectionResult::Ok(_))), "the login itself should succeed either way");
+        server.requests_to("/keys/device_signing/upload")
+    }
+
+    #[tokio::test]
+    async fn a_challenged_identity_upload_is_retried_only_while_the_account_has_no_identity() {
+        assert_eq!(
+            identity_uploads_when_challenged(false).await, 2,
+            "an account without an identity should get one once the password is supplied",
+        );
+        assert_eq!(
+            identity_uploads_when_challenged(true).await, 1,
+            "an identity another device created in the meantime must not be overwritten",
+        );
     }
 }

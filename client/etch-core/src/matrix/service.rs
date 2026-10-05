@@ -13,9 +13,10 @@ use crate::commands::{AttachmentSend, MatrixCommand, ServerConnectionForm};
 use crate::events::{CoreEvent, MatrixEvent, InternalEvent, InternalMatrixEvent};
 use crate::matrix::attachment;
 use crate::temp_files::TempFiles;
-use crate::matrix::client::{session_path, start_matrix_client, ConnectionResult};
+use crate::matrix::client::{start_matrix_client, ConnectionResult};
 use crate::matrix::name_colors::{self, NameColorResolver, NameColorSender};
 use crate::matrix::retry::credentials_rejected;
+use crate::matrix::saved_session::{self, session_path};
 use crate::matrix::timeline::TimelineManager;
 use crate::models::{ConnectOutcome, RoomInfo, RoomType};
 use crate::scripting::ScriptDispatcher;
@@ -193,6 +194,9 @@ pub struct MatrixService {
     event_tx: mpsc::Sender<CoreEvent>,
     data_dir: PathBuf,
     temp_files: TempFiles,
+    /// Set once the stores no session uses have been removed, which is only safe before
+    /// this process has built its first client.
+    stores_cleaned: bool,
 }
 
 impl MatrixService {
@@ -209,6 +213,7 @@ impl MatrixService {
             event_tx,
             data_dir,
             temp_files,
+            stores_cleaned: false,
         }
     }
 
@@ -318,6 +323,10 @@ impl MatrixService {
 
         // Release the old client first so its stores close before the new ones open.
         self.session.invalidate();
+
+        if !std::mem::replace(&mut self.stores_cleaned, true) {
+            saved_session::remove_unreferenced_stores(&self.data_dir);
+        }
 
         match start_matrix_client(
             internal_tx.clone(), self.event_tx.clone(), form.clone(), &self.data_dir,

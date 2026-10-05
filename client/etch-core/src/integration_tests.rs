@@ -1250,3 +1250,134 @@ async fn name_color_round_trips_through_the_profile() {
 
     h.shutdown().await;
 }
+
+/// A user no earlier test has logged in as, so the account starts without an identity or devices.
+async fn register_fresh_user(prefix: &str) -> ServerConnectionForm {
+    use matrix_sdk::ruma::api::client::{account::register::v3::Request, uiaa};
+
+    let form = test_connection_form();
+    let since_epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("the clock should be past 1970");
+    let username = format!("{prefix}{}", since_epoch.as_millis());
+    let password = "fresh_user_password";
+
+    let client = matrix_sdk::Client::builder()
+        .homeserver_url(form.homeserver_url.as_deref().expect("the test form names the homeserver"))
+        .build()
+        .await
+        .expect("registration client should build");
+    let mut request = Request::new();
+    request.username = Some(username.clone());
+    request.password = Some(password.into());
+    request.inhibit_login = true;
+    request.auth = Some(uiaa::AuthData::RegistrationToken(uiaa::RegistrationToken::new("devtoken".into())));
+    client.matrix_auth().register(request).await.expect("the test homeserver should register a new user");
+
+    ServerConnectionForm { username, password: Some(password.into()), ..form }
+}
+
+/// The account's master key and each device with whether the identity has signed it, as
+/// another user's client judges them.
+async fn identity_seen_by(
+    onlooker: &matrix_sdk::Client,
+    owner: &matrix_sdk::ruma::UserId,
+) -> (Option<String>, Vec<(String, bool)>) {
+    let identity = onlooker.encryption().request_user_identity(owner).await
+        .expect("the key query should succeed");
+    let master_key = identity.and_then(|i| i.master_key().get_first_key().map(|key| key.to_base64()));
+    let devices = onlooker.encryption().get_user_devices(owner).await
+        .expect("the owner's devices should be known after a key query");
+    let mut devices: Vec<(String, bool)> = devices.devices()
+        .map(|device| (device.device_id().to_string(), device.is_cross_signed_by_owner()))
+        .collect();
+    devices.sort();
+    (master_key, devices)
+}
+
+async fn device_ids(client: &matrix_sdk::Client) -> Vec<matrix_sdk::ruma::OwnedDeviceId> {
+    let mut ids: Vec<_> = client.devices().await.expect("the device list should be readable")
+        .devices.into_iter().map(|device| device.device_id).collect();
+    ids.sort();
+    ids
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_second_login_leaves_the_identity_alone_and_the_first_device_verified() {
+    let form = register_fresh_user("identity").await;
+    let owner = matrix_sdk::ruma::UserId::parse(format!("@{}:{}", form.username, form.hostname)).unwrap();
+    let onlooker = logged_in_reader("admin", "admin_password").await;
+
+    let mut first = TestHarness::new();
+    first.connect_as(form.clone()).await;
+    let (identity, devices) = identity_seen_by(&onlooker, &owner).await;
+    let identity = identity.expect("the first login should have created the account's identity");
+    let [(first_device, true)] = devices.as_slice() else {
+        panic!("the first login should be the one device, signed by the identity, got {devices:?}");
+    };
+
+    let mut second = TestHarness::new();
+    second.connect_as(form).await;
+    let (identity_after, devices_after) = identity_seen_by(&onlooker, &owner).await;
+
+    assert_eq!(
+        identity_after.as_deref(), Some(identity.as_str()),
+        "a later login must not replace the account's identity",
+    );
+    assert_eq!(devices_after.len(), 2, "the second login should be a second device, got {devices_after:?}");
+    assert!(
+        devices_after.contains(&(first_device.clone(), true)),
+        "the first device must still be signed by the identity, got {devices_after:?}",
+    );
+
+    first.shutdown().await;
+    second.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn logging_in_again_after_the_token_is_revoked_connects_without_adding_a_device() {
+    use matrix_sdk::ruma::api::client::{device::delete_device, uiaa};
+
+    let form = test_connection_form();
+    let password = form.password.clone().expect("the test form carries the password");
+    // Its own login is one of the devices counted below, before and after.
+    let observer = logged_in_reader(&form.username, &password).await;
+    let before = device_ids(&observer).await;
+
+    let mut h = TestHarness::new();
+    h.connect_as(form.clone()).await;
+    let connected = device_ids(&observer).await;
+    let etch_device = connected.iter().find(|id| !before.contains(id))
+        .expect("connecting should have registered a device")
+        .clone();
+
+    let challenge = observer.send(delete_device::v3::Request::new(etch_device.clone())).await
+        .expect_err("deleting a device should ask for the password");
+    let mut auth = uiaa::Password::new(
+        uiaa::UserIdentifier::UserIdOrLocalpart(form.username.clone()),
+        password,
+    );
+    auth.session = challenge.as_uiaa_response().and_then(|info| info.session.clone());
+    let mut request = delete_device::v3::Request::new(etch_device.clone());
+    request.auth = Some(uiaa::AuthData::Password(auth));
+    observer.send(request).await.expect("the device should be deleted");
+
+    // The engine only learns of it from its next sync, which can be a whole long poll away.
+    h.expect_event(|e| match e {
+        CoreEvent::Matrix(MatrixEvent::ConnectionState(state)) if state.is_failed() => Some(()),
+        _ => None,
+    }, Duration::from_secs(45)).await;
+    h.expect_event(|e| match e {
+        CoreEvent::Matrix(MatrixEvent::ConnectionState(ConnectionState::Connected)) => Some(()),
+        _ => None,
+    }, CONNECT_TIMEOUT).await;
+
+    let after = device_ids(&observer).await;
+    assert!(!after.contains(&etch_device), "the revoked device should be gone, got {after:?}");
+    assert_eq!(
+        after.len(), connected.len(),
+        "logging in again should replace the revoked device, not add to it, got {after:?}",
+    );
+
+    h.shutdown().await;
+}
