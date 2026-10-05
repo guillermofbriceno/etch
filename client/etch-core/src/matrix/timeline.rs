@@ -95,6 +95,8 @@ pub enum TimelineEntryKind {
     DayDivider(u128),
     ReadMarker,
     Redacted,
+    /// An encrypted message this device has no key for; the timeline turns it into a `Message` if the key arrives.
+    Undecryptable,
     Other,
 }
 
@@ -459,6 +461,7 @@ fn event_item_to_entry(
                     }))
                 }
                 MsgLikeKind::Redacted => TimelineEntryKind::Redacted,
+                MsgLikeKind::UnableToDecrypt(_) => TimelineEntryKind::Undecryptable,
                 other => {
                     log::trace!("[timeline] Unhandled MsgLikeKind: {:?}", other);
                     TimelineEntryKind::Other

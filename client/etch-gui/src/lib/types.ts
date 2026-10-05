@@ -52,6 +52,7 @@ export type TimelineEntryKind =
     | { DayDivider: number }
     | 'ReadMarker'
     | 'Redacted'
+    | 'Undecryptable'
     | 'Other';
 
 // Matches Rust TimelineEntry struct (serde serialization)

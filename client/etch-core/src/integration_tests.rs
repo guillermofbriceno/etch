@@ -179,6 +179,7 @@ impl TestHarness {
                 format!("Message(id={}, body={:?})", msg.id, body)
             }
             TimelineEntryKind::Redacted => "Redacted".into(),
+            TimelineEntryKind::Undecryptable => "Undecryptable".into(),
             TimelineEntryKind::DayDivider(_) => "DayDivider".into(),
             TimelineEntryKind::ReadMarker => "ReadMarker".into(),
             TimelineEntryKind::StateEvent(s) => format!("StateEvent({:?})", s),
@@ -452,6 +453,46 @@ fn timeline_entries(event: &CoreEvent) -> Option<(&str, &[TimelineEntry])> {
             Some((room_id, std::slice::from_ref(entry)))
         }
         _ => None,
+    }
+}
+
+/// One room's timeline as the frontend holds it, rebuilt from the same positional events.
+#[derive(Default)]
+struct RoomMirror {
+    entries: Vec<TimelineEntry>,
+}
+
+impl RoomMirror {
+    fn apply(&mut self, room_id: &str, event: &CoreEvent) {
+        let CoreEvent::Matrix(event) = event else { return };
+        let entries = &mut self.entries;
+        match event {
+            MatrixEvent::TimelineAppend(room, new) if room == room_id => entries.extend(new.iter().cloned()),
+            MatrixEvent::TimelinePushBack(room, entry) if room == room_id => entries.push(entry.clone()),
+            MatrixEvent::TimelinePushFront(room, entry) if room == room_id => entries.insert(0, entry.clone()),
+            MatrixEvent::TimelineInsert(room, index, entry) if room == room_id => {
+                entries.insert((*index).min(entries.len()), entry.clone());
+            }
+            MatrixEvent::TimelineSet(room, index, entry) if room == room_id => {
+                if let Some(slot) = entries.get_mut(*index) {
+                    *slot = entry.clone();
+                }
+            }
+            MatrixEvent::TimelineRemove(room, index) if room == room_id && *index < entries.len() => {
+                entries.remove(*index);
+            }
+            MatrixEvent::TimelineCleared(room) if room == room_id => entries.clear(),
+            MatrixEvent::TimelineReset(room, new) if room == room_id => *entries = new.clone(),
+            _ => {}
+        }
+    }
+
+    fn undecryptable(&self) -> usize {
+        self.entries.iter().filter(|entry| matches!(entry.kind, TimelineEntryKind::Undecryptable)).count()
+    }
+
+    fn shows(&self, body: &str) -> bool {
+        self.entries.iter().any(|entry| matches!(&entry.kind, TimelineEntryKind::Message(msg) if msg.body == body))
     }
 }
 
@@ -1483,10 +1524,11 @@ async fn a_new_device_reads_an_earlier_message_once_it_has_the_recovery_key() {
     first.shutdown().await;
 
     let mut second = TestHarness::new();
-    let mut read_without_the_key = Vec::new();
+    let timeline = RefCell::new(RoomMirror::default());
     let (connected, asked_for_the_key) = (Cell::new(false), Cell::new(false));
     second.send(CoreCommand::System(SystemCommand::ConnectToServer(form))).await;
-    second.expect_event_collecting(&room.id, &mut read_without_the_key, |e| {
+    second.expect_event(|e| {
+        timeline.borrow_mut().apply(&room.id, e);
         match e {
             CoreEvent::Matrix(MatrixEvent::ConnectionState(ConnectionState::Connected)) => connected.set(true),
             CoreEvent::Matrix(MatrixEvent::EncryptionStatus(status)) => {
@@ -1494,30 +1536,33 @@ async fn a_new_device_reads_an_earlier_message_once_it_has_the_recovery_key() {
             }
             _ => {}
         }
-        (connected.get() && asked_for_the_key.get()).then_some(())
+        (connected.get() && asked_for_the_key.get() && timeline.borrow().undecryptable() > 0).then_some(())
     }, CONNECT_TIMEOUT).await;
 
     second.send(CoreCommand::Matrix(MatrixCommand::SubmitRecoveryKey { key: replaced_key })).await;
-    let reason = second.expect_event_collecting(&room.id, &mut read_without_the_key, |e| match e {
-        CoreEvent::Matrix(MatrixEvent::EncryptionActionFailed { reason }) => Some(reason.clone()),
-        _ => None,
+    let reason = second.expect_event(|e| {
+        timeline.borrow_mut().apply(&room.id, e);
+        match e {
+            CoreEvent::Matrix(MatrixEvent::EncryptionActionFailed { reason }) => Some(reason.clone()),
+            _ => None,
+        }
     }, CONNECT_TIMEOUT).await;
     assert_eq!(reason, encryption::WRONG_KEY, "a key that was since replaced must be refused as wrong");
-    assert!(
-        !read_without_the_key.contains(&body),
-        "the earlier message must not be readable before the right key is entered",
+    assert_eq!(
+        (timeline.borrow().shows(&body), timeline.borrow().undecryptable()), (false, 1),
+        "before the right key is entered the earlier message must be a placeholder and nothing more",
     );
 
     second.send(CoreCommand::Matrix(MatrixCommand::SubmitRecoveryKey { key })).await;
-    let (ready, readable) = (Cell::new(false), Cell::new(false));
+    let ready = Cell::new(false);
     second.expect_event(|e| {
+        timeline.borrow_mut().apply(&room.id, e);
         if matches!(e, CoreEvent::Matrix(MatrixEvent::EncryptionStatus(EncryptionStatus::Ready))) {
             ready.set(true);
         }
-        if is_the_message(e) {
-            readable.set(true);
-        }
-        (ready.get() && readable.get()).then_some(())
+        let timeline = timeline.borrow();
+        // The placeholder must give way to the message, not stay beside it.
+        (ready.get() && timeline.shows(&body) && timeline.undecryptable() == 0).then_some(())
     }, CONNECT_TIMEOUT).await;
 
     second.shutdown().await;
