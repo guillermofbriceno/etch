@@ -1,9 +1,10 @@
 use anyhow::Context;
 use matrix_sdk::{
     Client,
+    config::RequestConfig,
     encryption::{BackupDownloadStrategy, EncryptionSettings},
     ruma::{UserId,
-        api::client::{keys::get_keys, uiaa},
+        api::client::{keys::get_keys, session::logout, uiaa},
         events::room::message::RoomMessageEventContent,
         events::room::member::{StrippedRoomMemberEvent, OriginalSyncRoomMemberEvent},
         RoomId},
@@ -18,6 +19,7 @@ use crate::matrix;
 use crate::matrix::saved_session::{self, FreshStore, SavedSession};
 use crate::models::{RoomInfo, RoomType};
 use std::path::Path;
+use std::time::Duration;
 // TODO: enable once keyring backend is configured
 // use keyring::Entry;
 // use rand::RngExt;
@@ -169,13 +171,23 @@ fn device_display_name() -> String {
     format!("Etch ({os})")
 }
 
+const LOGOUT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// One attempt and a short wait: the SDK's default retries for minutes, and the Matrix
+/// actor serves nothing else until this answers.
+pub(crate) async fn log_out(client: &Client) -> matrix_sdk::HttpResult<()> {
+    let config = RequestConfig::new().disable_retry().timeout(LOGOUT_TIMEOUT);
+    client.send(logout::v3::Request::new()).with_request_config(config).await?;
+    Ok(())
+}
+
 /// The engine retries a failed connect with the same password, so a login the server
 /// accepted but that failed here would otherwise leave one more device behind per attempt.
 async fn log_out_abandoned_login(client: &Client) {
     if client.access_token().is_none() {
         return;
     }
-    match client.matrix_auth().logout().await {
+    match log_out(client).await {
         Ok(_) => log::info!("Logged out the device of a login that could not be completed"),
         Err(e) => log::warn!("Could not log out the device of a login that could not be completed: {e}"),
     }

@@ -20,7 +20,7 @@ import { isMuted, isDeafened } from '../audio';
 import { channels, dmLastActivity, initHiddenDms, unhideDm } from '../channels';
 import { replyingTo, editingMessage } from '../compose';
 import { activeWindow, setActiveChannel } from '../messages';
-import { mediaBaseUrl, passwordRequested, matrixConnecting, matrixConnected, serverBookmarks, selectedBookmarkId } from '../servers';
+import { mediaBaseUrl, passwordRequested, matrixConnecting, matrixConnected, signingOut, signOutError, serverBookmarks, selectedBookmarkId } from '../servers';
 import { encryptionStatus, encryptionError, encryptionPromptDismissed, encryptionResetOpen, encryptionBusy } from '../encryption';
 import { currentUser } from '../user';
 import { nameColors, canSetNameColor } from '../nameColors';
@@ -199,6 +199,16 @@ const MATRIX_PROBES: SessionStoreProbe[] = [
         name: 'matrixConnected',
         populate: () => { fireMatrixEvent({ type: 'ConnectionState', data: { type: 'Connected' } }); },
         expectCleared: () => { expect(get(matrixConnected)).toBe(false); },
+    },
+    {
+        name: 'signingOut',
+        populate: () => { signingOut.set(true); },
+        expectCleared: () => { expect(get(signingOut)).toBe(false); },
+    },
+    {
+        name: 'signOutError',
+        populate: () => { signOutError.set('That did not work.'); },
+        expectCleared: () => { expect(get(signOutError)).toBeNull(); },
     },
     // The two events come first: a status ends a request, and with it the reset view.
     {

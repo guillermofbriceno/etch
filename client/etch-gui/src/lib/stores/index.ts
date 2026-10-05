@@ -10,7 +10,7 @@ export { currentUser } from './user';
 export { nameColors, canSetNameColor, colorOf, chosenColorOf } from './nameColors';
 export { isMuted, isDeafened, toggleMute, toggleDeafen } from './audio';
 export { activeOverlay, overlayImageUrl, settingsTab, showRoomIds, openSettings, openImage, openConnect, closeOverlay } from './overlay';
-export { serverBookmarks, selectedBookmarkId, connectingBookmark, passwordRequested, matrixConnecting, matrixConnected, mediaBaseUrl, loadSettings, addBookmark, updateBookmark, removeBookmark, connectToServer } from './servers';
+export { serverBookmarks, selectedBookmarkId, connectingBookmark, passwordRequested, matrixConnecting, matrixConnected, mediaBaseUrl, loadSettings, addBookmark, updateBookmark, removeBookmark, connectToServer, signingOut, signOutError, signOut } from './servers';
 export { encryptionStatus, encryptionError, encryptionPromptDismissed, encryptionResetOpen, encryptionBusy, createRecoveryKey, confirmRecoveryKeySaved, submitRecoveryKey, resetEncryption, showEncryptionPrompt, dismissEncryptionPrompt, openEncryptionReset, closeEncryptionReset } from './encryption';
 export { replyingTo, setReply, clearReply, editingMessage, setEditing, clearEditing } from './compose';
 export { voiceChannels, voiceUsers, voiceConnected, mumbleStatus, usersByChannel, talkingUsers, certChangeRequest } from './voiceState';

@@ -3,6 +3,7 @@
         currentUser, canSetNameColor, matrixConnected,
         encryptionStatus, encryptionError, encryptionBusy,
         createRecoveryKey, showEncryptionPrompt, openEncryptionReset,
+        signingOut, signOutError, signOut,
     } from '$lib/stores';
     import { sendCoreCommand } from '$lib/ipc';
     import type { EncryptionStatus } from '$lib/types';
@@ -34,6 +35,16 @@
     $: encryptionState = $encryptionStatus.type;
     $: encryptionSummary = $matrixConnected ? ENCRYPTION_SUMMARY[encryptionState] : 'Connect to a server to manage encryption.';
     $: canResetEncryption = $matrixConnected && encryptionState !== 'Unknown' && encryptionState !== 'RecoveryKeyPending';
+
+    let confirmingSignOut = false;
+    // Until a key is saved, this device holds the only copy of what unlocks the encrypted messages.
+    $: recoveryKeyNotSaved = encryptionState === 'NeedsRecoverySetup' || encryptionState === 'RecoveryKeyPending';
+    $: if (!$matrixConnected) confirmingSignOut = false;
+
+    function confirmSignOut() {
+        confirmingSignOut = false;
+        signOut();
+    }
 
     async function pickAvatar() {
         const path = await open({
@@ -131,6 +142,39 @@
             <button class="action-btn danger" on:click={openEncryptionReset} disabled={!canResetEncryption}>Reset encryption</button>
         </div>
     </div>
+
+    <div class="divider"></div>
+
+    <div class="setting-group" role="group" aria-label="Sign out">
+        <span class="setting-label">Sign out</span>
+        {#if confirmingSignOut}
+            {#if recoveryKeyNotSaved}
+                <p class="setting-desc sign-out-warning" role="alert">
+                    You have not saved a recovery key. If you sign out now, you will not be able to read your encrypted messages after you sign back in.
+                </p>
+            {:else}
+                <p class="setting-desc">
+                    You will need your password to sign back in, and your recovery key to read your encrypted messages again.
+                </p>
+            {/if}
+            <div class="action-row">
+                <button class="action-btn" class:danger={recoveryKeyNotSaved} on:click={confirmSignOut}>
+                    {recoveryKeyNotSaved ? 'Sign out anyway' : 'Sign out'}
+                </button>
+                <button class="action-btn secondary" on:click={() => confirmingSignOut = false}>Cancel</button>
+            </div>
+        {:else}
+            <p class="setting-desc">Signing out removes this device from your account and ends your voice connection.</p>
+            {#if $signOutError}
+                <span class="password-error" role="alert">{$signOutError}</span>
+            {/if}
+            <div class="action-row">
+                <button class="action-btn secondary" on:click={() => confirmingSignOut = true} disabled={!$matrixConnected || $signingOut}>
+                    {$signingOut ? 'Signing out...' : 'Sign out'}
+                </button>
+            </div>
+        {/if}
+    </div>
 </div>
 
 <style>
@@ -176,4 +220,5 @@
     .display-name-input { flex: 1; }
     .password-input { margin-bottom: 8px; }
     .password-error { color: var(--status-danger); font-size: 13px; margin-bottom: 4px; }
+    p.setting-desc.sign-out-warning { color: var(--status-danger); }
 </style>

@@ -45,7 +45,9 @@ export type SystemEvent =
     | { type: 'ConnectionLost' }
     | { type: 'SettingsLoaded'; data: { bookmarks: ServerBookmark[]; transmission_mode: string | null; vad_threshold: number | null; voice_hold: number | null; use_mumble_settings: boolean | null; deafen_suppresses_notifs: boolean | null; hidden_dms: string[]; custom_css: string | null } }
     | { type: 'LogError'; data: { message: string; target: string } }
-    | { type: 'UserProfileChanged'; data: { username: string; display_name: string | null; avatar_url: string | null } };
+    | { type: 'UserProfileChanged'; data: { username: string; display_name: string | null; avatar_url: string | null } }
+    | { type: 'SignedOut' }
+    | { type: 'SignOutFailed'; data: { reason: string } };
 
 export type CoreEvent =
     | { type: 'Matrix'; data: MatrixEvent }
@@ -99,7 +101,8 @@ export type SystemCommand =
     | { type: 'SetDeafenSuppressesNotifs'; data: boolean }
     | { type: 'HideDm'; data: { room_id: string } }
     | { type: 'UnhideDm'; data: { room_id: string } }
-    | { type: 'AcceptMumbleCert'; data: { host: string; port: number; fingerprint: string } };
+    | { type: 'AcceptMumbleCert'; data: { host: string; port: number; fingerprint: string } }
+    | { type: 'SignOut' };
 
 export type CoreCommand =
     | { type: 'Matrix'; data: MatrixCommand }

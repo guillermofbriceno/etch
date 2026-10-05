@@ -170,8 +170,10 @@ export function handleMumbleEvent(me: MumbleEvent): void {
             } else if (me.data.type === 'Connecting') {
                 mumbleStatus.set('connecting');
             } else if (me.data.type === 'Disconnected') {
+                // Ending voice on a sign out can report this twice, by the bridge and by core.
+                const wasUp = get(mumbleStatus) !== 'disconnected';
                 resetVoiceSession();
-                playSfx('server_disconnect');
+                if (wasUp) playSfx('server_disconnect');
             }
             break;
         }

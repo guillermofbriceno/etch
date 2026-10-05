@@ -9,7 +9,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::commands::{MatrixCommand, MumbleCommand, ServerConnectionForm};
 use crate::events::{CoreEvent, InternalEvent, InternalMatrixEvent, InternalMumbleEvent, LaunchOutcome, MumbleEvent};
-use crate::models::VoiceServerConfig;
+use crate::models::{ConnectionState, VoiceServerConfig};
 use crate::task::AbortOnDrop;
 use crate::traits::{MatrixBackend, VoiceService};
 
@@ -35,6 +35,11 @@ pub(crate) enum MatrixRequest {
         session_id: u32,
         name: String,
         volume_db: f32,
+        internal_tx: mpsc::Sender<InternalEvent>,
+    },
+    /// Never cancelled: served after a connect already in flight, so a login it was making is logged out rather than orphaned.
+    SignOut {
+        form: ServerConnectionForm,
         internal_tx: mpsc::Sender<InternalEvent>,
     },
 }
@@ -189,6 +194,12 @@ async fn matrix_actor<M: MatrixBackend>(
                     },
                 )).await;
             }
+            MatrixRequest::SignOut { form, internal_tx } => {
+                let outcome = service.sign_out(form).await;
+                let _ = internal_tx.send(InternalEvent::Matrix(
+                    InternalMatrixEvent::SignOutFinished { outcome },
+                )).await;
+            }
         }
     }
 }
@@ -202,6 +213,8 @@ pub(crate) enum VoiceRequest {
         port: u16,
         fingerprint: String,
     },
+    /// Ends voice for good, where a launch only ends it to replace it.
+    Shutdown,
 }
 
 pub(crate) struct LaunchRequest {
@@ -275,6 +288,13 @@ async fn voice_actor<V: VoiceService>(
                 let outcome = launch(&mut service, &data_dir, &event_tx, &request).await;
                 let _ = request.internal_tx.send(InternalEvent::Mumble(
                     InternalMumbleEvent::LaunchFinished { generation: request.generation, outcome },
+                )).await;
+            }
+            VoiceRequest::Shutdown => {
+                service.shutdown().await;
+                // Killing Mumble stops its bridge, which may or may not have reported the disconnect first.
+                let _ = event_tx.send(CoreEvent::Mumble(
+                    MumbleEvent::ConnectionState(ConnectionState::Disconnected),
                 )).await;
             }
         }

@@ -5,6 +5,7 @@ import {
     loadSettings, connectToServer, addBookmark, updateBookmark, removeBookmark,
     serverBookmarks, selectedBookmarkId, connectingBookmark,
     handleSystemEvent, handleMatrixEvent, passwordRequested, matrixConnecting, mediaBaseUrl,
+    signOut, signingOut, signOutError,
 } from '../servers';
 import { transmissionMode, vadThreshold, voiceHold, useMumbleSettings, deafenSuppressesNotifs } from '../voiceSettings';
 import { activeOverlay } from '../overlay';
@@ -115,6 +116,15 @@ describe('servers IPC commands', () => {
                 },
             });
         });
+    });
+
+    it('signOut sends System > SignOut and waits for core to answer', () => {
+        signOut();
+
+        expect(invoke).toHaveBeenCalledWith('core_command', {
+            command: { type: 'System', data: { type: 'SignOut' } },
+        });
+        expect(get(signingOut)).toBe(true);
     });
 
     describe('addBookmark', () => {
@@ -411,6 +421,27 @@ describe('handleSystemEvent (SettingsLoaded)', () => {
         } as any);
 
         expect(get(serverBookmarks)).toHaveLength(0);
+    });
+});
+
+describe('handleSystemEvent (sign out)', () => {
+    it('closes the account page on SignedOut', () => {
+        activeOverlay.set('settings');
+
+        handleSystemEvent({ type: 'SignedOut' });
+
+        expect(get(activeOverlay), 'the account page describes a session that is gone').toBe('none');
+    });
+
+    it('ends the request with its reason on SignOutFailed and stays where it was', () => {
+        activeOverlay.set('settings');
+        signOut();
+
+        handleSystemEvent({ type: 'SignOutFailed', data: { reason: 'Could not reach the server.' } });
+
+        expect(get(signingOut)).toBe(false);
+        expect(get(signOutError)).toBe('Could not reach the server.');
+        expect(get(activeOverlay)).toBe('settings');
     });
 });
 

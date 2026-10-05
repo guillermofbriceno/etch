@@ -75,6 +75,8 @@ pub enum SystemCommand {
     HideDm { room_id: String },
     UnhideDm { room_id: String },
     AcceptMumbleCert { host: String, port: u16, fingerprint: String },
+    /// Removes this device from the account and leaves the server, voice included.
+    SignOut,
 }
 
 #[derive(Clone, Deserialize)]

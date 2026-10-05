@@ -6,9 +6,11 @@ import { invoke } from '@tauri-apps/api/core';
 import { resetStores } from '$lib/stores/__tests__/helpers';
 import { currentUser } from '$lib/stores/user';
 import { nameColors, canSetNameColor, handleMatrixEvent } from '$lib/stores/nameColors';
+import { handleMatrixEvent as handleEncryptionEvent } from '$lib/stores/encryption';
+import { matrixConnected } from '$lib/stores/servers';
 import { hexHue, hueColor } from '$lib/userColor';
 import type { CoreCommand, MatrixCommand } from '$lib/ipc';
-import type { NameColor } from '$lib/types';
+import type { EncryptionStatus, NameColor } from '$lib/types';
 import SettingsAccount from '../settings/SettingsAccount.svelte';
 
 const ME = '@alice:example.org';
@@ -132,5 +134,45 @@ describe('SettingsAccount name color', () => {
         await fireEvent.click(applyButton());
 
         expect(sent('SetNameColor')).toEqual([setNameColor(null)]);
+    });
+});
+
+describe('SettingsAccount sign out', () => {
+    function group() {
+        return within(screen.getByRole('group', { name: 'Sign out' }));
+    }
+
+    function signOutsSent(): CoreCommand[] {
+        return vi.mocked(invoke).mock.calls
+            .map(([, args]) => (args as { command: CoreCommand }).command)
+            .filter((command) => command.type === 'System' && command.data.type === 'SignOut');
+    }
+
+    async function report(status: EncryptionStatus): Promise<void> {
+        handleEncryptionEvent({ type: 'EncryptionStatus', data: status });
+        await tick();
+    }
+
+    it('asks before signing out, and warns only when no recovery key is saved', async () => {
+        render(SettingsAccount);
+        expect(group().getByRole('button', { name: 'Sign out' }), 'there is no session to sign out of yet').toBeDisabled();
+
+        matrixConnected.set(true);
+        await report({ type: 'Ready' });
+        await fireEvent.click(group().getByRole('button', { name: 'Sign out' }));
+        expect(group().getByText(/You will need your password to sign back in, and your recovery key/)).toBeInTheDocument();
+        expect(group().queryByRole('alert'), 'a user whose key is saved must not be alarmed').toBeNull();
+        expect(signOutsSent(), 'nothing is sent until it is confirmed').toEqual([]);
+        await fireEvent.click(group().getByRole('button', { name: 'Cancel' }));
+
+        await report({ type: 'NeedsRecoverySetup' });
+        await fireEvent.click(group().getByRole('button', { name: 'Sign out' }));
+        expect(group().getByRole('alert')).toHaveTextContent(
+            'You have not saved a recovery key. If you sign out now, you will not be able to read your encrypted messages after you sign back in.',
+        );
+        await fireEvent.click(group().getByRole('button', { name: 'Sign out anyway' }));
+
+        expect(signOutsSent()).toEqual([{ type: 'System', data: { type: 'SignOut' } }]);
+        expect(group().getByRole('button', { name: 'Signing out...' })).toBeDisabled();
     });
 });

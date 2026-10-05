@@ -21,6 +21,9 @@ export const passwordRequested = writable<boolean>(false);
 export const matrixConnecting = writable<boolean>(false);
 export const matrixConnected = writable<boolean>(false);
 export const mediaBaseUrl = writable<string | null>(null);
+// A sign out is out and core has answered with neither SignedOut nor SignOutFailed.
+export const signingOut = writable<boolean>(false);
+export const signOutError = writable<string | null>(null);
 
 export function loadSettings(): void {
     sendCoreCommand({ type: 'System', data: { type: 'LoadSettings' } });
@@ -50,6 +53,15 @@ export async function connectToServer(bookmark: ServerBookmark, password: string
                 mumble_password: bookmark.mumble_password,
             },
         },
+    });
+}
+
+export function signOut(): void {
+    signOutError.set(null);
+    signingOut.set(true);
+    sendCoreCommand({ type: 'System', data: { type: 'SignOut' } }).catch((e) => {
+        signingOut.set(false);
+        signOutError.set(`Etch could not send the request: ${e}`);
     });
 }
 
@@ -102,6 +114,8 @@ registerSessionStore('matrix', 'mediaBaseUrl', clearMediaBaseUrl);
 registerSessionStore('matrix', 'passwordRequested', clearPasswordRequested);
 registerSessionStore('matrix', 'matrixConnecting', clearMatrixConnecting);
 registerSessionStore('matrix', 'matrixConnected', clearMatrixConnected);
+registerSessionStore('matrix', 'signingOut', () => { signingOut.set(false); });
+registerSessionStore('matrix', 'signOutError', () => { signOutError.set(null); });
 
 // Handlers called by eventRouter
 export function handleMatrixEvent(me: MatrixEvent): void {
@@ -119,7 +133,13 @@ export function handleMatrixEvent(me: MatrixEvent): void {
 }
 
 export function handleSystemEvent(se: SystemEvent): void {
-    if (se.type === 'SettingsLoaded') {
+    if (se.type === 'SignedOut') {
+        // The ServerReset before it cleared the session, but an overlay is kept across a reset.
+        closeOverlay();
+    } else if (se.type === 'SignOutFailed') {
+        signingOut.set(false);
+        signOutError.set(se.data.reason);
+    } else if (se.type === 'SettingsLoaded') {
         serverBookmarks.set(se.data.bookmarks);
         if (se.data.transmission_mode != null) transmissionMode.set(se.data.transmission_mode as TransmissionMode);
         if (se.data.vad_threshold != null) vadThreshold.set(Math.round(se.data.vad_threshold * 100));
