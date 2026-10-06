@@ -21,7 +21,7 @@ const REQUEST_QUEUE: usize = 8;
 const STATE_NOT_KNOWN: &str =
     "Etch does not know this account's encryption state yet. Try again in a moment.";
 const DEVICE_NOT_VERIFIED: &str =
-    "A recovery key can only be created on a device that is already verified.";
+    "A recovery key can only be created on a device that can already read your encrypted messages.";
 pub(crate) const WRONG_KEY: &str = "That recovery key is not correct. Check it and try again.";
 const NO_RECOVERY: &str = "This account has no recovery key to enter.";
 const BACKUP_BELONGS_ELSEWHERE: &str =

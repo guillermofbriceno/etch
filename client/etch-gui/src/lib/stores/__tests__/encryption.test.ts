@@ -3,8 +3,8 @@ import { get } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
 import { resetStores } from './helpers';
 import {
-    encryptionStatus, encryptionError, encryptionPromptDismissed, encryptionResetOpen, encryptionBusy,
-    handleMatrixEvent, submitRecoveryKey, resetEncryption, dismissEncryptionPrompt, openEncryptionReset,
+    encryptionStatus, encryptionError, encryptionPromptDismissed, encryptionRequestedScreen, encryptionBusy,
+    handleMatrixEvent, handleSystemEvent, submitRecoveryKey, resetEncryption, dismissEncryptionPrompt, openEncryptionReset,
 } from '../encryption';
 import type { EncryptionStatus } from '$lib/types';
 
@@ -68,8 +68,8 @@ describe('the encryption store', () => {
         status({ type: 'NeedsRecoverySetup' });
 
         expect(get(encryptionBusy)).toBe(false);
-        expect(get(encryptionResetOpen)).toBe(false);
-        expect(get(encryptionPromptDismissed), 'the prompt for the new key must not stay hidden').toBe(false);
+        expect(get(encryptionRequestedScreen)).toBeNull();
+        expect(get(encryptionPromptDismissed), 'the prompt for the new key must not stay hidden').toBeNull();
     });
 
     it('leaves the reset view open after a failed reset, whatever status follows', () => {
@@ -80,7 +80,19 @@ describe('the encryption store', () => {
         failed('The password is not correct.');
         status({ type: 'NeedsVerifiedDevice' });
 
-        expect(get(encryptionResetOpen)).toBe(true);
+        expect(get(encryptionRequestedScreen)).toBe('reset');
         expect(get(encryptionError)).toBe('The password is not correct.');
+    });
+
+    it('lets the prompt to create a key be put off only until the next connect', () => {
+        status({ type: 'NeedsRecoveryKey' });
+        dismissEncryptionPrompt();
+        handleSystemEvent({ type: 'ServerReset' });
+        expect(get(encryptionPromptDismissed), 'entering a key can wait for the rest of the run').not.toBeNull();
+
+        status({ type: 'NeedsRecoverySetup' });
+        dismissEncryptionPrompt();
+        handleSystemEvent({ type: 'ServerReset' });
+        expect(get(encryptionPromptDismissed), 'a first key is asked for again on every connect').toBeNull();
     });
 });

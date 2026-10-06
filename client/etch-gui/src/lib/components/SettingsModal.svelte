@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { settingsTab, errorLog } from '$lib/stores';
+    import { settingsTab, errorLog, matrixConnected, openSignOut } from '$lib/stores';
     import { getVersion } from '@tauri-apps/api/app';
 
     import ModalLayout from './ModalLayout.svelte';
@@ -40,6 +40,13 @@
                 <span class="error-badge">{$errorLog.length}</span>
             {/if}
         </button>
+
+        <div class="divider"></div>
+
+        <button class="tab sign-out" on:click={openSignOut} disabled={!$matrixConnected}>Sign Out</button>
+        {#if !$matrixConnected}
+            <p class="tab-hint">Available once Etch is connected.</p>
+        {/if}
 
         <div class="version-info">Etch v{appVersion}</div>
     </svelte:fragment>
@@ -104,6 +111,11 @@
     .tab:hover { background-color: var(--bg-hover); color: var(--text-primary); }
     .tab.active { background-color: var(--bg-active); color: var(--text-bright); }
 
+    .tab.sign-out, .tab.sign-out:hover { color: var(--status-danger); }
+    .tab.sign-out:disabled { opacity: 0.4; background-color: transparent; cursor: default; }
+
+    .tab-hint { margin: 0 10px; font-size: 12px; color: var(--text-muted); }
+
     .divider { height: 1px; background-color: var(--bg-active); margin: 10px 10px 14px 10px; }
 
     .error-badge {
@@ -151,8 +163,6 @@
     .settings-form :global(.setting-group.disabled) { opacity: 0.4; pointer-events: none; }
 
     .settings-form :global(.setting-desc) { color: var(--text-tertiary); font-size: 13px; margin: 0 0 12px; }
-
-    .settings-form :global(.divider) { height: 1px; background-color: var(--bg-active); margin: 10px 0 14px 0; }
 
     .settings-form :global(.action-btn) {
         background-color: var(--primary);

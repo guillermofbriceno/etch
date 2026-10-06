@@ -11,8 +11,8 @@ import { userVolumes } from '../userVolumes';
 import { transmissionMode, vadThreshold, voiceHold, useMumbleSettings, deafenSuppressesNotifs } from '../voiceSettings';
 import { activeOverlay, overlayImageUrl, settingsTab, showRoomIds } from '../overlay';
 import { replyingTo, editingMessage } from '../compose';
-import { serverBookmarks, selectedBookmarkId, connectingBookmark, passwordRequested, matrixConnecting, matrixConnected, mediaBaseUrl, signingOut, signOutError } from '../servers';
-import { encryptionStatus, encryptionError, encryptionPromptDismissed, encryptionResetOpen, encryptionBusy } from '../encryption';
+import { serverBookmarks, selectedBookmarkId, connectingBookmark, passwordRequested, matrixConnecting, matrixConnected, mediaBaseUrl, signingOut, signOutError, signOutDialogOpen } from '../servers';
+import { encryptionStatus, encryptionError, encryptionPromptDismissed, encryptionRequestedScreen, encryptionBusy } from '../encryption';
 import { compactChat } from '../layout';
 
 /**
@@ -76,12 +76,13 @@ export function resetStores(): void {
     mediaBaseUrl.set(null);
     signingOut.set(false);
     signOutError.set(null);
+    signOutDialogOpen.set(false);
 
     // Encryption
     encryptionStatus.set({ type: 'Unknown' });
     encryptionError.set(null);
-    encryptionPromptDismissed.set(false);
-    encryptionResetOpen.set(false);
+    encryptionPromptDismissed.set(null);
+    encryptionRequestedScreen.set(null);
     encryptionBusy.set(false);
 
     // Layout

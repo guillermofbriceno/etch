@@ -1,12 +1,7 @@
 <script lang="ts">
-    import {
-        currentUser, canSetNameColor, matrixConnected,
-        encryptionStatus, encryptionError, encryptionBusy,
-        createRecoveryKey, showEncryptionPrompt, openEncryptionReset,
-        signingOut, signOutError, signOut,
-    } from '$lib/stores';
+    import { currentUser, canSetNameColor, matrixConnected, encryptionStatus, openEncryptionDialog } from '$lib/stores';
     import { sendCoreCommand } from '$lib/ipc';
-    import type { EncryptionStatus } from '$lib/types';
+    import { encryptionText, NOT_CONNECTED } from '$lib/encryptionText';
     import Icon from '../Icon.svelte';
     import AvatarFallback from '../AvatarFallback.svelte';
     import NameColorSetting from './NameColorSetting.svelte';
@@ -24,27 +19,7 @@
     let passwordError = '';
     $: passwordValid = currentPassword.length > 0 && newPassword.length > 0 && newPassword === confirmPassword;
 
-    const ENCRYPTION_SUMMARY: Record<EncryptionStatus['type'], string> = {
-        Unknown: "Etch is still checking this account's encryption.",
-        Ready: 'This device can read your encrypted messages. If you generate a new recovery key, the old one stops working.',
-        NeedsRecoverySetup: 'You have not saved a recovery key yet.',
-        RecoveryKeyPending: 'Your new recovery key is waiting to be saved.',
-        NeedsRecoveryKey: 'This device needs your recovery key to read your encrypted messages.',
-        NeedsVerifiedDevice: 'This device cannot read your encrypted messages yet, and your account has no recovery key. Create one on another device where you are signed in, or reset encryption.',
-    };
-    $: encryptionState = $encryptionStatus.type;
-    $: encryptionSummary = $matrixConnected ? ENCRYPTION_SUMMARY[encryptionState] : 'Connect to a server to manage encryption.';
-    $: canResetEncryption = $matrixConnected && encryptionState !== 'Unknown' && encryptionState !== 'RecoveryKeyPending';
-
-    let confirmingSignOut = false;
-    // Until a key is saved, this device holds the only copy of what unlocks the encrypted messages.
-    $: recoveryKeyNotSaved = encryptionState === 'NeedsRecoverySetup' || encryptionState === 'RecoveryKeyPending';
-    $: if (!$matrixConnected) confirmingSignOut = false;
-
-    function confirmSignOut() {
-        confirmingSignOut = false;
-        signOut();
-    }
+    $: recoveryKey = encryptionText($encryptionStatus.type);
 
     async function pickAvatar() {
         const path = await open({
@@ -83,6 +58,8 @@
 <div class="tab-pane">
     <h2>My Account</h2>
 
+    <h3 class="section-header">Profile</h3>
+
     <div class="profile-row">
         <button class="avatar-edit-wrapper" on:click={pickAvatar}>
             {#if $currentUser.avatarUrl}
@@ -110,7 +87,7 @@
         </div>
     </div>
 
-    <div class="divider"></div>
+    <h3 class="section-header">Password and Security</h3>
 
     <div class="setting-group">
         <label for="current-password">Change Password</label>
@@ -123,56 +100,17 @@
         <button class="action-btn" on:click={changePassword} disabled={!passwordValid}>{passwordLabel}</button>
     </div>
 
-    <div class="divider"></div>
-
-    <div class="setting-group" role="group" aria-label="Encryption">
-        <span class="setting-label">Encryption</span>
-        <p class="setting-desc">{encryptionSummary}</p>
-        {#if $encryptionError}
-            <span class="password-error" role="alert">{$encryptionError}</span>
-        {/if}
-        <div class="action-row">
-            {#if $matrixConnected && encryptionState === 'Ready'}
-                <button class="action-btn secondary" on:click={createRecoveryKey} disabled={$encryptionBusy}>Generate a new recovery key</button>
-            {:else if $matrixConnected && encryptionState === 'NeedsRecoverySetup'}
-                <button class="action-btn" on:click={showEncryptionPrompt}>Create recovery key</button>
-            {:else if $matrixConnected && encryptionState === 'NeedsRecoveryKey'}
-                <button class="action-btn" on:click={showEncryptionPrompt}>Enter recovery key</button>
-            {/if}
-            <button class="action-btn danger" on:click={openEncryptionReset} disabled={!canResetEncryption}>Reset encryption</button>
-        </div>
-    </div>
-
-    <div class="divider"></div>
-
-    <div class="setting-group" role="group" aria-label="Sign out">
-        <span class="setting-label">Sign out</span>
-        {#if confirmingSignOut}
-            {#if recoveryKeyNotSaved}
-                <p class="setting-desc sign-out-warning" role="alert">
-                    You have not saved a recovery key. If you sign out now, you will not be able to read your encrypted messages after you sign back in.
-                </p>
-            {:else}
-                <p class="setting-desc">
-                    You will need your password to sign back in, and your recovery key to read your encrypted messages again.
-                </p>
-            {/if}
-            <div class="action-row">
-                <button class="action-btn" class:danger={recoveryKeyNotSaved} on:click={confirmSignOut}>
-                    {recoveryKeyNotSaved ? 'Sign out anyway' : 'Sign out'}
+    <div class="setting-group" role="group" aria-labelledby="recovery-key-label">
+        <span class="setting-label" id="recovery-key-label">Recovery Key</span>
+        {#if $matrixConnected}
+            <p class="setting-desc">{recoveryKey.summary}</p>
+            {#if recoveryKey.button}
+                <button class="action-btn" class:secondary={$encryptionStatus.type === 'Ready'} on:click={openEncryptionDialog}>
+                    {recoveryKey.button}
                 </button>
-                <button class="action-btn secondary" on:click={() => confirmingSignOut = false}>Cancel</button>
-            </div>
+            {/if}
         {:else}
-            <p class="setting-desc">Signing out removes this device from your account and ends your voice connection.</p>
-            {#if $signOutError}
-                <span class="password-error" role="alert">{$signOutError}</span>
-            {/if}
-            <div class="action-row">
-                <button class="action-btn secondary" on:click={() => confirmingSignOut = true} disabled={!$matrixConnected || $signingOut}>
-                    {$signingOut ? 'Signing out...' : 'Sign out'}
-                </button>
-            </div>
+            <p class="setting-desc">{NOT_CONNECTED}</p>
         {/if}
     </div>
 </div>
@@ -220,5 +158,4 @@
     .display-name-input { flex: 1; }
     .password-input { margin-bottom: 8px; }
     .password-error { color: var(--status-danger); font-size: 13px; margin-bottom: 4px; }
-    p.setting-desc.sign-out-warning { color: var(--status-danger); }
 </style>

@@ -7,7 +7,7 @@ import { handleMatrixEvent as channelsHandleMatrix } from './channels';
 import { handleMatrixEvent as serversHandleMatrix } from './servers';
 import { handleMatrixEvent as userHandleMatrix, handleSystemEvent as userHandleSystem } from './user';
 import { handleMatrixEvent as nameColorsHandleMatrix } from './nameColors';
-import { handleMatrixEvent as encryptionHandleMatrix } from './encryption';
+import { handleMatrixEvent as encryptionHandleMatrix, handleSystemEvent as encryptionHandleSystem } from './encryption';
 import { handleSystemEvent as serversHandleSystem } from './servers';
 import { handleSystemEvent as errorsHandleSystem } from './errors';
 import { handleMumbleEvent, handleSystemEvent as voiceHandleSystem } from './voiceState';
@@ -50,6 +50,7 @@ export function initEventRouter(): void {
                 errorsHandleSystem(ce.data);
                 voiceHandleSystem(ce.data);
                 userHandleSystem(ce.data);
+                encryptionHandleSystem(ce.data);
                 break;
         }
     });

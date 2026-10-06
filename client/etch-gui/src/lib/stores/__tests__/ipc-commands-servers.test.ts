@@ -5,7 +5,7 @@ import {
     loadSettings, connectToServer, addBookmark, updateBookmark, removeBookmark,
     serverBookmarks, selectedBookmarkId, connectingBookmark,
     handleSystemEvent, handleMatrixEvent, passwordRequested, matrixConnecting, mediaBaseUrl,
-    signOut, signingOut, signOutError,
+    signOut, signingOut, signOutError, signOutDialogOpen,
 } from '../servers';
 import { transmissionMode, vadThreshold, voiceHold, useMumbleSettings, deafenSuppressesNotifs } from '../voiceSettings';
 import { activeOverlay } from '../overlay';
@@ -425,12 +425,14 @@ describe('handleSystemEvent (SettingsLoaded)', () => {
 });
 
 describe('handleSystemEvent (sign out)', () => {
-    it('closes the account page on SignedOut', () => {
+    it('closes Settings and the dialog on SignedOut', () => {
         activeOverlay.set('settings');
+        signOutDialogOpen.set(true);
 
         handleSystemEvent({ type: 'SignedOut' });
 
         expect(get(activeOverlay), 'the account page describes a session that is gone').toBe('none');
+        expect(get(signOutDialogOpen)).toBe(false);
     });
 
     it('ends the request with its reason on SignOutFailed and stays where it was', () => {

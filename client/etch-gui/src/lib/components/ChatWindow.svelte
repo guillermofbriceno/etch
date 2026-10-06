@@ -1,6 +1,7 @@
 <script lang="ts">
     import { beforeUpdate, afterUpdate, onMount } from 'svelte';
-    import { activeWindow, loadOlder, activeChannel, activeChannelId, openImage, showRoomIds, encryptionStatus, showEncryptionPrompt } from '$lib/stores';
+    import { activeWindow, loadOlder, activeChannel, activeChannelId, openImage, showRoomIds, encryptionStatus, openEncryptionDialog } from '$lib/stores';
+    import { undecryptableLine } from '$lib/encryptionText';
     import type { ChatMessage, TimelineEntry, TimelineEntryKind, StateEventKind } from '$lib/types';
     import MessageGroup from './MessageGroup.svelte';
     import Icon from './Icon.svelte';
@@ -232,12 +233,6 @@
         return count;
     }
 
-    function undecryptableText(count: number, keyNeeded: boolean): string {
-        const messages = count === 1 ? '1 encrypted message' : `${count} encrypted messages`;
-        if (keyNeeded) return `${messages}. Enter your recovery key to read ${count === 1 ? 'it' : 'them'}.`;
-        return `${messages} cannot be read on this device.`;
-    }
-
     const GROUP_THRESHOLD_MS = 5 * 60 * 1000;
 
     function isContinuation(entries: TimelineEntry[], index: number): boolean {
@@ -304,10 +299,13 @@
                 {:else if entry.kind === 'Undecryptable'}
                     {@const count = undecryptableRun($activeWindow.entries, i)}
                     {#if count > 0}
-                        {#if $encryptionStatus.type === 'NeedsRecoveryKey'}
-                            <button class="undecryptable" on:click={showEncryptionPrompt}>{undecryptableText(count, true)}</button>
+                        {@const line = undecryptableLine(count, $encryptionStatus.type)}
+                        {#if line.remedy}
+                            <button class="undecryptable" on:click={openEncryptionDialog}>
+                                {line.text} <span class="undecryptable-remedy">{line.remedy}</span>
+                            </button>
                         {:else}
-                            <div class="undecryptable">{undecryptableText(count, false)}</div>
+                            <div class="undecryptable">{line.text}</div>
                         {/if}
                     {/if}
                 {/if}
@@ -465,8 +463,11 @@
         cursor: pointer;
     }
 
-    button.undecryptable:hover {
+    .undecryptable-remedy {
         color: var(--text-link);
+    }
+
+    button.undecryptable:hover .undecryptable-remedy {
         text-decoration: underline;
     }
 </style>

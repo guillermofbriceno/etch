@@ -21,7 +21,7 @@ import { channels, dmLastActivity, initHiddenDms, unhideDm } from '../channels';
 import { replyingTo, editingMessage } from '../compose';
 import { activeWindow, setActiveChannel } from '../messages';
 import { mediaBaseUrl, passwordRequested, matrixConnecting, matrixConnected, signingOut, signOutError, serverBookmarks, selectedBookmarkId } from '../servers';
-import { encryptionStatus, encryptionError, encryptionPromptDismissed, encryptionResetOpen, encryptionBusy } from '../encryption';
+import { encryptionStatus, encryptionError, encryptionRequestedScreen, encryptionBusy } from '../encryption';
 import { currentUser } from '../user';
 import { nameColors, canSetNameColor } from '../nameColors';
 import { activeOverlay } from '../overlay';
@@ -205,12 +205,7 @@ const MATRIX_PROBES: SessionStoreProbe[] = [
         populate: () => { signingOut.set(true); },
         expectCleared: () => { expect(get(signingOut)).toBe(false); },
     },
-    {
-        name: 'signOutError',
-        populate: () => { signOutError.set('That did not work.'); },
-        expectCleared: () => { expect(get(signOutError)).toBeNull(); },
-    },
-    // The two events come first: a status ends a request, and with it the reset view.
+    // The two events come first: a status ends a request, and with it the screen the user asked for.
     {
         name: 'encryptionStatus',
         populate: () => { fireMatrixEvent({ type: 'EncryptionStatus', data: { type: 'NeedsRecoveryKey' } }); },
@@ -222,14 +217,9 @@ const MATRIX_PROBES: SessionStoreProbe[] = [
         expectCleared: () => { expect(get(encryptionError)).toBeNull(); },
     },
     {
-        name: 'encryptionPromptDismissed',
-        populate: () => { encryptionPromptDismissed.set(true); },
-        expectCleared: () => { expect(get(encryptionPromptDismissed)).toBe(false); },
-    },
-    {
-        name: 'encryptionResetOpen',
-        populate: () => { encryptionResetOpen.set(true); },
-        expectCleared: () => { expect(get(encryptionResetOpen)).toBe(false); },
+        name: 'encryptionRequestedScreen',
+        populate: () => { encryptionRequestedScreen.set('reset'); },
+        expectCleared: () => { expect(get(encryptionRequestedScreen)).toBeNull(); },
     },
     {
         name: 'encryptionBusy',
@@ -388,6 +378,7 @@ describe('a matrix reset leaves unscoped state alone', () => {
         activeOverlay.set('settings');
         transmissionMode.set('push_to_talk');
         errorLog.set([{ message: 'old error', target: 'test', timestamp: new Date() }]);
+        signOutError.set('That did not work.');
 
         fireServerReset();
 
@@ -396,5 +387,6 @@ describe('a matrix reset leaves unscoped state alone', () => {
         expect(get(activeOverlay)).toBe('settings');
         expect(get(transmissionMode)).toBe('push_to_talk');
         expect(get(errorLog)).toHaveLength(1);
+        expect(get(signOutError), 'a failed sign out reconnects before its reason is read').toBe('That did not work.');
     });
 });

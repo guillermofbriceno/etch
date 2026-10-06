@@ -78,21 +78,22 @@ describe('undecryptable messages in the chat window', () => {
         ]);
     });
 
-    it('asks for the recovery key only on a device that needs it', async () => {
+    it.each<[EncryptionStatus, string]>([
+        [{ type: 'NeedsRecoveryKey' }, '2 encrypted messages. Enter your recovery key to read them.'],
+        [{ type: 'NeedsVerifiedDevice' }, '2 encrypted messages. Set up this device to read them.'],
+    ])('opens the dialog only on a device that has something to do, as in %j', async (status, name) => {
         const user = userEvent.setup();
-        await show([undecryptable(), undecryptable()], { type: 'NeedsRecoveryKey' });
+        await show([undecryptable(), undecryptable()], status);
         dismissEncryptionPrompt();
 
-        await user.click(screen.getByRole('button', {
-            name: '2 encrypted messages. Enter your recovery key to read them.',
-        }));
-        expect(get(encryptionPromptDismissed), 'the line should bring the dismissed prompt back').toBe(false);
+        await user.click(screen.getByRole('button', { name }));
+        expect(get(encryptionPromptDismissed), 'the line should bring the dismissed prompt back').toBeNull();
 
         await report({ type: 'Ready' });
         expect(notices()).toEqual(['2 encrypted messages cannot be read on this device.']);
         expect(
             screen.queryByRole('button', { name: /encrypted message/ }),
-            'no key would help here, so there is nothing to open',
+            'nothing the user can do would help here, so there is nothing to open',
         ).toBeNull();
     });
 

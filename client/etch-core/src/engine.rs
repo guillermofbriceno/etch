@@ -603,7 +603,7 @@ impl CoreEngine {
                     }
                     _ => {}
                 }
-                // After the reconnect's `ServerReset`, which clears the frontend's copy of the reason.
+                // After the reconnect's `ServerReset`, so the frontend shows the reason on the session it now has.
                 let _ = self.event_tx.send(CoreEvent::System(
                     SystemEvent::SignOutFailed { reason },
                 )).await;
