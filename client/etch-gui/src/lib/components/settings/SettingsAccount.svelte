@@ -118,6 +118,8 @@
 <style>
     .profile-row { display: flex; align-items: flex-start; gap: 20px; }
     .profile-fields { flex: 1; min-width: 0; }
+    /* The row ends flush, so the space before the next section is the header's alone, as on other pages. */
+    .profile-fields > :global(.setting-group:last-child) { margin-bottom: 0; }
 
     .avatar-edit-wrapper {
         position: relative;

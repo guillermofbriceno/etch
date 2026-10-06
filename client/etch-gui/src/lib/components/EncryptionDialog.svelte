@@ -242,7 +242,7 @@
         font-family: 'Inter', sans-serif;
         outline: none;
         box-sizing: border-box;
-        margin: 8px 0 12px;
+        margin: 8px 0 4px;
     }
 
     .text-field:focus {

@@ -80,7 +80,7 @@
 
     .version-info {
         margin-top: auto;
-        padding: 10px 10px 20px;
+        padding: 10px 10px 4px;
         font-size: 12px;
         color: #4f5660;
     }
@@ -145,7 +145,11 @@
         letter-spacing: 0.3px;
         margin: 8px 0 16px;
     }
-    .settings-form :global(.section-header:not(:first-of-type)) { margin-top: 20px; }
+    .settings-form :global(.section-header:not(:first-of-type)) {
+        margin-top: 32px;
+        padding-top: 32px;
+        border-top: 1px solid var(--bg-active);
+    }
 
     .settings-form :global(.placeholder-text) { color: var(--text-secondary); }
 
@@ -256,5 +260,5 @@
 
     .settings-form :global(.slider-container) { display: flex; align-items: center; gap: 16px; }
     .settings-form :global(.range-input) { flex-grow: 1; cursor: pointer; }
-    .settings-form :global(.volume-readout) { color: var(--text-primary); font-size: var(--font-size-base); min-width: 40px; }
+    .settings-form :global(.volume-readout) { color: var(--text-primary); font-size: var(--font-size-base); min-width: 56px; text-align: right; }
 </style>
