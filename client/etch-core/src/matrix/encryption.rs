@@ -76,7 +76,7 @@ pub enum EncryptionStatus {
 /// What became of the last recovery key this device created.
 #[derive(Debug, PartialEq)]
 enum CreatedKey {
-    /// None was created here, or the user confirmed having saved it.
+    /// Nothing is left to save: none was created here, the user confirmed saving it, or the user has since reset the recovery or entered its key.
     Settled,
     Shown(Secret),
     /// The app stopped before the user confirmed saving it, so the account's recovery has a key nobody holds.
@@ -205,12 +205,8 @@ async fn run(client: Client, mut requests: mpsc::Receiver<Request>, event_tx: mp
     if let Err(e) = encryption.bootstrap_cross_signing_if_needed(None).await {
         log::warn!("Could not make sure the account has a cross-signing identity: {e}");
     }
-    // The SDK only re-reads whether this device is verified after a key query, and a login signs the device after its last one.
-    if let Some(user_id) = client.user_id()
-        && let Err(e) = encryption.request_user_identity(user_id).await
-    {
-        log::warn!("Could not refresh this device's verification state: {e}");
-    }
+    // A login signs the device after its last key query.
+    refresh_verification_state(&client).await;
 
     let recovery = encryption.recovery();
     let mut verification_changes = encryption.verification_state();
@@ -251,22 +247,24 @@ async fn run(client: Client, mut requests: mpsc::Receiver<Request>, event_tx: mp
                     Request::Announce => announced = None,
                     Request::ConfirmRecoveryKeySaved => {
                         if matches!(created, CreatedKey::Shown(_)) {
-                            mark_key_unsaved(&client, false).await;
-                            created = CreatedKey::Settled;
+                            settle(&client, &mut created).await;
                         }
                         answer = Some(Ok(()));
                     }
                     Request::CreateRecoveryKey => answer = Some(create_recovery_key(&client, &mut created).await),
                     Request::SubmitRecoveryKey(key) => {
                         let recovered = recovery.recover(key.expose().trim()).await;
+                        if recovered.is_ok() {
+                            // The key just entered opens the account's recovery, so the user holds its key.
+                            settle(&client, &mut created).await;
+                        }
                         answer = Some(recovered.map_err(|e| failure_reason(Action::EnterKey, &e)));
                     }
                     Request::Reset { password } => {
                         let outcome = reset(&client, &password).await;
                         if outcome.is_ok() {
                             // The reset deleted the recovery that key belonged to.
-                            mark_key_unsaved(&client, false).await;
-                            created = CreatedKey::Settled;
+                            settle(&client, &mut created).await;
                         }
                         answer = Some(outcome);
                     }
@@ -303,6 +301,11 @@ async fn mark_key_unsaved(client: &Client, unsaved: bool) {
     }
 }
 
+async fn settle(client: &Client, created: &mut CreatedKey) {
+    mark_key_unsaved(client, false).await;
+    *created = CreatedKey::Settled;
+}
+
 async fn create_recovery_key(client: &Client, created: &mut CreatedKey) -> Result<(), String> {
     let encryption = client.encryption();
     let recovery = encryption.recovery();
@@ -330,23 +333,34 @@ async fn create_recovery_key(client: &Client, created: &mut CreatedKey) -> Resul
 async fn reset(client: &Client, password: &Secret) -> Result<(), String> {
     let failed = |e: RecoveryError| failure_reason(Action::Reset, &e);
 
-    let Some(handle) = client.encryption().recovery().reset_identity().await.map_err(failed)? else {
-        return Ok(());
-    };
-    match handle.auth_type() {
-        CrossSigningResetAuthType::Uiaa(challenge) => {
-            let user_id = client.user_id().map(ToString::to_string).unwrap_or_default();
-            let mut auth = uiaa::Password::new(
-                uiaa::UserIdentifier::UserIdOrLocalpart(user_id),
-                password.expose().to_owned(),
-            );
-            auth.session = challenge.session.clone();
-            handle.reset(Some(uiaa::AuthData::Password(auth))).await.map_err(failed)
+    if let Some(handle) = client.encryption().recovery().reset_identity().await.map_err(failed)? {
+        match handle.auth_type() {
+            CrossSigningResetAuthType::Uiaa(challenge) => {
+                let user_id = client.user_id().map(ToString::to_string).unwrap_or_default();
+                let mut auth = uiaa::Password::new(
+                    uiaa::UserIdentifier::UserIdOrLocalpart(user_id),
+                    password.expose().to_owned(),
+                );
+                auth.session = challenge.session.clone();
+                handle.reset(Some(uiaa::AuthData::Password(auth))).await.map_err(failed)?;
+            }
+            CrossSigningResetAuthType::OAuth(_) => {
+                handle.cancel().await;
+                return Err(NEEDS_BROWSER_APPROVAL.into());
+            }
         }
-        CrossSigningResetAuthType::OAuth(_) => {
-            handle.cancel().await;
-            Err(NEEDS_BROWSER_APPROVAL.into())
-        }
+    }
+    // The new identity has signed this device.
+    refresh_verification_state(client).await;
+    Ok(())
+}
+
+/// The SDK only re-reads whether this device is verified after a key query, so whatever signs the device is followed by one.
+async fn refresh_verification_state(client: &Client) {
+    if let Some(user_id) = client.user_id()
+        && let Err(e) = client.encryption().request_user_identity(user_id).await
+    {
+        log::warn!("Could not refresh this device's verification state: {e}");
     }
 }
 

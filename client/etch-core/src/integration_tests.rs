@@ -390,6 +390,21 @@ impl TestHarness {
         }, CONNECT_TIMEOUT).await
     }
 
+    /// Waits for a request to succeed and returns the status reported just before its answer, which is what it led to.
+    async fn expect_encryption_success(&mut self) -> Option<EncryptionStatus> {
+        let led_to = RefCell::new(None);
+        self.expect_event(|e| match e {
+            CoreEvent::Matrix(MatrixEvent::EncryptionStatus(status)) => {
+                led_to.replace(Some(status.clone()));
+                None
+            }
+            CoreEvent::Matrix(MatrixEvent::EncryptionActionSucceeded) => Some(()),
+            CoreEvent::Matrix(MatrixEvent::EncryptionActionFailed { reason }) => panic!("the request failed: {reason}"),
+            _ => None,
+        }, CONNECT_TIMEOUT).await;
+        led_to.into_inner()
+    }
+
     /// Creates a recovery key and confirms it as saved, as the dialog does.
     async fn create_recovery_key(&mut self) -> Secret {
         self.send(CoreCommand::Matrix(MatrixCommand::CreateRecoveryKey)).await;
@@ -1618,24 +1633,31 @@ async fn resetting_encryption_gives_a_device_that_could_not_be_verified_a_new_id
     let password = form.password.clone().expect("the fresh user's form carries the password");
     let owner = matrix_sdk::ruma::UserId::parse(format!("@{}:{}", form.username, form.hostname)).unwrap();
     let onlooker = logged_in_reader("admin", "admin_password").await;
+    let reset = |password: &str| {
+        CoreCommand::Matrix(MatrixCommand::ResetEncryption { password: password.to_owned().into() })
+    };
 
+    // Closed before its key was confirmed as saved, so nobody holds the key the next device is asked for.
     let mut first = TestHarness::new();
     first.connect_and_expect_status(form.clone(), EncryptionStatus::NeedsRecoverySetup).await;
-    first.create_recovery_key().await;
+    first.send(CoreCommand::Matrix(MatrixCommand::CreateRecoveryKey)).await;
+    first.expect_event(|e| match e {
+        CoreEvent::Matrix(MatrixEvent::EncryptionStatus(EncryptionStatus::RecoveryKeyPending { .. })) => Some(()),
+        _ => None,
+    }, CONNECT_TIMEOUT).await;
+    let mut first = first.restart().await;
+    first.connect_and_expect_status(form.clone(), EncryptionStatus::NeedsRecoverySetup).await;
     let (identity, _) = identity_seen_by(&onlooker, &owner).await;
 
     // It has the password but not the recovery key, which is what a reset is for.
     let mut stranded = TestHarness::new();
     stranded.connect_and_expect_status(form, EncryptionStatus::NeedsRecoveryKey).await;
 
-    stranded.send(CoreCommand::Matrix(MatrixCommand::ResetEncryption {
-        password: "not the password".to_owned().into(),
-    })).await;
-    assert_eq!(stranded.expect_encryption_failure().await, encryption::WRONG_PASSWORD);
-
-    stranded.send(CoreCommand::Matrix(MatrixCommand::ResetEncryption { password: password.into() })).await;
-    stranded.expect_status(EncryptionStatus::NeedsRecoverySetup).await;
-
+    stranded.send(reset(&password)).await;
+    assert_eq!(
+        stranded.expect_encryption_success().await, Some(EncryptionStatus::NeedsRecoverySetup),
+        "a reset is answered once the device knows it is verified again, so a new key is what it asks for next",
+    );
     let (identity_after, devices) = identity_seen_by(&onlooker, &owner).await;
     assert!(identity.is_some() && identity_after.is_some(), "the account should have an identity throughout");
     assert_ne!(identity_after, identity, "a reset should replace the account's identity");
@@ -1647,7 +1669,20 @@ async fn resetting_encryption_gives_a_device_that_could_not_be_verified_a_new_id
     let new_key = stranded.create_recovery_key().await;
     first.expect_status(EncryptionStatus::NeedsRecoveryKey).await;
     first.send(CoreCommand::Matrix(MatrixCommand::SubmitRecoveryKey { key: new_key })).await;
-    first.expect_status(EncryptionStatus::Ready).await;
+    assert_eq!(
+        first.expect_encryption_success().await, Some(EncryptionStatus::Ready),
+        "the key it entered is the account's, so the one it never saved is no longer anyone's to save",
+    );
+
+    stranded.send(reset("not the password")).await;
+    assert_eq!(stranded.expect_encryption_failure().await, encryption::WRONG_PASSWORD);
+    let (identity_kept, _) = identity_seen_by(&onlooker, &owner).await;
+    assert_eq!(identity_kept, identity_after, "a refused reset must leave the identity as it was");
+
+    stranded.send(reset(&password)).await;
+    stranded.expect_encryption_success().await;
+    let (identity_retried, _) = identity_seen_by(&onlooker, &owner).await;
+    assert_ne!(identity_retried, identity_after, "a mistyped password must not stand in the way of the next try");
 
     first.shutdown().await;
     stranded.shutdown().await;
