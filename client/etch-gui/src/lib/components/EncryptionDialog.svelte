@@ -204,24 +204,6 @@
         user-select: all;
     }
 
-    .text-field {
-        width: 100%;
-        background-color: var(--bg-input);
-        color: var(--text-primary);
-        border: 1px solid var(--border-input);
-        border-radius: 4px;
-        padding: 10px;
-        font-size: 16px;
-        font-family: 'Inter', sans-serif;
-        outline: none;
-        box-sizing: border-box;
-        margin: 8px 0 4px;
-    }
-
-    .text-field:focus {
-        border-color: var(--primary);
-    }
-
     .link-btn {
         background: none;
         border: none;

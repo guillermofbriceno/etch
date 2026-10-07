@@ -1,5 +1,7 @@
 <script module lang="ts">
     let dialogs = 0;
+    // In the order they opened. The last is on top: it is drawn above the rest and owns the keyboard.
+    const open: { id: number; layer: number }[] = [];
 </script>
 
 <script lang="ts">
@@ -11,7 +13,9 @@
     export let screen = '';
 
     const dispatch = createEventDispatcher<{ dismiss: void }>();
-    const titleId = `dialog-title-${++dialogs}`;
+    const id = ++dialogs;
+    const titleId = `dialog-title-${id}`;
+    const layer = (open[open.length - 1]?.layer ?? -1) + 1;
     const FOCUSABLE = 'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href]';
 
     let backdrop: HTMLDivElement;
@@ -28,10 +32,8 @@
         return Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE));
     }
 
-    // Every dialog shares one layer, so the last one in the document is the one the user is looking at.
     function isTopmost(): boolean {
-        const open = document.querySelectorAll('[role="dialog"]');
-        return open[open.length - 1] === panel;
+        return open[open.length - 1]?.id === id;
     }
 
     function takeFocus() {
@@ -42,9 +44,11 @@
 
     onMount(() => {
         const opener = document.activeElement;
+        open.push({ id, layer });
         takeFocus();
         return () => {
             closing = true;
+            open.splice(open.findIndex((dialog) => dialog.id === id), 1);
             if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
         };
     });
@@ -76,7 +80,7 @@
 
 <svelte:window on:keydown|capture={handleKeydown} on:focusin={containFocus} />
 
-<div class="dialog-backdrop" bind:this={backdrop}>
+<div class="dialog-backdrop" style:z-index={10000 + layer} bind:this={backdrop}>
     {#if dismissable}
         <button class="backdrop-close" tabindex="-1" on:click={() => dispatch('dismiss')} aria-label="Close dialog"></button>
     {/if}
@@ -94,7 +98,6 @@
         width: 100vw;
         height: calc(100vh - var(--titlebar-height));
         background-color: rgba(0, 0, 0, 0.7);
-        z-index: 10000;
         display: flex;
         align-items: center;
         justify-content: center;
@@ -151,6 +154,22 @@
     }
 
     .dialog-panel :global(.prompt + .actions) { margin-top: 20px; }
+
+    .dialog-panel :global(.text-field) {
+        width: 100%;
+        background-color: var(--bg-input);
+        color: var(--text-primary);
+        border: 1px solid var(--border-input);
+        border-radius: 4px;
+        padding: 10px;
+        font-size: 16px;
+        font-family: 'Inter', sans-serif;
+        outline: none;
+        box-sizing: border-box;
+        margin: 8px 0 4px;
+    }
+
+    .dialog-panel :global(.text-field:focus) { border-color: var(--primary); }
 
     .dialog-panel :global(.action-btn) {
         padding: 8px 20px;
