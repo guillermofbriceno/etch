@@ -1896,7 +1896,10 @@ mod tests {
         use crate::test_mocks::MockCall;
 
         let tmp = tempfile::tempdir().unwrap();
-        let matrix = MockMatrix::new().with_repeating_connect_result(ConnectOutcome::Connected(None));
+        let (answer_sign_out, sign_out_held) = tokio::sync::oneshot::channel();
+        let matrix = MockMatrix::new()
+            .with_repeating_connect_result(ConnectOutcome::Connected(None))
+            .with_sign_out_gate(sign_out_held);
         let matrix_state = matrix.state.clone();
         let voice = MockVoice::new().with_internal_events(vec![
             InternalEvent::Mumble(InternalMumbleEvent::Connected),
@@ -1920,13 +1923,17 @@ mod tests {
         })).await;
         driver.settle().await;
 
-        driver.step(sign_out()).await;
+        // Held past the moment of that retry, which would otherwise log back in behind the sign out.
+        driver.send(sign_out()).await;
+        tokio::time::sleep(PAST_THE_FIRST_BACKOFF).await;
+        answer_sign_out.send(()).unwrap();
+        driver.settle().await;
         tokio::time::sleep(PAST_THE_FIRST_BACKOFF).await;
         driver.settle().await;
         assert_eq!(
             matrix_state.call_log.lock().unwrap().as_slice(),
             &[MockCall::Reset, MockCall::Connect, MockCall::SignOut],
-            "nothing may reconnect a user who signed out",
+            "nothing may reconnect a user who is signing out or has signed out",
         );
         assert_eq!(*voice_state.shutdown_count.lock().unwrap(), 1, "signing out leaves voice as well");
 

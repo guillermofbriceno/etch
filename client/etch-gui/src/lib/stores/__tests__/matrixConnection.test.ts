@@ -10,7 +10,7 @@ beforeEach(() => {
 
 // That a reset returns the status to disconnected is covered by its probe in session.test.ts.
 describe('the Matrix connection status', () => {
-    it('has a session to act on only once a connect has landed, and closes the overlay it was started from', () => {
+    it('has a session to act on from a connect landing until a failure, and closes the overlay the connect was started from', () => {
         activeOverlay.set('connect');
 
         handleMatrixEvent({ type: 'ConnectionState', data: { type: 'Connecting' } });
@@ -20,6 +20,9 @@ describe('the Matrix connection status', () => {
         handleMatrixEvent({ type: 'ConnectionState', data: { type: 'Connected' } });
         expect([get(matrixConnecting), get(matrixSessionLive)]).toEqual([false, true]);
         expect(get(activeOverlay)).toBe('none');
+
+        handleMatrixEvent({ type: 'ConnectionState', data: { type: 'Failed', reason: 'gone', retries: 1, retry_in_secs: 2 } });
+        expect(get(matrixSessionLive)).toBe(false);
     });
 
     // Core reports a degraded sync as Connecting and Connected, with no reset before it.
@@ -34,13 +37,5 @@ describe('the Matrix connection status', () => {
         handleMatrixEvent({ type: 'ConnectionState', data: { type: 'Connected' } });
         expect(get(matrixStatus)).toBe('connected');
         expect(get(activeOverlay), 'a blip must cost the user nothing visible').toBe('settings');
-    });
-
-    it('has no session after a failure', () => {
-        handleMatrixEvent({ type: 'ConnectionState', data: { type: 'Connected' } });
-
-        handleMatrixEvent({ type: 'ConnectionState', data: { type: 'Failed', reason: 'gone', retries: 1, retry_in_secs: 2 } });
-
-        expect(get(matrixSessionLive)).toBe(false);
     });
 });

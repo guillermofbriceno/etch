@@ -432,22 +432,17 @@ describe('handleMumbleEvent', () => {
             expect(get(voiceUsers).size).toBe(0);
         });
 
-        it('disconnect is idempotent on already-disconnected state', () => {
-            handleMumbleEvent({ type: 'ConnectionState', data: { type: 'Disconnected' } } as any);
-
-            expect(get(mumbleStatus)).toBe('disconnected');
-            expect(get(voiceChannels).size).toBe(0);
-        });
-
-        it('plays the disconnect sound once when the disconnect is reported twice', async () => {
+        // A sign out ends voice on purpose, and both the bridge and core can report it.
+        it('takes a disconnect reported twice as one, and plays its sound once', async () => {
             const { playSfx } = await import('../sfx');
             handleMumbleEvent({ type: 'ConnectionState', data: { type: 'Connected' } } as any);
             vi.mocked(playSfx).mockClear();
 
-            // A sign out ends voice on purpose, and both the bridge and core can report it.
             handleMumbleEvent({ type: 'ConnectionState', data: { type: 'Disconnected' } } as any);
             handleMumbleEvent({ type: 'ConnectionState', data: { type: 'Disconnected' } } as any);
 
+            expect(get(mumbleStatus)).toBe('disconnected');
+            expect(get(voiceChannels).size).toBe(0);
             expect(vi.mocked(playSfx).mock.calls).toEqual([['server_disconnect']]);
         });
     });

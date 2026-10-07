@@ -6,8 +6,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { resetStores } from '$lib/stores/__tests__/helpers';
 import { matrixStatus } from '$lib/stores/matrixConnection';
 import { handleMatrixEvent } from '$lib/stores/encryption';
-import { resetMatrixSession, resetLoginSession, enterLogin } from '$lib/stores/session';
-import { currentUser } from '$lib/stores/user';
+import { resetMatrixSession } from '$lib/stores/session';
 import type { CoreCommand, MatrixCommand } from '$lib/ipc';
 import type { EncryptionStatus } from '$lib/types';
 import EncryptionDialog from '../EncryptionDialog.svelte';
@@ -35,25 +34,13 @@ function heading(): string | null {
     return screen.queryByRole('heading')?.textContent ?? null;
 }
 
-// What the router does when core names the account of a connect that then lands.
-function signIn(matrixId: string): void {
-    enterLogin(matrixId);
-    currentUser.set({ username: 'someone', matrixId, displayName: null, avatarUrl: null });
-    matrixStatus.set('connected');
-}
-
-async function reconnect(matrixId: string, status: EncryptionStatus): Promise<void> {
-    resetMatrixSession();
-    signIn(matrixId);
-    await report(status);
-}
-
 beforeEach(() => {
     resetStores();
     vi.mocked(invoke).mockClear();
-    signIn('@someone:example.org');
+    matrixStatus.set('connected');
 });
 
+// Which screen shows when, and what may be put off for how long, is the store's to decide and is covered in encryption.test.ts.
 describe('EncryptionDialog', () => {
     it.each<[EncryptionStatus, string | null]>([
         [{ type: 'Unknown' }, null],
@@ -71,20 +58,17 @@ describe('EncryptionDialog', () => {
         if (status.type === 'RecoveryKeyPending') expect(screen.getByText(KEY)).toBeInTheDocument();
     });
 
-    it('stays through a sync that degrades, and keeps a half-typed key through a reconnect', async () => {
+    it('keeps a half-typed key through a reconnect', async () => {
         const user = userEvent.setup();
         render(EncryptionDialog);
         await report({ type: 'NeedsRecoveryKey' });
         await user.type(screen.getByRole('textbox', { name: 'Recovery key' }), 'EsTc ab');
 
-        matrixStatus.set('recovering');
-        await tick();
-        expect(heading(), 'a dropped poll must not take the dialog away').toBe('Enter Your Recovery Key');
-
         resetMatrixSession();
         await tick();
         expect(heading()).toBeNull();
-        await reconnect('@someone:example.org', { type: 'NeedsRecoveryKey' });
+        matrixStatus.set('connected');
+        await report({ type: 'NeedsRecoveryKey' });
 
         expect(screen.getByRole('textbox', { name: 'Recovery key' })).toHaveValue('EsTc ab');
     });
@@ -106,34 +90,6 @@ describe('EncryptionDialog', () => {
 
         await user.click(screen.getByRole('button', { name: 'Not Now' }));
         expect(heading()).toBeNull();
-    });
-
-    it('stays put off through a reconnect, and asks again when the device needs something else', async () => {
-        const user = userEvent.setup();
-        render(EncryptionDialog);
-        await report({ type: 'NeedsRecoveryKey' });
-        await user.click(screen.getByRole('button', { name: 'Not Now' }));
-
-        await reconnect('@someone:example.org', { type: 'NeedsRecoveryKey' });
-        expect(heading(), 'Not Now is meant for the rest of the run').toBeNull();
-
-        await report({ type: 'NeedsVerifiedDevice' });
-        expect(heading()).toBe('Set Up This Device');
-    });
-
-    it('asks another account again, and the same one after a sign out', async () => {
-        const user = userEvent.setup();
-        render(EncryptionDialog);
-        await report({ type: 'NeedsRecoveryKey' });
-        await user.click(screen.getByRole('button', { name: 'Not Now' }));
-
-        await reconnect('@another:example.org', { type: 'NeedsRecoveryKey' });
-        expect(heading(), 'one account putting it off says nothing about another').toBe('Enter Your Recovery Key');
-
-        await user.click(screen.getByRole('button', { name: 'Not Now' }));
-        resetLoginSession();
-        await reconnect('@another:example.org', { type: 'NeedsRecoveryKey' });
-        expect(heading()).toBe('Enter Your Recovery Key');
     });
 
     it('offers no way past a new key except confirming it was saved', async () => {

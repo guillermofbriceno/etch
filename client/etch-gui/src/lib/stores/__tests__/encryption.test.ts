@@ -1,10 +1,9 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { get } from 'svelte/store';
-import { invoke } from '@tauri-apps/api/core';
 import { resetStores } from './helpers';
 import {
     encryptionError, encryptionBusy, encryptionScreen, encryptionScreenDismissable,
-    handleMatrixEvent, submitRecoveryKey, resetEncryption, createRecoveryKey,
+    handleMatrixEvent, resetEncryption, createRecoveryKey,
     openEncryptionDialog, openEncryptionReset, dismissEncryptionScreen,
 } from '../encryption';
 import { handleMatrixEvent as handleConnectionEvent } from '../matrixConnection';
@@ -37,30 +36,12 @@ function reconnect(data: EncryptionStatus): void {
 
 beforeEach(() => {
     resetStores();
-    vi.mocked(invoke).mockClear();
     connection('Connected');
 });
 
-// That resets clear these stores is covered by their probes in session.test.ts.
+// That resets clear these stores is covered by their probes in session.test.ts, and what each request sends by EncryptionDialog.test.ts.
 describe('the encryption store', () => {
-    it('keeps the reason a request failed until the next request is sent', () => {
-        status({ type: 'NeedsRecoveryKey' });
-
-        submitRecoveryKey('EsTc abcd');
-        expect(get(encryptionBusy)).toBe(true);
-        failed('That recovery key is not correct.');
-
-        expect(get(encryptionBusy)).toBe(false);
-        expect(get(encryptionError)).toBe('That recovery key is not correct.');
-        expect(invoke).toHaveBeenCalledWith('core_command', {
-            command: { type: 'Matrix', data: { type: 'SubmitRecoveryKey', data: { key: 'EsTc abcd' } } },
-        });
-
-        submitRecoveryKey('EsTc wxyz');
-        expect(get(encryptionError)).toBeNull();
-    });
-
-    it('ends a request on its own answer, never on a status that arrives while it is out', () => {
+    it('ends a request on its own answer, never on a status that arrives while it is out, and keeps its reason until the next is sent', () => {
         status({ type: 'NeedsRecoveryKey' });
         openEncryptionReset();
 
@@ -75,6 +56,7 @@ describe('the encryption store', () => {
         expect(get(encryptionError)).toBe('The password is not correct.');
 
         resetEncryption('password');
+        expect(get(encryptionError), 'the reason belonged to the request before this one').toBeNull();
         status({ type: 'NeedsRecoverySetup' });
         succeeded();
         expect(get(encryptionBusy)).toBe(false);

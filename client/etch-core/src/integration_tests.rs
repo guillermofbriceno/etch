@@ -1582,7 +1582,7 @@ async fn a_new_device_reads_an_earlier_message_once_it_has_the_recovery_key() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_recovery_key_the_app_stopped_showing_before_it_was_saved_is_not_counted_as_saved() {
+async fn an_unconfirmed_recovery_key_is_shown_again_after_a_reconnect_and_not_counted_as_saved_after_a_restart() {
     let form = register_fresh_user("unsaved").await;
     let shown = |e: &CoreEvent| match e {
         CoreEvent::Matrix(MatrixEvent::EncryptionStatus(EncryptionStatus::RecoveryKeyPending { key })) => Some(key.clone()),
@@ -1593,6 +1593,10 @@ async fn a_recovery_key_the_app_stopped_showing_before_it_was_saved_is_not_count
     device.connect_and_expect_status(form.clone(), EncryptionStatus::NeedsRecoverySetup).await;
     device.send(CoreCommand::Matrix(MatrixCommand::CreateRecoveryKey)).await;
     let never_saved = device.expect_event(shown, CONNECT_TIMEOUT).await;
+
+    // A reconnect clears the frontend's copy of a key that nothing else holds.
+    let unconfirmed = EncryptionStatus::RecoveryKeyPending { key: never_saved.clone() };
+    device.connect_and_expect_status(form.clone(), unconfirmed).await;
 
     let mut device = device.restart().await;
     let reported = device.connect_and_expect_status(form.clone(), EncryptionStatus::NeedsRecoverySetup).await;
