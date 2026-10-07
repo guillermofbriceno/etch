@@ -4,9 +4,9 @@ import userEvent from '@testing-library/user-event';
 import { tick } from 'svelte';
 import { invoke } from '@tauri-apps/api/core';
 import { resetStores } from '$lib/stores/__tests__/helpers';
-import { matrixConnected } from '$lib/stores/servers';
-import { handleMatrixEvent, handleSystemEvent } from '$lib/stores/encryption';
-import { resetMatrixSession } from '$lib/stores/session';
+import { matrixStatus } from '$lib/stores/matrixConnection';
+import { handleMatrixEvent } from '$lib/stores/encryption';
+import { resetMatrixSession, resetLoginSession, enterLogin } from '$lib/stores/session';
 import { currentUser } from '$lib/stores/user';
 import type { CoreCommand, MatrixCommand } from '$lib/ipc';
 import type { EncryptionStatus } from '$lib/types';
@@ -35,15 +35,15 @@ function heading(): string | null {
     return screen.queryByRole('heading')?.textContent ?? null;
 }
 
+// What the router does when core names the account of a connect that then lands.
 function signIn(matrixId: string): void {
+    enterLogin(matrixId);
     currentUser.set({ username: 'someone', matrixId, displayName: null, avatarUrl: null });
-    matrixConnected.set(true);
+    matrixStatus.set('connected');
 }
 
-// What a ServerReset does to these stores, followed by the connect that caused it.
 async function reconnect(matrixId: string, status: EncryptionStatus): Promise<void> {
     resetMatrixSession();
-    handleSystemEvent({ type: 'ServerReset' });
     signIn(matrixId);
     await report(status);
 }
@@ -71,23 +71,20 @@ describe('EncryptionDialog', () => {
         if (status.type === 'RecoveryKeyPending') expect(screen.getByText(KEY)).toBeInTheDocument();
     });
 
-    it('waits for the connection, and keeps a half-typed key through a reconnect', async () => {
+    it('stays through a sync that degrades, and keeps a half-typed key through a reconnect', async () => {
         const user = userEvent.setup();
-        matrixConnected.set(false);
         render(EncryptionDialog);
-
         await report({ type: 'NeedsRecoveryKey' });
-        expect(heading(), 'its button could not work yet').toBeNull();
-
-        matrixConnected.set(true);
-        await tick();
         await user.type(screen.getByRole('textbox', { name: 'Recovery key' }), 'EsTc ab');
+
+        matrixStatus.set('recovering');
+        await tick();
+        expect(heading(), 'a dropped poll must not take the dialog away').toBe('Enter Your Recovery Key');
 
         resetMatrixSession();
         await tick();
         expect(heading()).toBeNull();
-        matrixConnected.set(true);
-        await report({ type: 'NeedsRecoveryKey' });
+        await reconnect('@someone:example.org', { type: 'NeedsRecoveryKey' });
 
         expect(screen.getByRole('textbox', { name: 'Recovery key' })).toHaveValue('EsTc ab');
     });
@@ -134,7 +131,7 @@ describe('EncryptionDialog', () => {
         expect(heading(), 'one account putting it off says nothing about another').toBe('Enter Your Recovery Key');
 
         await user.click(screen.getByRole('button', { name: 'Not Now' }));
-        handleSystemEvent({ type: 'SignedOut' });
+        resetLoginSession();
         await reconnect('@another:example.org', { type: 'NeedsRecoveryKey' });
         expect(heading()).toBe('Enter Your Recovery Key');
     });

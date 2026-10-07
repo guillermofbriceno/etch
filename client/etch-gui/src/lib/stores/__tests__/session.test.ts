@@ -20,8 +20,9 @@ import { isMuted, isDeafened } from '../audio';
 import { channels, dmLastActivity, initHiddenDms, unhideDm } from '../channels';
 import { replyingTo, editingMessage } from '../compose';
 import { activeWindow, setActiveChannel } from '../messages';
-import { mediaBaseUrl, passwordRequested, matrixConnecting, matrixConnected, signingOut, signOutError, serverBookmarks, selectedBookmarkId } from '../servers';
-import { encryptionStatus, encryptionError, encryptionRequestedScreen, encryptionBusy } from '../encryption';
+import { matrixStatus } from '../matrixConnection';
+import { mediaBaseUrl, passwordRequested, signingOut, signOutError, signOutDialogOpen, serverBookmarks, selectedBookmarkId } from '../servers';
+import { encryptionStatus, encryptionError, encryptionRequestedScreen, encryptionBusy, encryptionPromptDismissed, createKeyPromptPutOff } from '../encryption';
 import { currentUser } from '../user';
 import { nameColors, canSetNameColor } from '../nameColors';
 import { activeOverlay } from '../overlay';
@@ -191,21 +192,15 @@ const MATRIX_PROBES: SessionStoreProbe[] = [
         expectCleared: () => { expect(get(passwordRequested)).toBe(false); },
     },
     {
-        name: 'matrixConnecting',
-        populate: () => { matrixConnecting.set(true); },
-        expectCleared: () => { expect(get(matrixConnecting)).toBe(false); },
-    },
-    {
-        name: 'matrixConnected',
+        name: 'matrixStatus',
         populate: () => { fireMatrixEvent({ type: 'ConnectionState', data: { type: 'Connected' } }); },
-        expectCleared: () => { expect(get(matrixConnected)).toBe(false); },
+        expectCleared: () => { expect(get(matrixStatus)).toBe('disconnected'); },
     },
     {
         name: 'signingOut',
         populate: () => { signingOut.set(true); },
         expectCleared: () => { expect(get(signingOut)).toBe(false); },
     },
-    // The two events come first: a status ends a request, and with it the screen the user asked for.
     {
         name: 'encryptionStatus',
         populate: () => { fireMatrixEvent({ type: 'EncryptionStatus', data: { type: 'NeedsRecoveryKey' } }); },
@@ -225,6 +220,11 @@ const MATRIX_PROBES: SessionStoreProbe[] = [
         name: 'encryptionBusy',
         populate: () => { encryptionBusy.set(true); },
         expectCleared: () => { expect(get(encryptionBusy)).toBe(false); },
+    },
+    {
+        name: 'createKeyPromptPutOff',
+        populate: () => { createKeyPromptPutOff.set(true); },
+        expectCleared: () => { expect(get(createKeyPromptPutOff)).toBe(false); },
     },
     {
         name: 'certChangeRequest',
@@ -260,6 +260,27 @@ const MATRIX_PROBES: SessionStoreProbe[] = [
             setActiveChannel(ROOM_ID);
             expect(get(activeWindow).entries).toEqual([]);
         },
+    },
+];
+
+const LOGIN_PROBES: VoiceStoreProbe[] = [
+    {
+        name: 'encryptionPromptDismissed',
+        populate: () => { encryptionPromptDismissed.set('NeedsRecoveryKey'); },
+        expectCleared: () => { expect(get(encryptionPromptDismissed)).toBeNull(); },
+        expectPopulated: () => { expect(get(encryptionPromptDismissed)).toBe('NeedsRecoveryKey'); },
+    },
+    {
+        name: 'signOutDialogOpen',
+        populate: () => { signOutDialogOpen.set(true); },
+        expectCleared: () => { expect(get(signOutDialogOpen)).toBe(false); },
+        expectPopulated: () => { expect(get(signOutDialogOpen)).toBe(true); },
+    },
+    {
+        name: 'signOutError',
+        populate: () => { signOutError.set('That did not work.'); },
+        expectCleared: () => { expect(get(signOutError)).toBeNull(); },
+        expectPopulated: () => { expect(get(signOutError)).toBe('That did not work.'); },
     },
 ];
 
@@ -342,6 +363,50 @@ describe('resetVoiceSession clears every registered store', () => {
     });
 });
 
+function fireConnectAs(matrixId: string): void {
+    fireServerReset();
+    fireMatrixEvent({
+        type: 'CurrentUser',
+        data: { username: 'someone', matrix_id: matrixId, display_name: null, avatar_url: null },
+    });
+}
+
+describe('a login ends on a sign out or with another account, and at no other time', () => {
+    beforeEach(() => {
+        resetStores();
+        fireConnectAs('@someone:example.org');
+    });
+
+    it('has a probe for every registered login store', () => {
+        expect(LOGIN_PROBES.map(p => p.name).sort()).toEqual(sessionStoreNames('login'));
+    });
+
+    it('returns every login store to its initial value on SignedOut', () => {
+        for (const probe of LOGIN_PROBES) probe.populate();
+
+        routeCoreEvent({ payload: { type: 'System', data: { type: 'SignedOut' } } satisfies CoreEvent });
+
+        for (const probe of LOGIN_PROBES) probe.expectCleared();
+    });
+
+    // A failed sign out reconnects before its reason is read, and "Not Now" is meant for more than one connection.
+    it('keeps every login store when the same account reconnects', () => {
+        for (const probe of LOGIN_PROBES) probe.populate();
+
+        fireConnectAs('@someone:example.org');
+
+        for (const probe of LOGIN_PROBES) probe.expectPopulated();
+    });
+
+    it('returns every login store to its initial value when another account connects', () => {
+        for (const probe of LOGIN_PROBES) probe.populate();
+
+        fireConnectAs('@another:example.org');
+
+        for (const probe of LOGIN_PROBES) probe.expectCleared();
+    });
+});
+
 describe('the voice session outlives a matrix reset', () => {
     beforeEach(() => {
         resetStores();
@@ -378,7 +443,6 @@ describe('a matrix reset leaves unscoped state alone', () => {
         activeOverlay.set('settings');
         transmissionMode.set('push_to_talk');
         errorLog.set([{ message: 'old error', target: 'test', timestamp: new Date() }]);
-        signOutError.set('That did not work.');
 
         fireServerReset();
 
@@ -387,6 +451,5 @@ describe('a matrix reset leaves unscoped state alone', () => {
         expect(get(activeOverlay)).toBe('settings');
         expect(get(transmissionMode)).toBe('push_to_talk');
         expect(get(errorLog)).toHaveLength(1);
-        expect(get(signOutError), 'a failed sign out reconnects before its reason is read').toBe('That did not work.');
     });
 });

@@ -15,15 +15,17 @@ export const selectedBookmarkId = writable<string | null>(null);
 // Set before ServerReset arrives as the reply to connecting, so a reset must not clear it.
 export const connectingBookmark = writable<ServerBookmark | null>(null);
 
+declareStores('device', 'serverBookmarks', 'selectedBookmarkId', 'connectingBookmark');
+
 export const signOutDialogOpen = writable<boolean>(false);
 // A failed sign out reconnects, and the reset that comes with it must not take the reason away.
 export const signOutError = writable<string | null>(null);
 
-declareStores('device', 'serverBookmarks', 'selectedBookmarkId', 'connectingBookmark', 'signOutDialogOpen', 'signOutError');
+registerSessionStore('login', 'signOutDialogOpen', () => { signOutDialogOpen.set(false); });
+registerSessionStore('login', 'signOutError', () => { signOutError.set(null); });
+
 
 export const passwordRequested = writable<boolean>(false);
-export const matrixConnecting = writable<boolean>(false);
-export const matrixConnected = writable<boolean>(false);
 export const mediaBaseUrl = writable<string | null>(null);
 // A sign out is out and core has answered with neither SignedOut nor SignOutFailed.
 export const signingOut = writable<boolean>(false);
@@ -120,13 +122,9 @@ export function removeBookmark(id: string): void {
 
 const clearMediaBaseUrl = (): void => { mediaBaseUrl.set(null); };
 const clearPasswordRequested = (): void => { passwordRequested.set(false); };
-const clearMatrixConnecting = (): void => { matrixConnecting.set(false); };
-const clearMatrixConnected = (): void => { matrixConnected.set(false); };
 
 registerSessionStore('matrix', 'mediaBaseUrl', clearMediaBaseUrl);
 registerSessionStore('matrix', 'passwordRequested', clearPasswordRequested);
-registerSessionStore('matrix', 'matrixConnecting', clearMatrixConnecting);
-registerSessionStore('matrix', 'matrixConnected', clearMatrixConnected);
 registerSessionStore('matrix', 'signingOut', () => { signingOut.set(false); });
 
 // Handlers called by eventRouter
@@ -135,20 +133,13 @@ export function handleMatrixEvent(me: MatrixEvent): void {
         passwordRequested.set(true);
     } else if (me.type === 'HomeserverResolved') {
         mediaBaseUrl.set(me.data);
-    } else if (me.type === 'ConnectionState') {
-        matrixConnecting.set(me.data.type === 'Connecting');
-        matrixConnected.set(me.data.type === 'Connected');
-        if (me.data.type === 'Connected') {
-            closeOverlay();
-        }
     }
 }
 
 export function handleSystemEvent(se: SystemEvent): void {
     if (se.type === 'SignedOut') {
-        // The ServerReset before it cleared the session, but an overlay and the dialog are kept across a reset.
+        // Settings showed an account that is no longer signed in.
         closeOverlay();
-        closeSignOut();
     } else if (se.type === 'SignOutFailed') {
         signingOut.set(false);
         signOutError.set(se.data.reason);

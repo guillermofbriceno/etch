@@ -67,8 +67,11 @@ fn init_test_logging() {
 
 impl TestHarness {
     fn new() -> Self {
+        Self::on(tempfile::tempdir().expect("failed to create temp dir"))
+    }
+
+    fn on(data_dir: tempfile::TempDir) -> Self {
         init_test_logging();
-        let data_dir = tempfile::tempdir().expect("failed to create temp dir");
         let (cmd_tx, cmd_rx) = mpsc::channel(32);
         let (media_tx, media_rx) = mpsc::channel(256);
         let (event_tx, event_rx) = mpsc::channel(256);
@@ -403,11 +406,21 @@ impl TestHarness {
 
     /// Drop the command sender and wait for the engine to finish.
     async fn shutdown(self) {
+        self.stop().await;
+    }
+
+    /// Stops the engine and starts another on the same data, as closing and reopening the app does.
+    async fn restart(self) -> Self {
+        Self::on(self.stop().await)
+    }
+
+    async fn stop(self) -> tempfile::TempDir {
         drop(self.cmd_tx);
         timeout(Duration::from_secs(10), self.engine_handle)
             .await
             .expect("engine did not shut down within 10s")
             .expect("engine task panicked");
+        self._data_dir
     }
 }
 
@@ -1566,6 +1579,33 @@ async fn a_new_device_reads_an_earlier_message_once_it_has_the_recovery_key() {
     }, CONNECT_TIMEOUT).await;
 
     second.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_recovery_key_the_app_stopped_showing_before_it_was_saved_is_not_counted_as_saved() {
+    let form = register_fresh_user("unsaved").await;
+    let shown = |e: &CoreEvent| match e {
+        CoreEvent::Matrix(MatrixEvent::EncryptionStatus(EncryptionStatus::RecoveryKeyPending { key })) => Some(key.clone()),
+        _ => None,
+    };
+
+    let mut device = TestHarness::new();
+    device.connect_and_expect_status(form.clone(), EncryptionStatus::NeedsRecoverySetup).await;
+    device.send(CoreCommand::Matrix(MatrixCommand::CreateRecoveryKey)).await;
+    let never_saved = device.expect_event(shown, CONNECT_TIMEOUT).await;
+
+    let mut device = device.restart().await;
+    let reported = device.connect_and_expect_status(form.clone(), EncryptionStatus::NeedsRecoverySetup).await;
+    assert!(
+        !reported.contains(&EncryptionStatus::Ready),
+        "the account's recovery has a key nobody holds, which must not be reported as set up: {reported:?}",
+    );
+    let saved = device.create_recovery_key().await;
+    assert_ne!(saved, never_saved, "the key nobody saw must be replaced, not offered again");
+
+    let mut device = device.restart().await;
+    device.connect_and_expect_status(form, EncryptionStatus::Ready).await;
+    device.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

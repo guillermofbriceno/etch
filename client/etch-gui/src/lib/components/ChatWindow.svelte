@@ -1,6 +1,6 @@
 <script lang="ts">
     import { beforeUpdate, afterUpdate, onMount } from 'svelte';
-    import { activeWindow, loadOlder, activeChannel, activeChannelId, openImage, showRoomIds, encryptionStatus, openEncryptionDialog } from '$lib/stores';
+    import { activeWindow, loadOlder, activeChannel, activeChannelId, openImage, showRoomIds, encryptionStatus, unlockScreen, openEncryptionDialog } from '$lib/stores';
     import { undecryptableLine } from '$lib/encryptionText';
     import type { ChatMessage, TimelineEntry, TimelineEntryKind, StateEventKind } from '$lib/types';
     import MessageGroup from './MessageGroup.svelte';
@@ -299,7 +299,7 @@
                 {:else if entry.kind === 'Undecryptable'}
                     {@const count = undecryptableRun($activeWindow.entries, i)}
                     {#if count > 0}
-                        {@const line = undecryptableLine(count, $encryptionStatus.type)}
+                        {@const line = undecryptableLine(count, unlockScreen($encryptionStatus.type))}
                         {#if line.remedy}
                             <button class="undecryptable" on:click={openEncryptionDialog}>
                                 {line.text} <span class="undecryptable-remedy">{line.remedy}</span>

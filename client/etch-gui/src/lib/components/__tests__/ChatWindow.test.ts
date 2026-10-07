@@ -7,7 +7,7 @@ import { resetStores } from '$lib/stores/__tests__/helpers';
 import { activeChannelId } from '$lib/stores/activeChannel';
 import { handleMatrixEvent as handleTimelineEvent } from '$lib/stores/messages';
 import {
-    handleMatrixEvent as handleEncryptionEvent, encryptionPromptDismissed, dismissEncryptionPrompt,
+    handleMatrixEvent as handleEncryptionEvent, encryptionPromptDismissed,
 } from '$lib/stores/encryption';
 import type { EncryptionStatus, TimelineEntry, TimelineEntryKind } from '$lib/types';
 import ChatWindow from '../ChatWindow.svelte';
@@ -84,7 +84,7 @@ describe('undecryptable messages in the chat window', () => {
     ])('opens the dialog only on a device that has something to do, as in %j', async (status, name) => {
         const user = userEvent.setup();
         await show([undecryptable(), undecryptable()], status);
-        dismissEncryptionPrompt();
+        encryptionPromptDismissed.set(status.type);
 
         await user.click(screen.getByRole('button', { name }));
         expect(get(encryptionPromptDismissed), 'the line should bring the dismissed prompt back').toBeNull();

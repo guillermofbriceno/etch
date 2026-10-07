@@ -1,7 +1,7 @@
 <script lang="ts">
-    import { currentUser, canSetNameColor, matrixConnected, encryptionStatus, openEncryptionDialog } from '$lib/stores';
+    import { currentUser, canSetNameColor, matrixSessionLive, encryptionStatus, entryScreen, openEncryptionDialog } from '$lib/stores';
     import { sendCoreCommand } from '$lib/ipc';
-    import { encryptionText, NOT_CONNECTED } from '$lib/encryptionText';
+    import { ACTION, SUMMARY, NOT_CONNECTED } from '$lib/encryptionText';
     import Icon from '../Icon.svelte';
     import AvatarFallback from '../AvatarFallback.svelte';
     import NameColorSetting from './NameColorSetting.svelte';
@@ -19,7 +19,7 @@
     let passwordError = '';
     $: passwordValid = currentPassword.length > 0 && newPassword.length > 0 && newPassword === confirmPassword;
 
-    $: recoveryKey = encryptionText($encryptionStatus.type);
+    $: recoveryKeyEntry = entryScreen($encryptionStatus.type);
 
     async function pickAvatar() {
         const path = await open({
@@ -102,11 +102,11 @@
 
     <div class="setting-group" role="group" aria-labelledby="recovery-key-label">
         <span class="setting-label" id="recovery-key-label">Recovery Key</span>
-        {#if $matrixConnected}
-            <p class="setting-desc">{recoveryKey.summary}</p>
-            {#if recoveryKey.button}
-                <button class="action-btn" class:secondary={$encryptionStatus.type === 'Ready'} on:click={openEncryptionDialog}>
-                    {recoveryKey.button}
+        {#if $matrixSessionLive}
+            <p class="setting-desc">{SUMMARY[$encryptionStatus.type]}</p>
+            {#if recoveryKeyEntry}
+                <button class="action-btn" class:secondary={recoveryKeyEntry === 'replace-key'} on:click={openEncryptionDialog}>
+                    {ACTION[recoveryKeyEntry]}
                 </button>
             {/if}
         {:else}

@@ -5,8 +5,9 @@ import { tick } from 'svelte';
 import { invoke } from '@tauri-apps/api/core';
 import { resetStores } from '$lib/stores/__tests__/helpers';
 import { handleMatrixEvent as handleEncryptionEvent } from '$lib/stores/encryption';
-import { connectingBookmark, matrixConnected, handleSystemEvent } from '$lib/stores/servers';
-import { resetMatrixSession } from '$lib/stores/session';
+import { connectingBookmark, handleSystemEvent } from '$lib/stores/servers';
+import { matrixStatus } from '$lib/stores/matrixConnection';
+import { resetMatrixSession, resetLoginSession } from '$lib/stores/session';
 import type { CoreCommand } from '$lib/ipc';
 import type { EncryptionStatus } from '$lib/types';
 import SettingsModal from '../SettingsModal.svelte';
@@ -49,7 +50,7 @@ describe('signing out from Settings', () => {
         expect(navItem(), 'there is no session to sign out of yet').toBeDisabled();
         expect(screen.getByText('Available once Etch is connected.')).toBeInTheDocument();
 
-        matrixConnected.set(true);
+        matrixStatus.set('connected');
         await report({ type: 'Ready' });
         await user.click(navItem());
         expect(screen.getByRole('dialog')).toHaveTextContent('This signs someone out of example.org on this device');
@@ -80,7 +81,7 @@ describe('signing out from Settings', () => {
 
     it('stays open with the reason when signing out fails', async () => {
         const user = userEvent.setup();
-        matrixConnected.set(true);
+        matrixStatus.set('connected');
         await report({ type: 'Ready' });
         await user.click(navItem());
         await user.click(dialog().getByRole('button', { name: 'Sign Out' }));
@@ -97,7 +98,8 @@ describe('signing out from Settings', () => {
         await user.click(dialog().getByRole('button', { name: 'Try Again' }));
         expect(signOutsSent()).toHaveLength(2);
 
-        handleSystemEvent({ type: 'SignedOut' });
+        // The router ends the login on SignedOut.
+        resetLoginSession();
         await tick();
         expect(screen.queryByRole('dialog')).toBeNull();
     });

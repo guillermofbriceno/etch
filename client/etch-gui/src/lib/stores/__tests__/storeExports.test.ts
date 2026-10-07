@@ -16,6 +16,7 @@ describe('every exported store is classified', () => {
         const declared = new Set([
             ...sessionStoreNames('matrix'),
             ...sessionStoreNames('voice'),
+            ...sessionStoreNames('login'),
             ...exemptStoreEntries().map(([name]) => name),
         ]);
 

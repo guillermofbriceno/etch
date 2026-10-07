@@ -36,8 +36,10 @@ pub enum MatrixEvent {
     /// Answers to `ResolveNameColors`, and changes nobody asked about.
     NameColors(Vec<UserNameColor>),
     Capabilities { name_color: bool },
+    /// What the device needs. Sent when it changes and on every connect, never as the answer to a request.
     EncryptionStatus(EncryptionStatus),
-    /// Success has no event of its own: an `EncryptionStatus` follows every request, after this one if it failed.
+    /// Every encryption request is answered by exactly one of these two, after any status it led to.
+    EncryptionActionSucceeded,
     EncryptionActionFailed { reason: String },
 }
 

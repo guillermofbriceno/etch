@@ -1,13 +1,11 @@
 <script lang="ts">
     import {
-        encryptionStatus, encryptionError, encryptionPromptDismissed, encryptionRequestedScreen, encryptionBusy,
-        matrixConnected, currentUser,
+        encryptionStatus, encryptionError, encryptionBusy, encryptionScreen, encryptionScreenDismissable, currentUser,
         createRecoveryKey, confirmRecoveryKeySaved, submitRecoveryKey, resetEncryption,
-        dismissEncryptionPrompt, openEncryptionReset, closeEncryptionScreen,
+        openEncryptionReset, dismissEncryptionScreen,
     } from '$lib/stores';
-    import type { RequestedScreen } from '$lib/stores';
     import { saveFileAs } from '$lib/media';
-    import { ACTION, TITLE, encryptionText, type EncryptionScreen } from '$lib/encryptionText';
+    import { ACTION, TITLE, SUMMARY } from '$lib/encryptionText';
     import type { EncryptionStatus } from '$lib/types';
     import Dialog from './Dialog.svelte';
     import DialogStatus from './DialogStatus.svelte';
@@ -20,30 +18,11 @@
     let lastPrompt: EncryptionStatus['type'] | null = null;
 
     $: status = $encryptionStatus;
-    $: text = encryptionText(status.type);
+    $: summary = SUMMARY[status.type];
     $: pendingKey = status.type === 'RecoveryKeyPending' ? status.data.key : null;
-    $: dismissed = $encryptionPromptDismissed?.account === $currentUser.matrixId
-        && $encryptionPromptDismissed?.need === status.type;
-    $: screen = screenFor(status.type, $matrixConnected, dismissed, $encryptionRequestedScreen);
-    $: confirming = screen === 'reset' || screen === 'replace-key';
-    $: canDismiss = confirming ? !$encryptionBusy
-        : screen === 'enter-key' || screen === 'set-up-device' || (screen === 'create-key' && $encryptionError !== null);
+    $: screen = $encryptionScreen;
     $: forgetInputsOnNewPrompt(status.type);
-    $: if ($encryptionRequestedScreen !== 'reset') passwordInput = '';
-
-    function screenFor(
-        type: EncryptionStatus['type'], connected: boolean, dismissed: boolean, requested: RequestedScreen | null,
-    ): EncryptionScreen | null {
-        if (!connected) return null;
-        if (type === 'RecoveryKeyPending') return 'save-key';
-        if (requested === 'reset') return 'reset';
-        if (requested === 'replace-key' && type === 'Ready') return 'replace-key';
-        if (dismissed) return null;
-        if (type === 'NeedsRecoverySetup') return 'create-key';
-        if (type === 'NeedsRecoveryKey') return 'enter-key';
-        if (type === 'NeedsVerifiedDevice') return 'set-up-device';
-        return null;
-    }
+    $: if (screen !== 'reset') passwordInput = '';
 
     // A reconnect passes through Unknown and back, which must not clear a half-typed key.
     function forgetInputsOnNewPrompt(type: EncryptionStatus['type']) {
@@ -65,12 +44,6 @@
         if (!passwordInput || $encryptionBusy) return;
         resetEncryption(passwordInput);
         passwordInput = '';
-    }
-
-    function dismiss() {
-        if (!canDismiss) return;
-        if (confirming) closeEncryptionScreen();
-        else dismissEncryptionPrompt();
     }
 
     async function copyKey() {
@@ -105,7 +78,7 @@
 </script>
 
 {#if screen}
-    <Dialog title={TITLE[screen]} dismissable={canDismiss} {screen} on:dismiss={dismiss}>
+    <Dialog title={TITLE[screen]} dismissable={$encryptionScreenDismissable} {screen} on:dismiss={dismissEncryptionScreen}>
         {#if screen === 'create-key'}
             <p class="prompt">
                 Your messages here are encrypted. A recovery key lets you read them when you sign in on a new device.
@@ -114,10 +87,10 @@
             <DialogStatus error={$encryptionError} note={$encryptionBusy ? 'Creating...' : ''} />
             <div class="actions">
                 <button class="action-btn" on:click={createRecoveryKey} disabled={$encryptionBusy}>
-                    {$encryptionError ? 'Try Again' : ACTION.createKey}
+                    {$encryptionError ? 'Try Again' : ACTION['create-key']}
                 </button>
                 {#if $encryptionError}
-                    <button class="action-btn secondary" on:click={dismissEncryptionPrompt}>Not Now</button>
+                    <button class="action-btn secondary" on:click={dismissEncryptionScreen}>Not Now</button>
                 {/if}
             </div>
         {:else if screen === 'save-key'}
@@ -135,7 +108,7 @@
                 <button class="action-btn" on:click={confirmRecoveryKeySaved} disabled={$encryptionBusy}>I have saved it</button>
             </div>
         {:else if screen === 'enter-key'}
-            <p class="prompt">{text.summary} Voice works without it.</p>
+            <p class="prompt">{summary} Voice works without it.</p>
             <input
                 type="text"
                 class="text-field"
@@ -149,7 +122,7 @@
             <DialogStatus error={$encryptionError} note={$encryptionBusy ? 'Checking...' : ''} />
             <div class="actions">
                 <button class="action-btn" on:click={submitKey} disabled={$encryptionBusy || !keyInput.trim()}>Continue</button>
-                <button class="action-btn secondary" on:click={dismissEncryptionPrompt}>Not Now</button>
+                <button class="action-btn secondary" on:click={dismissEncryptionScreen}>Not Now</button>
             </div>
             <button class="link-btn" on:click={() => showNoKeyHelp = !showNoKeyHelp} aria-expanded={showNoKeyHelp}>
                 I don't have my key
@@ -157,7 +130,7 @@
             {#if showNoKeyHelp}
                 <div class="help">
                     <p class="prompt">
-                        If you are still signed in to Etch on another device, open Settings there, go to My Account, and choose {ACTION.replaceKey}. Then enter the new key here.
+                        If you are still signed in to Etch on another device, open Settings there, go to My Account, and choose {ACTION['replace-key']}. Then enter the new key here.
                     </p>
                     <p class="prompt">
                         If you have no other device, you can reset encryption. Older encrypted messages that this device cannot already read will be lost for good.
@@ -166,7 +139,7 @@
                 </div>
             {/if}
         {:else if screen === 'set-up-device'}
-            <p class="prompt">{text.summary} Your account has no recovery key to enter. Voice works without it.</p>
+            <p class="prompt">{summary} Your account has no recovery key to enter. Voice works without it.</p>
             <p class="prompt">
                 If you are signed in to Etch on another device, create a recovery key there. Etch will then ask for it here.
             </p>
@@ -175,7 +148,7 @@
             </p>
             <div class="actions">
                 <button class="action-btn danger" on:click={openEncryptionReset}>{ACTION.reset}</button>
-                <button class="action-btn secondary" on:click={dismissEncryptionPrompt}>Not Now</button>
+                <button class="action-btn secondary" on:click={dismissEncryptionScreen}>Not Now</button>
             </div>
         {:else if screen === 'replace-key'}
             <p class="prompt">
@@ -184,9 +157,9 @@
             <DialogStatus error={$encryptionError} note={$encryptionBusy ? 'Replacing...' : ''} />
             <div class="actions">
                 <button class="action-btn" on:click={createRecoveryKey} disabled={$encryptionBusy}>
-                    {$encryptionError ? 'Try Again' : ACTION.replaceKey}
+                    {$encryptionError ? 'Try Again' : ACTION['replace-key']}
                 </button>
-                <button class="action-btn secondary" on:click={closeEncryptionScreen} disabled={$encryptionBusy}>Cancel</button>
+                <button class="action-btn secondary" on:click={dismissEncryptionScreen} disabled={$encryptionBusy}>Cancel</button>
             </div>
         {:else if screen === 'reset'}
             <p class="prompt">This gives your account a fresh start for encryption. It cannot be undone.</p>
@@ -208,7 +181,7 @@
             <DialogStatus error={$encryptionError} note={$encryptionBusy ? 'Resetting...' : ''} />
             <div class="actions">
                 <button class="action-btn danger" on:click={submitReset} disabled={$encryptionBusy || !passwordInput}>{ACTION.reset}</button>
-                <button class="action-btn secondary" on:click={closeEncryptionScreen} disabled={$encryptionBusy}>Cancel</button>
+                <button class="action-btn secondary" on:click={dismissEncryptionScreen} disabled={$encryptionBusy}>Cancel</button>
             </div>
         {/if}
     </Dialog>

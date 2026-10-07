@@ -1,7 +1,7 @@
 <script lang="ts">
     import {
         signOutDialogOpen, signingOut, signOutError, signOut, closeSignOut,
-        connectingBookmark, encryptionStatus,
+        connectingBookmark, encryptionStatus, hasNoSavedKey,
     } from '$lib/stores';
     import Dialog from './Dialog.svelte';
     import DialogStatus from './DialogStatus.svelte';
@@ -10,10 +10,7 @@
 
     $: status = $encryptionStatus.type;
     // A failed sign out reconnects through Unknown, which must not change what the open dialog says.
-    $: if (status !== 'Unknown' || !$signOutDialogOpen) {
-        // Until a key is saved, this device holds the only copy of what unlocks the encrypted messages.
-        recoveryKeyNotSaved = status === 'NeedsRecoverySetup' || status === 'RecoveryKeyPending';
-    }
+    $: if (status !== 'Unknown' || !$signOutDialogOpen) recoveryKeyNotSaved = hasNoSavedKey(status);
 </script>
 
 {#if $signOutDialogOpen}

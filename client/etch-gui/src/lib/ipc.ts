@@ -24,6 +24,7 @@ export type MatrixEvent =
     | { type: 'NameColors'; data: { user_id: string; color: NameColor | null }[] }
     | { type: 'Capabilities'; data: { name_color: boolean } }
     | { type: 'EncryptionStatus'; data: EncryptionStatus }
+    | { type: 'EncryptionActionSucceeded' }
     | { type: 'EncryptionActionFailed'; data: { reason: string } };
 
 export type MumbleEvent =

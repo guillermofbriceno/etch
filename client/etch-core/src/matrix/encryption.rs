@@ -64,6 +64,7 @@ impl fmt::Debug for Secret {
 pub enum EncryptionStatus {
     Unknown,
     Ready,
+    /// The account has no recovery key that the user was able to save.
     NeedsRecoverySetup,
     /// Created but not yet confirmed as saved; nothing else holds the key.
     RecoveryKeyPending { key: Secret },
@@ -72,16 +73,27 @@ pub enum EncryptionStatus {
     NeedsVerifiedDevice,
 }
 
+/// What became of the last recovery key this device created.
+#[derive(Debug, PartialEq)]
+enum CreatedKey {
+    /// None was created here, or the user confirmed having saved it.
+    Settled,
+    Shown(Secret),
+    /// The app stopped before the user confirmed saving it, so the account's recovery has a key nobody holds.
+    Lost,
+}
+
 impl EncryptionStatus {
-    fn of(verification: VerificationState, recovery: RecoveryState, pending_key: Option<&Secret>) -> Self {
+    fn of(verification: VerificationState, recovery: RecoveryState, created: &CreatedKey) -> Self {
         use {RecoveryState as R, VerificationState as V};
 
-        if let Some(key) = pending_key {
+        if let CreatedKey::Shown(key) = created {
             return Self::RecoveryKeyPending { key: key.clone() };
         }
         match (verification, recovery) {
             (V::Unknown, _) | (_, R::Unknown) => Self::Unknown,
             (_, R::Incomplete) | (V::Unverified, R::Enabled) => Self::NeedsRecoveryKey,
+            (V::Verified, R::Enabled) if *created == CreatedKey::Lost => Self::NeedsRecoverySetup,
             (V::Verified, R::Enabled) => Self::Ready,
             (V::Verified, R::Disabled) => Self::NeedsRecoverySetup,
             (V::Unverified, R::Disabled) => Self::NeedsVerifiedDevice,
@@ -157,6 +169,7 @@ pub(crate) enum Request {
 
 /// One per Matrix client, owned by the session that owns the client, so a recovery key
 /// that was created but not yet saved survives a reconnect.
+/// Every request except `Announce` is answered once, with success or the reason it failed.
 pub(crate) struct EncryptionWorker {
     requests: mpsc::Sender<Request>,
     _task: AbortOnDrop,
@@ -202,11 +215,12 @@ async fn run(client: Client, mut requests: mpsc::Receiver<Request>, event_tx: mp
     let recovery = encryption.recovery();
     let mut verification_changes = encryption.verification_state();
     let mut recovery_changes = std::pin::pin!(recovery.state_stream().fuse());
-    let mut pending_key: Option<Secret> = None;
+    let mut created = if unsaved_key_marked(&client).await { CreatedKey::Lost } else { CreatedKey::Settled };
     let mut announced: Option<EncryptionStatus> = None;
+    let mut answer: Option<Result<(), String>> = None;
 
     loop {
-        let status = EncryptionStatus::of(verification_changes.get(), recovery.state(), pending_key.as_ref());
+        let status = EncryptionStatus::of(verification_changes.get(), recovery.state(), &created);
         if announced.as_ref() != Some(&status) {
             log::info!("Encryption status is now {status:?}");
             let event = MatrixEvent::EncryptionStatus(status.clone());
@@ -215,60 +229,102 @@ async fn run(client: Client, mut requests: mpsc::Receiver<Request>, event_tx: mp
             }
             announced = Some(status);
         }
-
-        let failure = tokio::select! {
-            request = requests.recv() => {
-                let Some(request) = request else { return };
-                // The frontend takes the next status as the answer to its request, so one follows even when nothing changed.
-                announced = None;
-                match request {
-                    Request::Announce => None,
-                    Request::ConfirmRecoveryKeySaved => {
-                        pending_key = None;
-                        None
-                    }
-                    Request::CreateRecoveryKey => match create_recovery_key(&client).await {
-                        Ok(key) => {
-                            pending_key = Some(key);
-                            None
-                        }
-                        Err(reason) => Some(reason),
-                    },
-                    Request::SubmitRecoveryKey(key) => recovery.recover(key.expose().trim()).await
-                        .err()
-                        .map(|e| failure_reason(Action::EnterKey, &e)),
-                    Request::Reset { password } => match reset(&client, &password).await {
-                        Ok(()) => {
-                            // It unlocked the recovery the reset just deleted.
-                            pending_key = None;
-                            None
-                        }
-                        Err(reason) => Some(reason),
-                    },
+        // After the status, so the frontend already holds the state its request led to.
+        if let Some(outcome) = answer.take() {
+            let event = match outcome {
+                Ok(()) => MatrixEvent::EncryptionActionSucceeded,
+                Err(reason) => {
+                    log::warn!("An encryption request failed: {reason}");
+                    MatrixEvent::EncryptionActionFailed { reason }
                 }
-            },
-            Some(_) = verification_changes.next() => None,
-            Some(_) = recovery_changes.next() => None,
-        };
-
-        if let Some(reason) = failure {
-            log::warn!("An encryption request failed: {reason}");
-            let event = MatrixEvent::EncryptionActionFailed { reason };
+            };
             if event_tx.send(CoreEvent::Matrix(event)).await.is_err() {
                 return;
             }
         }
+
+        tokio::select! {
+            request = requests.recv() => {
+                let Some(request) = request else { return };
+                match request {
+                    // A reconnect cleared the frontend's copy, so the status goes out again even if unchanged.
+                    Request::Announce => announced = None,
+                    Request::ConfirmRecoveryKeySaved => {
+                        if matches!(created, CreatedKey::Shown(_)) {
+                            mark_key_unsaved(&client, false).await;
+                            created = CreatedKey::Settled;
+                        }
+                        answer = Some(Ok(()));
+                    }
+                    Request::CreateRecoveryKey => answer = Some(create_recovery_key(&client, &mut created).await),
+                    Request::SubmitRecoveryKey(key) => {
+                        let recovered = recovery.recover(key.expose().trim()).await;
+                        answer = Some(recovered.map_err(|e| failure_reason(Action::EnterKey, &e)));
+                    }
+                    Request::Reset { password } => {
+                        let outcome = reset(&client, &password).await;
+                        if outcome.is_ok() {
+                            // The reset deleted the recovery that key belonged to.
+                            mark_key_unsaved(&client, false).await;
+                            created = CreatedKey::Settled;
+                        }
+                        answer = Some(outcome);
+                    }
+                }
+            },
+            Some(_) = verification_changes.next() => {},
+            Some(_) = recovery_changes.next() => {},
+        }
     }
 }
 
-async fn create_recovery_key(client: &Client) -> Result<Secret, String> {
+/// Kept in the login's own store, so it ends with the login it describes.
+const UNSAVED_KEY_MARKER: &[u8] = b"etch.recovery_key_unsaved";
+
+async fn unsaved_key_marked(client: &Client) -> bool {
+    match client.state_store().get_custom_value(UNSAVED_KEY_MARKER).await {
+        Ok(marker) => marker.is_some(),
+        Err(e) => {
+            log::warn!("Could not read whether the last recovery key was saved: {e}");
+            false
+        }
+    }
+}
+
+async fn mark_key_unsaved(client: &Client, unsaved: bool) {
+    let store = client.state_store();
+    let written = if unsaved {
+        store.set_custom_value_no_read(UNSAVED_KEY_MARKER, vec![1]).await
+    } else {
+        store.remove_custom_value(UNSAVED_KEY_MARKER).await.map(drop)
+    };
+    if let Err(e) = written {
+        log::warn!("Could not record whether the recovery key was saved: {e}");
+    }
+}
+
+async fn create_recovery_key(client: &Client, created: &mut CreatedKey) -> Result<(), String> {
     let encryption = client.encryption();
     let recovery = encryption.recovery();
-    let created = match KeyCreation::for_state(encryption.verification_state().get(), recovery.state())? {
+    let creation = KeyCreation::for_state(encryption.verification_state().get(), recovery.state())?;
+    // Marked before the key exists, so a run that ends in between cannot report a key nobody saw as saved.
+    mark_key_unsaved(client, true).await;
+    let key = match creation {
         KeyCreation::First => recovery.enable().await,
         KeyCreation::Replacement => recovery.reset_key().await,
     };
-    created.map(Secret::from).map_err(|e| failure_reason(Action::CreateKey, &e))
+    match key {
+        Ok(key) => {
+            *created = CreatedKey::Shown(Secret::from(key));
+            Ok(())
+        }
+        Err(e) => {
+            if *created == CreatedKey::Settled {
+                mark_key_unsaved(client, false).await;
+            }
+            Err(failure_reason(Action::CreateKey, &e))
+        }
+    }
 }
 
 async fn reset(client: &Client, password: &Secret) -> Result<(), String> {
@@ -325,18 +381,27 @@ mod tests {
         ];
         for (verification, recovery, expected) in table {
             assert_eq!(
-                EncryptionStatus::of(verification, recovery, None), expected,
+                EncryptionStatus::of(verification, recovery, &CreatedKey::Settled), expected,
                 "for a device that is {verification:?} with recovery {recovery:?}",
             );
         }
 
         for (verification, recovery) in [(V::Verified, R::Enabled), (V::Unknown, R::Unknown), (V::Unverified, R::Disabled)] {
             assert_eq!(
-                EncryptionStatus::of(verification, recovery, Some(&key())),
+                EncryptionStatus::of(verification, recovery, &CreatedKey::Shown(key())),
                 S::RecoveryKeyPending { key: key() },
                 "a key nobody has confirmed saving must stay on screen whatever else changes",
             );
         }
+
+        assert_eq!(
+            EncryptionStatus::of(V::Verified, R::Enabled, &CreatedKey::Lost), S::NeedsRecoverySetup,
+            "a key the app stopped showing before it was saved is not a key the user has",
+        );
+        assert_eq!(
+            EncryptionStatus::of(V::Unverified, R::Enabled, &CreatedKey::Lost), S::NeedsRecoveryKey,
+            "a lost key changes nothing for a device that could not have created one",
+        );
     }
 
     #[test]
@@ -359,20 +424,27 @@ mod tests {
         assert_eq!(KeyCreation::for_state(V::Verified, R::Unknown), Err(STATE_NOT_KNOWN));
     }
 
-    /// The worker's next report: a status, or the reason a request failed.
-    async fn next_report(events: &mut mpsc::Receiver<CoreEvent>) -> Result<EncryptionStatus, String> {
+    #[derive(Debug, PartialEq)]
+    enum Report {
+        Status(EncryptionStatus),
+        Succeeded,
+        Failed(String),
+    }
+
+    async fn next_report(events: &mut mpsc::Receiver<CoreEvent>) -> Report {
         let event = tokio::time::timeout(std::time::Duration::from_secs(10), events.recv()).await
             .expect("the worker should have reported something")
             .expect("the worker should still be running");
         match event {
-            CoreEvent::Matrix(MatrixEvent::EncryptionStatus(status)) => Ok(status),
-            CoreEvent::Matrix(MatrixEvent::EncryptionActionFailed { reason }) => Err(reason),
+            CoreEvent::Matrix(MatrixEvent::EncryptionStatus(status)) => Report::Status(status),
+            CoreEvent::Matrix(MatrixEvent::EncryptionActionSucceeded) => Report::Succeeded,
+            CoreEvent::Matrix(MatrixEvent::EncryptionActionFailed { reason }) => Report::Failed(reason),
             other => panic!("the worker reports nothing else, got {other:?}"),
         }
     }
 
     #[tokio::test]
-    async fn the_worker_repeats_its_status_when_asked_and_says_why_a_request_failed() {
+    async fn the_worker_answers_each_request_once_and_repeats_its_status_only_when_asked() {
         // The server reports no recovery for the account, and nothing that would show this device as signed.
         let server = CannedHomeserver::answering(|request| {
             if request.contains("/account_data/") {
@@ -383,25 +455,27 @@ mod tests {
         }).await;
         let (event_tx, mut events) = mpsc::channel(8);
         let worker = EncryptionWorker::spawn(server.client_for("@alice:example.com").await, event_tx);
-        assert_eq!(next_report(&mut events).await, Ok(EncryptionStatus::NeedsVerifiedDevice));
+        assert_eq!(next_report(&mut events).await, Report::Status(EncryptionStatus::NeedsVerifiedDevice));
 
         assert!(worker.ask(Request::Announce));
         assert_eq!(
-            next_report(&mut events).await, Ok(EncryptionStatus::NeedsVerifiedDevice),
+            next_report(&mut events).await, Report::Status(EncryptionStatus::NeedsVerifiedDevice),
             "a reconnect clears the frontend's copy, so an unchanged status must be sent again",
         );
 
         assert!(worker.ask(Request::SubmitRecoveryKey(key())));
-        assert_eq!(next_report(&mut events).await, Err(NO_RECOVERY.to_owned()));
-        assert_eq!(
-            next_report(&mut events).await, Ok(EncryptionStatus::NeedsVerifiedDevice),
-            "the frontend waits for a status to end every request, so one must follow even when nothing changed",
-        );
+        assert_eq!(next_report(&mut events).await, Report::Failed(NO_RECOVERY.to_owned()));
 
         assert!(worker.ask(Request::CreateRecoveryKey));
         assert_eq!(
-            next_report(&mut events).await, Err(DEVICE_NOT_VERIFIED.to_owned()),
-            "a key created here would hold none of the account's secrets",
+            next_report(&mut events).await, Report::Failed(DEVICE_NOT_VERIFIED.to_owned()),
+            "a key created here would hold none of the account's secrets, and no status may come between two answers",
+        );
+
+        assert!(worker.ask(Request::ConfirmRecoveryKeySaved));
+        assert_eq!(
+            next_report(&mut events).await, Report::Succeeded,
+            "a request that changed nothing is still answered, and with an answer, not a status",
         );
     }
 

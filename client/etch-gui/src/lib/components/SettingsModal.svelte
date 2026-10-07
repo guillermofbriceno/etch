@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { settingsTab, errorLog, matrixConnected, openSignOut } from '$lib/stores';
+    import { settingsTab, errorLog, matrixSessionLive, openSignOut } from '$lib/stores';
     import { getVersion } from '@tauri-apps/api/app';
 
     import ModalLayout from './ModalLayout.svelte';
@@ -43,8 +43,8 @@
 
         <div class="divider"></div>
 
-        <button class="tab sign-out" on:click={openSignOut} disabled={!$matrixConnected}>Sign Out</button>
-        {#if !$matrixConnected}
+        <button class="tab sign-out" on:click={openSignOut} disabled={!$matrixSessionLive}>Sign Out</button>
+        {#if !$matrixSessionLive}
             <p class="tab-hint">Available once Etch is connected.</p>
         {/if}
 

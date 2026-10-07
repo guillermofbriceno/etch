@@ -4,8 +4,8 @@ import { invoke } from '@tauri-apps/api/core';
 import {
     loadSettings, connectToServer, addBookmark, updateBookmark, removeBookmark,
     serverBookmarks, selectedBookmarkId, connectingBookmark,
-    handleSystemEvent, handleMatrixEvent, passwordRequested, matrixConnecting, mediaBaseUrl,
-    signOut, signingOut, signOutError, signOutDialogOpen,
+    handleSystemEvent, handleMatrixEvent, passwordRequested, mediaBaseUrl,
+    signOut, signingOut, signOutError,
 } from '../servers';
 import { transmissionMode, vadThreshold, voiceHold, useMumbleSettings, deafenSuppressesNotifs } from '../voiceSettings';
 import { activeOverlay } from '../overlay';
@@ -425,14 +425,13 @@ describe('handleSystemEvent (SettingsLoaded)', () => {
 });
 
 describe('handleSystemEvent (sign out)', () => {
-    it('closes Settings and the dialog on SignedOut', () => {
+    // That the dialog and its reason end with the login is covered by their probes in session.test.ts.
+    it('closes Settings on SignedOut', () => {
         activeOverlay.set('settings');
-        signOutDialogOpen.set(true);
 
         handleSystemEvent({ type: 'SignedOut' });
 
         expect(get(activeOverlay), 'the account page describes a session that is gone').toBe('none');
-        expect(get(signOutDialogOpen)).toBe(false);
     });
 
     it('ends the request with its reason on SignOutFailed and stays where it was', () => {
@@ -460,25 +459,4 @@ describe('handleMatrixEvent (servers)', () => {
         expect(get(mediaBaseUrl)).toBe('https://matrix.etch.gg');
     });
 
-    it('sets matrixConnecting to true on Connecting', () => {
-        handleMatrixEvent({ type: 'ConnectionState', data: { type: 'Connecting' } } as any);
-
-        expect(get(matrixConnecting)).toBe(true);
-    });
-
-    it('sets matrixConnecting to false on Connected', () => {
-        matrixConnecting.set(true);
-
-        handleMatrixEvent({ type: 'ConnectionState', data: { type: 'Connected' } } as any);
-
-        expect(get(matrixConnecting)).toBe(false);
-    });
-
-    it('closes overlay on Connected', () => {
-        activeOverlay.set('connect');
-
-        handleMatrixEvent({ type: 'ConnectionState', data: { type: 'Connected' } } as any);
-
-        expect(get(activeOverlay)).toBe('none');
-    });
 });
