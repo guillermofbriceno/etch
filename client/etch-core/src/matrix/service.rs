@@ -1122,21 +1122,43 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn a_sign_out_that_cannot_reach_the_server_keeps_the_login() {
+    /// Signs out a live session of `client`, whose server will not carry it out, and returns the reason given.
+    async fn sign_out_the_server_does_not_carry_out(client: Client, form: &ServerConnectionForm) -> String {
         let tmp = tempfile::tempdir().unwrap();
         let (internal_tx, _internal_rx) = mpsc::channel(1);
-        let form = test_form();
         let mut service = service(tmp.path());
-        let saved = save_login(tmp.path(), &form);
-        go_live(&mut service, unreachable_client("@alice:example.com").await, &form);
+        let saved = save_login(tmp.path(), form);
+        go_live(&mut service, client, form);
 
-        let outcome = service.sign_out(form.clone()).await;
+        let outcome = tokio::time::timeout(Duration::from_secs(5), service.sign_out(form.clone())).await
+            .expect("the Matrix actor serves nothing else until a sign out answers, so it must not keep trying");
 
-        assert_eq!(outcome, Err(SIGN_OUT_UNREACHABLE.to_owned()));
         assert!(saved.exists(), "the device is still on the server, so its login must stay usable");
-        service.prepare_session(&form, &internal_tx).await
+        service.prepare_session(form, &internal_tx).await
             .expect("the session should be there to reconnect with, without a password");
+        outcome.expect_err("a device still on the server must not be reported as signed out")
+    }
+
+    #[tokio::test]
+    async fn a_sign_out_the_server_does_not_carry_out_keeps_the_login_and_is_not_tried_again() {
+        let unreachable = unreachable_client("@alice:example.com").await;
+        assert_eq!(sign_out_the_server_does_not_carry_out(unreachable, &test_form()).await, SIGN_OUT_UNREACHABLE);
+
+        // An answer the SDK would by default keep retrying for minutes.
+        let server = CannedHomeserver::answering(|request| {
+            if request.contains("/logout") {
+                ("503 Service Unavailable", r#"{"errcode":"M_UNKNOWN","error":"Unavailable"}"#)
+            } else {
+                ("200 OK", "{}")
+            }
+        }).await;
+        let form = ServerConnectionForm { homeserver_url: Some(server.url.clone()), ..test_form() };
+        let reason = sign_out_the_server_does_not_carry_out(
+            server.client_that_retries("@alice:example.com").await, &form,
+        ).await;
+
+        assert!(reason.contains("still signed in"), "the user should be told where that leaves them, got {reason:?}");
+        assert_eq!(server.requests_to("/logout"), 1, "one attempt, however the server answers");
     }
 
     #[tokio::test]

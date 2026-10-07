@@ -118,15 +118,6 @@ describe('servers IPC commands', () => {
         });
     });
 
-    it('signOut sends System > SignOut and waits for core to answer', () => {
-        signOut();
-
-        expect(invoke).toHaveBeenCalledWith('core_command', {
-            command: { type: 'System', data: { type: 'SignOut' } },
-        });
-        expect(get(signingOut)).toBe(true);
-    });
-
     describe('addBookmark', () => {
         it('sends System > SaveBookmarks', () => {
             addBookmark();
@@ -425,24 +416,21 @@ describe('handleSystemEvent (SettingsLoaded)', () => {
 });
 
 describe('handleSystemEvent (sign out)', () => {
-    // That the dialog and its reason end with the login is covered by their probes in session.test.ts.
-    it('closes Settings on SignedOut', () => {
-        activeOverlay.set('settings');
-
-        handleSystemEvent({ type: 'SignedOut' });
-
-        expect(get(activeOverlay), 'the account page describes a session that is gone').toBe('none');
-    });
-
-    it('ends the request with its reason on SignOutFailed and stays where it was', () => {
+    // That the dialog and its reason end with the login is covered by their probes in session.test.ts, and what signOut sends by SignOutDialog.test.ts.
+    it('ends the request with its reason on SignOutFailed, and closes Settings only on SignedOut', () => {
         activeOverlay.set('settings');
         signOut();
+        expect(get(signingOut)).toBe(true);
 
         handleSystemEvent({ type: 'SignOutFailed', data: { reason: 'Could not reach the server.' } });
 
         expect(get(signingOut)).toBe(false);
         expect(get(signOutError)).toBe('Could not reach the server.');
         expect(get(activeOverlay)).toBe('settings');
+
+        handleSystemEvent({ type: 'SignedOut' });
+
+        expect(get(activeOverlay), 'the account page describes a session that is gone').toBe('none');
     });
 });
 

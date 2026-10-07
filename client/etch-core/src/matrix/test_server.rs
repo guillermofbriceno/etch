@@ -66,22 +66,26 @@ impl CannedHomeserver {
     }
 
     pub async fn client_with_version(&self, user_id: &str, version: MatrixVersion) -> Client {
-        logged_in_client(&self.url, user_id, version).await
+        logged_in_client(&self.url, user_id, version, RequestConfig::new().disable_retry()).await
+    }
+
+    /// Retries a failed request as the app's own client does, where the others make each call one request.
+    pub async fn client_that_retries(&self, user_id: &str) -> Client {
+        logged_in_client(&self.url, user_id, MatrixVersion::V1_1, RequestConfig::new()).await
     }
 }
 
 /// A logged-in client whose homeserver refuses every connection.
 pub(crate) fn unreachable_client(user_id: &str) -> impl Future<Output = Client> {
-    logged_in_client("http://127.0.0.1:1", user_id, MatrixVersion::V1_1)
+    logged_in_client("http://127.0.0.1:1", user_id, MatrixVersion::V1_1, RequestConfig::new().disable_retry())
 }
 
-/// Pins the versions so the client never probes `/versions`, and disables the SDK's own
-/// retries so each call is one request.
-async fn logged_in_client(homeserver: &str, user_id: &str, version: MatrixVersion) -> Client {
+/// Pins the versions so the client never probes `/versions`.
+async fn logged_in_client(homeserver: &str, user_id: &str, version: MatrixVersion, requests: RequestConfig) -> Client {
     let client = Client::builder()
         .homeserver_url(homeserver)
         .server_versions([version])
-        .request_config(RequestConfig::new().disable_retry())
+        .request_config(requests)
         .build()
         .await
         .expect("client should build without contacting the server");

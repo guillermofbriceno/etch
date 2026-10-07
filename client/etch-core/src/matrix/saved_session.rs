@@ -185,17 +185,6 @@ mod tests {
     }
 
     #[test]
-    fn a_session_saved_before_per_login_stores_still_opens_matrix_store() {
-        let tmp = tempfile::tempdir().unwrap();
-        std::fs::write(session_file(tmp.path()), SAVED_BEFORE_PER_LOGIN_STORES).unwrap();
-
-        let saved = SavedSession::load(tmp.path()).unwrap().expect("the session file should be read");
-
-        assert_eq!(saved.store_dir(tmp.path()), tmp.path().join("matrix_store"));
-        assert_eq!(saved.session.meta.device_id.as_str(), "TESTDEVICE");
-    }
-
-    #[test]
     fn a_fresh_login_gets_a_store_of_its_own_and_gives_it_back_if_it_never_uses_it() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::create_dir(tmp.path().join("matrix_store")).unwrap();
@@ -245,14 +234,23 @@ mod tests {
         let unreadable = make("unreadable@example.com", &["matrix_store", "stores/1"]);
         std::fs::write(session_file(&unreadable), "{ not json").unwrap();
 
+        let elsewhere = tmp.path().join("elsewhere");
+        std::fs::create_dir_all(elsewhere.join("matrix_store")).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&elsewhere, servers.join("linked@example.com")).unwrap();
+
         remove_unreferenced_stores(tmp.path());
 
         assert_eq!(children(&current), ["notes", "session.json", "stores"]);
         assert_eq!(children(&current.join("stores")), ["2", "readme.txt"]);
-        assert_eq!(children(&older), ["matrix_store", "session.json", "stores"]);
+        assert_eq!(
+            children(&older), ["matrix_store", "session.json", "stores"],
+            "a session saved before per-login stores still uses matrix_store",
+        );
         assert_eq!(children(&older.join("stores")), [] as [&str; 0]);
         assert_eq!(children(&stuck), [] as [&str; 0], "a store left without any session should be removed");
         assert_eq!(children(&unreadable), ["matrix_store", "session.json", "stores"]);
         assert_eq!(children(&unreadable.join("stores")), ["1"], "an unreadable session proves nothing unused");
+        assert_eq!(children(&elsewhere), ["matrix_store"], "a link must not lead the cleanup out of the data directory");
     }
 }
