@@ -27,6 +27,7 @@ export type { TransmissionMode } from './voiceSettings';
 export { theme, initTheme } from './theme';
 export { compactChat, initLayout } from './layout';
 export { followNewMessages, setFollowNewMessages } from './followMessages';
+export { desktopNotifications, setDesktopNotifications } from './desktopNotifications';
 export { sidebarCollapsed, sidebarTransitioning, peekSuppressed, toggleSidebar, initCursorTracking, destroySidebar } from './sidebar';
 export type { Theme } from './theme';
 export { updateStatus, updateVersion, updateError, checkForUpdate, restartApp } from './updater';

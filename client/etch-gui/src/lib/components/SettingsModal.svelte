@@ -6,6 +6,7 @@
     import SettingsAccount from './settings/SettingsAccount.svelte';
     import SettingsAppearance from './settings/SettingsAppearance.svelte';
     import SettingsVoice from './settings/SettingsVoice.svelte';
+    import SettingsNotifications from './settings/SettingsNotifications.svelte';
     import SettingsUpdates from './settings/SettingsUpdates.svelte';
     import SettingsAdvanced from './settings/SettingsAdvanced.svelte';
     import SettingsDeveloper from './settings/SettingsDeveloper.svelte';
@@ -28,6 +29,7 @@
 
         <h3 class="group-header">App Settings</h3>
         <button class="tab {activeTab === 'voice'    ? 'active' : ''}" on:click={() => activeTab = 'voice'}>Voice & Audio</button>
+        <button class="tab {activeTab === 'notifications' ? 'active' : ''}" on:click={() => activeTab = 'notifications'}>Notifications</button>
         <button class="tab {activeTab === 'keybinds' ? 'active' : ''}" on:click={() => activeTab = 'keybinds'}>Keybinds</button>
         <button class="tab {activeTab === 'updates'  ? 'active' : ''}" on:click={() => activeTab = 'updates'}>Updates</button>
         <button class="tab {activeTab === 'advanced' ? 'active' : ''}" on:click={() => activeTab = 'advanced'}>Advanced</button>
@@ -58,6 +60,8 @@
             <SettingsAppearance />
         {:else if activeTab === 'voice'}
             <SettingsVoice />
+        {:else if activeTab === 'notifications'}
+            <SettingsNotifications />
         {:else if activeTab === 'updates'}
             <SettingsUpdates {appVersion} />
         {:else if activeTab === 'advanced'}

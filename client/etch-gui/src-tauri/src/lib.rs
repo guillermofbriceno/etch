@@ -8,6 +8,7 @@ use etch_core::temp_files::TempFiles;
 use tauri::{AppHandle, Manager, State};
 use tauri::Emitter;
 use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_updater::UpdaterExt;
 use std::io::Cursor;
@@ -50,6 +51,25 @@ async fn core_command(command: CoreCommand, state: State<'_, TauriState>) -> Res
 #[tauri::command]
 fn play_sfx(name: String, volume: f32, state: State<'_, SfxPlayer>) {
     state.play(&name, volume);
+}
+
+/// Linux notification servers read the body as markup, so a sender's text must not be taken for tags.
+fn notification_body(text: &str) -> String {
+    if cfg!(target_os = "linux") {
+        text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    } else {
+        text.to_owned()
+    }
+}
+
+#[tauri::command]
+fn show_notification(app: AppHandle, title: String, body: String) -> Result<(), String> {
+    app.notification()
+        .builder()
+        .title(title)
+        .body(notification_body(&body))
+        .show()
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -306,6 +326,7 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_notification::init())
         .register_asynchronous_uri_scheme_protocol("etch-media", move |_ctx, request, responder| {
             let media_tx = media_tx.clone();
             tauri::async_runtime::spawn(async move {
@@ -391,6 +412,7 @@ pub fn run() {
             save_file_as,
             open_in_default_app,
             play_sfx,
+            show_notification,
             load_custom_css,
             check_for_update
         ])
@@ -417,6 +439,15 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use tauri::ipc::Origin;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_notification_body_cannot_carry_markup() {
+        assert_eq!(
+            super::notification_body(r#"<a href="x">1 < 2 & 3</a>"#),
+            "&lt;a href=\"x\"&gt;1 &lt; 2 &amp; 3&lt;/a&gt;",
+        );
+    }
 
     // `open` is here because it can truncate a file as it opens it.
     #[test]

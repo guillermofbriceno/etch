@@ -17,6 +17,7 @@ import { encryptionStatus, encryptionError, encryptionPromptDismissed, createKey
 import { resetLoginSession } from '../session';
 import { compactChat } from '../layout';
 import { followNewMessages } from '../followMessages';
+import { desktopNotifications } from '../desktopNotifications';
 
 /**
  * Reset all stores to their initial values.
@@ -94,4 +95,5 @@ export function resetStores(): void {
     // Layout
     compactChat.set(false);
     followNewMessages.set(false);
+    desktopNotifications.set(true);
 }

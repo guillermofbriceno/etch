@@ -1,6 +1,7 @@
 import { writable, derived, get } from 'svelte/store';
 import type { MumbleEvent, SystemEvent } from '$lib/ipc';
 import { playSfx } from './sfx';
+import { notifyVoicePresence } from './desktopNotifications';
 import { isMuted, isDeafened } from './audio';
 import { userVolumes, setUserVolume } from './userVolumes';
 import { transmissionMode, vadThreshold, voiceHold, useMumbleSettings } from './voiceSettings';
@@ -51,6 +52,12 @@ declareStores('derived', 'voiceConnected', 'usersByChannel');
 let settled = false;
 let localSession: number | null = null;
 
+/** Someone joined or left `channelId`, the channel the local user is in. */
+function announcePresence(joined: boolean, user: { name: string; display_name: string | null }, channelId: number): void {
+    playSfx(joined ? 'user_join' : 'user_leave');
+    notifyVoicePresence(user.display_name ?? user.name, joined, get(voiceChannels).get(channelId)?.name);
+}
+
 // Handler called by eventRouter for Mumble events
 export function handleMumbleEvent(me: MumbleEvent): void {
     switch (me.type) {
@@ -82,11 +89,15 @@ export function handleMumbleEvent(me: MumbleEvent): void {
                     if (localUser) {
                         const oldCh = existing?.channel_id;
                         const newCh = u.channel_id ?? oldCh;
+                        const who = {
+                            name: u.name ?? existing?.name ?? '',
+                            display_name: u.display_name ?? existing?.display_name ?? null,
+                        };
                         if (!existing && newCh === localUser.channel_id) {
-                            playSfx('user_join');
+                            announcePresence(true, who, localUser.channel_id);
                         } else if (existing && newCh !== oldCh) {
-                            if (newCh === localUser.channel_id) playSfx('user_join');
-                            else if (oldCh === localUser.channel_id) playSfx('user_leave');
+                            if (newCh === localUser.channel_id) announcePresence(true, who, localUser.channel_id);
+                            else if (oldCh === localUser.channel_id) announcePresence(false, who, localUser.channel_id);
                         }
                     }
                 }
@@ -138,7 +149,7 @@ export function handleMumbleEvent(me: MumbleEvent): void {
                 const localUser = localSession != null ? m.get(localSession) : null;
                 m.delete(me.data);
                 if (removed && localUser && removed.channel_id === localUser.channel_id) {
-                    playSfx('user_leave');
+                    announcePresence(false, removed, localUser.channel_id);
                 }
                 return new Map(m);
             });

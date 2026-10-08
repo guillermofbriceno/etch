@@ -78,6 +78,6 @@
             <input type="checkbox" checked={$deafenSuppressesNotifs} on:change={(e) => setDeafenSuppressesNotifs(e.currentTarget.checked)} />
             <span class="checkbox-label">Deafen suppresses new message notifications</span>
         </label>
-        <p class="setting-desc">When unchecked, new message sounds play even while deafened.</p>
+        <p class="setting-desc">When unchecked, new message sounds and desktop notifications still come through while deafened.</p>
     </div>
 </div>

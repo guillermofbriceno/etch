@@ -7,6 +7,7 @@ import { setActiveChannel } from './messages';
 import { currentUser } from './user';
 import { isComposing } from './compose';
 import { followNewMessages } from './followMessages';
+import { notifyMessage } from './desktopNotifications';
 import { registerSessionStore, declareStores } from './session';
 
 /** Return the timestamp of the last Message in a list of entries, or null. */
@@ -153,24 +154,21 @@ export function handleMatrixEvent(me: MatrixEvent): void {
         });
         setActiveChannel(me.data.id);
     } else if (me.type === 'TimelinePushBack') {
-        // Auto-unhide hidden DMs when the other person messages
         const [roomId, entry] = me.data;
-        if (get(hiddenDmIds).has(roomId)) {
-            const kind = entry.kind;
-            if (typeof kind === 'object' && 'Message' in kind) {
-                const sender = kind.Message.sender;
-                if (sender && sender !== get(currentUser).matrixId) {
+        const kind = entry.kind;
+        if (typeof kind === 'object' && 'Message' in kind) {
+            const sender = kind.Message.sender;
+            if (sender && sender !== get(currentUser).matrixId) {
+                // Auto-unhide hidden DMs when the other person messages
+                if (get(hiddenDmIds).has(roomId)) {
                     unhideDm(roomId);
                     followMessage(roomId);
                 }
+                const senderName = entry.sender?.display_name ?? sender.slice(1).split(':')[0];
+                notifyMessage(get(channels).find(c => c.id === roomId), senderName, kind.Message);
             }
-        }
-        // Update last-activity timestamp for DM sorting
-        {
-            const kind = entry.kind;
-            if (typeof kind === 'object' && 'Message' in kind) {
-                dmLastActivity.update(m => ({ ...m, [roomId]: kind.Message.timestamp }));
-            }
+            // Update last-activity timestamp for DM sorting
+            dmLastActivity.update(m => ({ ...m, [roomId]: kind.Message.timestamp }));
         }
     } else if (me.type === 'TimelineAppend') {
         const [roomId, entries] = me.data;
