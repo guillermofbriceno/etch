@@ -267,6 +267,31 @@ impl TestHarness {
         }, EVENT_TIMEOUT).await
     }
 
+    /// Sends a message and counts how often the server's copy of it is added to the room's timeline, which each stream for the room does once.
+    async fn send_and_count_copies(&mut self, room_id: &str, prefix: &str) -> usize {
+        let body = self.send_unique_message(room_id, prefix).await;
+        let is_the_copy = |event: &CoreEvent| match event {
+            // Replaces an entry in place, as when the sender's name arrives after the message.
+            CoreEvent::Matrix(MatrixEvent::TimelineSet(..)) => false,
+            _ => timeline_entries(event).is_some_and(|(room, entries)| {
+                room == room_id && entries.iter().any(|entry| {
+                    matches!(&entry.kind, TimelineEntryKind::Message(msg) if msg.body == body && msg.id.starts_with('$'))
+                })
+            }),
+        };
+        self.expect_event(|e| is_the_copy(e).then_some(()), EVENT_TIMEOUT).await;
+
+        // Another stream would have added its copy by now.
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let mut copies = 1;
+        while let Ok(event) = self.event_rx.try_recv() {
+            if is_the_copy(&event) {
+                copies += 1;
+            }
+        }
+        copies
+    }
+
     /// Waits for the copy the server accepted; the local echo before it has no event ID yet.
     async fn expect_attachment(&mut self, room_id: &str, file_name: &str) -> MediaInfo {
         let (room_id, file_name) = (room_id.to_string(), file_name.to_string());
@@ -1242,52 +1267,29 @@ async fn repeated_reconnects_do_not_leak_file_descriptors() {
 async fn reconnecting_does_not_duplicate_timeline_events() {
     const RECONNECTS: usize = 2;
 
-    async fn deliveries(h: &mut TestHarness, room_id: &str, prefix: &str) -> usize {
-        let body = h.send_unique_message(room_id, prefix).await;
-        h.expect_timeline_message(room_id, &body).await;
-
-        tokio::time::sleep(Duration::from_secs(3)).await;
-        let mut bodies = Vec::new();
-        h.drain_timeline_messages(room_id, &mut bodies);
-
-        1 + bodies.iter().filter(|b| b.contains(&body)).count()
-    }
-
     let mut h = TestHarness::new();
     let rooms = h.connect().await;
     let room_id = TestHarness::find_room(&rooms, "Test Text").id.clone();
 
-    let baseline = deliveries(&mut h, &room_id, "baseline").await;
-
+    let before = h.send_and_count_copies(&room_id, "baseline").await;
     for _ in 0..RECONNECTS {
         h.connect().await;
     }
-    let after_reconnects = deliveries(&mut h, &room_id, "reconnected").await;
+    let after = h.send_and_count_copies(&room_id, "reconnected").await;
 
     h.shutdown().await;
 
+    assert_eq!(before, 1, "a message was added {before} times before any reconnect");
     assert_eq!(
-        after_reconnects, baseline,
-        "a message was delivered {} times after {} reconnects but {} times before; \
+        after, 1,
+        "a message was added {after} times after {RECONNECTS} reconnects; \
          each reconnect left its predecessor's timeline subscription running",
-        after_reconnects, RECONNECTS, baseline,
     );
 }
 
 /// The DM is created with admin so no earlier test has made it and the create path runs.
 #[tokio::test(flavor = "multi_thread")]
 async fn reconnecting_does_not_duplicate_events_in_a_created_dm() {
-    async fn deliveries(h: &mut TestHarness, room_id: &str, prefix: &str) -> usize {
-        let body = h.send_unique_message(room_id, prefix).await;
-        h.expect_timeline_message(room_id, &body).await;
-
-        tokio::time::sleep(Duration::from_secs(3)).await;
-        let mut bodies = Vec::new();
-        h.drain_timeline_messages(room_id, &mut bodies);
-
-        1 + bodies.iter().filter(|b| b.contains(&body)).count()
-    }
-
     let mut h = TestHarness::new();
     h.connect().await;
 
@@ -1301,16 +1303,17 @@ async fn reconnecting_does_not_duplicate_events_in_a_created_dm() {
         _ => None,
     }, EVENT_TIMEOUT).await;
 
-    let baseline = deliveries(&mut h, &dm.id, "dm-baseline").await;
+    let before = h.send_and_count_copies(&dm.id, "dm-baseline").await;
     h.connect().await;
-    let after_reconnect = deliveries(&mut h, &dm.id, "dm-reconnected").await;
+    let after = h.send_and_count_copies(&dm.id, "dm-reconnected").await;
 
     h.shutdown().await;
 
+    assert_eq!(before, 1, "a message in a DM created this session was added {before} times before any reconnect");
     assert_eq!(
-        after_reconnect, baseline,
-        "a message in a DM created this session was delivered {after_reconnect} times after a \
-         reconnect but {baseline} before; the DM has more than one timeline stream",
+        after, 1,
+        "a message in a DM created this session was added {after} times after a reconnect; \
+         the DM has more than one timeline stream",
     );
 }
 

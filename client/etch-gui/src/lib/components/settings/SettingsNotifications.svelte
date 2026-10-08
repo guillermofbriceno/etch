@@ -10,7 +10,7 @@
             <input type="checkbox" checked={$desktopNotifications} on:change={(e) => setDesktopNotifications(e.currentTarget.checked)} />
             <span class="checkbox-label">Desktop notifications</span>
         </label>
-        <p class="setting-desc">Show a system notification for a new message, and when someone joins or leaves your voice channel. Nothing is shown while Etch is the focused window or while you are deafened.</p>
+        <p class="setting-desc">Show a system notification for a new message, and when someone joins or leaves your voice channel. Nothing is shown while Etch is the focused window.</p>
     </div>
 
     <div class="setting-group">
