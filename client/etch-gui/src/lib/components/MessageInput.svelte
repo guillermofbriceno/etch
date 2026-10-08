@@ -6,7 +6,7 @@
     import { invoke } from '@tauri-apps/api/core';
     import { getCurrentWebview, type DragDropEvent } from '@tauri-apps/api/webview';
     import type { Event as TauriEvent } from '@tauri-apps/api/event';
-    import { sendMessage, sendAttachment, editMessage, activeChannelId, activeChannel, activeWindow, replyingTo, clearReply, editingMessage, clearEditing, activeOverlay, showToast } from '$lib/stores';
+    import { sendMessage, sendAttachment, editMessage, activeChannelId, activeChannel, activeWindow, replyingTo, clearReply, editingMessage, clearEditing, setDrafting, activeOverlay, showToast } from '$lib/stores';
     import { composeHtml, insertMentionLinks } from '$lib/markdown';
     import {
         discardTempFile,
@@ -32,6 +32,7 @@
 
     $: showCompress = pendingAttachment?.inspection.compress_offered ?? false;
     $: inputActive = $activeChannelId !== null && $activeOverlay === 'none' && !$editingMessage;
+    $: setDrafting(messageText.trim() !== '' || pendingAttachment !== null);
 
     // Tab-completion state
     let tabPrefix = '';
@@ -293,6 +294,7 @@
     });
     onDestroy(() => {
         destroyed = true;
+        setDrafting(false);
         document.removeEventListener('click', handleClickOutside, true);
         stopDragDrop?.();
     });

@@ -10,12 +10,13 @@ import { errorLog, toastError } from '../errors';
 import { userVolumes } from '../userVolumes';
 import { transmissionMode, vadThreshold, voiceHold, useMumbleSettings, deafenSuppressesNotifs } from '../voiceSettings';
 import { activeOverlay, overlayImageUrl, settingsTab, showRoomIds } from '../overlay';
-import { replyingTo, editingMessage } from '../compose';
+import { replyingTo, editingMessage, setDrafting } from '../compose';
 import { serverBookmarks, selectedBookmarkId, connectingBookmark, passwordRequested, mediaBaseUrl, signingOut, signOutError, signOutDialogOpen } from '../servers';
 import { matrixStatus } from '../matrixConnection';
 import { encryptionStatus, encryptionError, encryptionPromptDismissed, createKeyPromptPutOff, encryptionRequestedScreen, encryptionBusy } from '../encryption';
 import { resetLoginSession } from '../session';
 import { compactChat } from '../layout';
+import { followNewMessages } from '../followMessages';
 
 /**
  * Reset all stores to their initial values.
@@ -67,6 +68,7 @@ export function resetStores(): void {
     // Compose
     replyingTo.set(null);
     editingMessage.set(null);
+    setDrafting(false);
 
     // Servers
     serverBookmarks.set([]);
@@ -91,4 +93,5 @@ export function resetStores(): void {
 
     // Layout
     compactChat.set(false);
+    followNewMessages.set(false);
 }

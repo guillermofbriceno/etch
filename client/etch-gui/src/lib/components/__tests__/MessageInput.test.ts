@@ -5,6 +5,7 @@ import { tick } from 'svelte';
 import { invoke } from '@tauri-apps/api/core';
 import { activeChannelId, replyingTo, setReply, clearReply, editingMessage, setEditing, clearEditing } from '$lib/stores';
 import { handleMatrixEvent } from '$lib/stores/messages';
+import { isComposing } from '$lib/stores/compose';
 import type { ChatMessage } from '$lib/types';
 import { resetStores } from '$lib/stores/__tests__/helpers';
 import MessageInput from '../MessageInput.svelte';
@@ -54,6 +55,21 @@ describe('MessageInput', () => {
                 },
             },
         });
+    });
+
+    it('reports a draft while there is unsent text, and none once it is sent', async () => {
+        const user = userEvent.setup();
+        render(MessageInput);
+
+        const textarea = screen.getByRole('textbox');
+        await user.click(textarea);
+        expect(isComposing()).toBe(false);
+
+        await user.type(textarea, 'hello');
+        expect(isComposing()).toBe(true);
+
+        await user.keyboard('{Enter}');
+        expect(isComposing()).toBe(false);
     });
 
     it('empty input does not send', async () => {

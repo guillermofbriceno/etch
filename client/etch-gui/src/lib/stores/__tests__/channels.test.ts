@@ -2,6 +2,9 @@ import { describe, it, expect, beforeEach, beforeAll, vi } from 'vitest';
 import { get } from 'svelte/store';
 import { channels, activeChannel, dmLastActivity, handleMatrixEvent, initChannels, initHiddenDms, hideDm, unhideDm } from '../channels';
 import { activeChannelId } from '../activeChannel';
+import { handleMatrixEvent as messagesHandleMatrixEvent } from '../messages';
+import { setDrafting, setReply, setEditing } from '../compose';
+import { followNewMessages } from '../followMessages';
 import { currentUser } from '../user';
 import { resetStores } from './helpers';
 import type { RoomInfo } from '$lib/types';
@@ -502,5 +505,59 @@ describe('dmLastActivity', () => {
 
             expect(get(dmLastActivity)['dm1']).toBe(4000);
         });
+    });
+});
+
+describe('following new messages', () => {
+    function receive(roomId: string) {
+        const event = { type: 'TimelinePushBack', data: [roomId, makeMessage('e1', 'alice', 1000)] } as any;
+        messagesHandleMatrixEvent(event);
+        handleMatrixEvent(event);
+    }
+
+    beforeEach(() => {
+        currentUser.set({ username: 'me', matrixId: '@me:s', displayName: null, avatarUrl: null });
+        handleMatrixEvent({ type: 'ChannelList', data: [makeRoom('t1', 'General'), makeRoom('dm1', 'Alice', 'Dm')] } as any);
+        activeChannelId.set('t1');
+    });
+
+    it('leaves the active channel alone and counts the message as unread when off', () => {
+        receive('dm1');
+
+        expect(get(activeChannelId)).toBe('t1');
+        expect(get(channels).find(c => c.id === 'dm1')?.unread_count).toBe(1);
+    });
+
+    it('switches to the room a message arrived in, with nothing left unread', () => {
+        followNewMessages.set(true);
+
+        receive('dm1');
+
+        expect(get(activeChannelId)).toBe('dm1');
+        expect(get(channels).find(c => c.id === 'dm1')?.unread_count).toBe(0);
+    });
+
+    it.each([
+        ['a draft', () => setDrafting(true)],
+        ['a reply', () => setReply({ id: 'e0' } as any)],
+        ['an edit', () => setEditing({ id: 'e0' } as any)],
+    ])('stays put while %s is in the composer, and counts the message as unread', (_, compose) => {
+        followNewMessages.set(true);
+        compose();
+
+        receive('dm1');
+
+        expect(get(activeChannelId)).toBe('t1');
+        expect(get(channels).find(c => c.id === 'dm1')?.unread_count).toBe(1);
+    });
+
+    it('switches to a hidden DM that a message brings back', () => {
+        followNewMessages.set(true);
+        hideDm('dm1');
+
+        receive('dm1');
+
+        expect(get(activeChannelId)).toBe('dm1');
+        expect(get(channels).find(c => c.id === 'dm1')?.unread_count).toBe(0);
     });
 });

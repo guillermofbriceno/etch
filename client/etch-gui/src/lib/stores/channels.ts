@@ -5,6 +5,8 @@ import { sendCoreCommand } from '$lib/ipc';
 import { activeChannelId, onUnreadMessage } from './activeChannel';
 import { setActiveChannel } from './messages';
 import { currentUser } from './user';
+import { isComposing } from './compose';
+import { followNewMessages } from './followMessages';
 import { registerSessionStore, declareStores } from './session';
 
 /** Return the timestamp of the last Message in a list of entries, or null. */
@@ -79,6 +81,14 @@ registerSessionStore('matrix', 'dmLastActivity', clearDmLastActivity);
 
 // --- Unread / active channel bookkeeping ---
 
+// A draft travels with the composer, so following mid-message would send it to the wrong room.
+function followMessage(roomId: string): boolean {
+    if (!get(followNewMessages) || isComposing()) return false;
+    if (!get(channels).some(c => c.id === roomId)) return false;
+    setActiveChannel(roomId);
+    return true;
+}
+
 export function initChannels(): void {
     // Clear unread count when switching to a channel
     activeChannelId.subscribe(id => {
@@ -88,8 +98,9 @@ export function initChannels(): void {
         );
     });
 
-    // Increment unread count when a message arrives in a non-active channel
+    // A message in a non-active channel is followed, or else counted as unread
     onUnreadMessage((roomId: string) => {
+        if (followMessage(roomId)) return;
         channels.update(list =>
             list.map(c => c.id === roomId ? { ...c, unread_count: c.unread_count + 1 } : c)
         );
@@ -150,6 +161,7 @@ export function handleMatrixEvent(me: MatrixEvent): void {
                 const sender = kind.Message.sender;
                 if (sender && sender !== get(currentUser).matrixId) {
                     unhideDm(roomId);
+                    followMessage(roomId);
                 }
             }
         }

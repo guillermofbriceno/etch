@@ -1,4 +1,4 @@
-import { writable } from 'svelte/store';
+import { writable, get } from 'svelte/store';
 import type { ChatMessage } from '$lib/types';
 import { registerSessionStore } from './session';
 
@@ -21,6 +21,17 @@ export function setEditing(msg: ChatMessage): void {
 
 export function clearEditing(): void {
     editingMessage.set(null);
+}
+
+// Unsent text or an attachment in the composer, which keeps both in its own state.
+let drafting = false;
+
+export function setDrafting(value: boolean): void {
+    drafting = value;
+}
+
+export function isComposing(): boolean {
+    return drafting || get(replyingTo) !== null || get(editingMessage) !== null;
 }
 
 registerSessionStore('matrix', 'replyingTo', clearReply);

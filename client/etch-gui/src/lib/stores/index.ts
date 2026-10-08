@@ -14,7 +14,7 @@ export { serverBookmarks, selectedBookmarkId, connectingBookmark, passwordReques
 export { matrixStatus, matrixConnecting, matrixSessionLive } from './matrixConnection';
 export { encryptionStatus, encryptionError, encryptionBusy, encryptionScreen, encryptionScreenDismissable, entryScreen, unlockScreen, hasNoSavedKey, createRecoveryKey, confirmRecoveryKeySaved, submitRecoveryKey, resetEncryption, openEncryptionDialog, openEncryptionReset, dismissEncryptionScreen } from './encryption';
 export type { EncryptionScreen } from './encryption';
-export { replyingTo, setReply, clearReply, editingMessage, setEditing, clearEditing } from './compose';
+export { replyingTo, setReply, clearReply, editingMessage, setEditing, clearEditing, setDrafting } from './compose';
 export { voiceChannels, voiceUsers, voiceConnected, mumbleStatus, usersByChannel, talkingUsers, certChangeRequest } from './voiceState';
 export type { VoiceChannel, VoiceUser, MumbleStatus } from './voiceState';
 export { errorLog, toastError, showToast } from './errors';
@@ -26,6 +26,7 @@ export { transmissionMode, setTransmissionMode, vadThreshold, setVadThreshold, v
 export type { TransmissionMode } from './voiceSettings';
 export { theme, initTheme } from './theme';
 export { compactChat, initLayout } from './layout';
+export { followNewMessages, setFollowNewMessages } from './followMessages';
 export { sidebarCollapsed, sidebarTransitioning, peekSuppressed, toggleSidebar, initCursorTracking, destroySidebar } from './sidebar';
 export type { Theme } from './theme';
 export { updateStatus, updateVersion, updateError, checkForUpdate, restartApp } from './updater';
