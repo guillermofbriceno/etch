@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { desktopNotifications, setDesktopNotifications, followNewMessages, setFollowNewMessages } from '$lib/stores';
+    import { desktopNotifications, setDesktopNotifications, deafenSuppressesNotifs, setDeafenSuppressesNotifs, followNewMessages, setFollowNewMessages } from '$lib/stores';
 </script>
 
 <div class="tab-pane">
@@ -11,6 +11,14 @@
             <span class="checkbox-label">Desktop notifications</span>
         </label>
         <p class="setting-desc">Show a system notification for a new message, and when someone joins or leaves your voice channel. Nothing is shown while Etch is the focused window or while you are deafened.</p>
+    </div>
+
+    <div class="setting-group">
+        <label class="checkbox-option">
+            <input type="checkbox" checked={$deafenSuppressesNotifs} on:change={(e) => setDeafenSuppressesNotifs(e.currentTarget.checked)} />
+            <span class="checkbox-label">Deafen suppresses new message notifications</span>
+        </label>
+        <p class="setting-desc">While you are deafened, a new message plays no sound and shows no desktop notification. When unchecked, both still come through.</p>
     </div>
 
     <div class="setting-group">
