@@ -201,19 +201,20 @@
 </div>
 
 <style>
+    /* Inset like the composer, so a highlighted row ends where the composer does. */
     .message-block {
         position: relative;
         display: flex;
-        padding: 4px 16px;
-        margin-top: var(--message-spacing);
+        padding: 4px 6px;
+        margin: var(--message-spacing) 10px 0;
+        border-radius: 6px;
     }
 
     .message-block.continuation { margin-top: 0; padding-top: 1px; padding-bottom: 1px; }
-    .message-block:hover { background-color: rgba(4, 4, 5, 0.07); }
+    .message-block:hover { background-color: var(--bg-message-hover); }
     .message-block.mentioned {
         background-color: color-mix(in srgb, var(--accent) 8%, transparent);
-        border-left: 3px solid var(--accent);
-        padding-left: 13px;
+        box-shadow: inset 2px 0 0 var(--accent);
     }
     .message-block.mentioned:hover { background-color: color-mix(in srgb, var(--accent) 12%, transparent); }
     .avatar-gutter { width: var(--avatar-size); margin-right: 16px; flex-shrink: 0; }
@@ -236,10 +237,10 @@
         display: flex;
         align-items: center;
         gap: 4px;
-        padding: 2px 6px;
-        background-color: rgba(79, 84, 92, 0.3);
-        border: 1px solid transparent;
-        border-radius: 4px;
+        padding: 2px 7px;
+        background-color: var(--bg-hover);
+        border: 1px solid var(--border-input);
+        border-radius: 6px;
         cursor: pointer;
         font-size: var(--font-size-base);
         color: var(--text-secondary);
@@ -247,8 +248,8 @@
     }
 
     .reaction-badge:hover {
-        background-color: rgba(79, 84, 92, 0.5);
-        border-color: rgba(255, 255, 255, 0.1);
+        background-color: var(--bg-active);
+        border-color: var(--border-medium);
     }
 
     .reaction-badge.own {
@@ -303,9 +304,10 @@
     }
     .body :global(pre) {
         background-color: var(--bg-inset);
-        padding: 8px;
-        border-radius: 4px;
-        border: 1px solid var(--border-subtle);
+        padding: 10px 12px;
+        margin: 6px 0;
+        border-radius: 6px;
+        border: 1px solid var(--border-input);
         overflow-x: auto;
     }
     .body :global(pre code) { background-color: transparent; padding: 0; }
@@ -313,7 +315,7 @@
         border-left: 3px solid var(--border-medium);
         padding: 2px 12px;
         margin: 4px 0;
-        color: #a3a6aa;
+        color: var(--text-secondary);
     }
     .body :global(a) { color: var(--text-link); text-decoration: none; }
     .body :global(a:hover) { text-decoration: underline; }
@@ -321,8 +323,8 @@
     .body :global(li) { margin: 2px 0; }
     .body :global(img) { max-width: 400px; max-height: 300px; border-radius: 4px; cursor: pointer; }
     .body :global(h1), .body :global(h2), .body :global(h3) { color: var(--text-bright); margin: 8px 0 4px; }
-    .body :global(hr) { border: none; border-top: 1px solid var(--border-medium); margin: 8px 0; }
-    .body :global(del), .body :global(s) { text-decoration: line-through; color: #a3a6aa; }
+    .body :global(hr) { border: none; border-top: 1px solid var(--border-input); margin: 8px 0; }
+    .body :global(del), .body :global(s) { text-decoration: line-through; color: var(--text-secondary); }
     .body :global(mx-reply) { display: none; }
     .body :global(.mention) {
         background-color: color-mix(in srgb, var(--accent) 15%, transparent);
@@ -367,7 +369,7 @@
     }
 
     /* --- Compact mode --- */
-    .compact { padding: 0px 16px; margin-top: 1px; }
+    .compact { padding: 0px 6px; margin-top: 1px; }
     .compact.continuation { margin-top: 0; padding-top: 0px; padding-bottom: 0px; }
 
     .compact-avatar {

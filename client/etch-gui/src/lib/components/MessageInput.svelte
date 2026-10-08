@@ -32,6 +32,10 @@
 
     $: showCompress = pendingAttachment?.inspection.compress_offered ?? false;
     $: inputActive = $activeChannelId !== null && $activeOverlay === 'none' && !$editingMessage;
+    $: noChannel = $activeChannelId === null;
+    $: placeholder = noChannel ? 'No channel selected'
+        : $activeChannel ? `Message ${$activeChannel.etch_room_type === 'Dm' ? '@' : '#'}${$activeChannel.display_name}`
+        : 'Message';
     $: setDrafting(messageText.trim() !== '' || pendingAttachment !== null);
 
     // Tab-completion state
@@ -560,7 +564,7 @@
     {/if}
 
     {#if showMentionPopup && mentionMatches.length > 0}
-        <div class="mention-popup" style="--scrollbar-thumb: var(--border-input)" use:customScrollbar={{ width: 6, minThumbHeight: 20 }}>
+        <div class="mention-popup floating" style="--scrollbar-thumb: var(--border-input)" use:customScrollbar={{ width: 6, minThumbHeight: 20 }}>
             {#each mentionMatches as user, i}
                 <button
                     class="mention-option"
@@ -576,13 +580,14 @@
     {/if}
 
     <div class="input-container">
-        <button class="icon-button attach-button" aria-label="Attach file" on:click={pickFile}>
+        <button class="icon-button attach-button" aria-label="Attach file" disabled={noChannel} on:click={pickFile}>
             <Icon name="plus_circle" />
         </button>
 
         <textarea
             class="message-box"
-            placeholder="Message #{$activeChannel?.display_name ?? 'general'}"
+            {placeholder}
+            disabled={noChannel}
             bind:value={messageText}
             bind:this={textareaEl}
             on:keydown={handleKeydown}
@@ -596,6 +601,7 @@
                 class="icon-button lock-button"
                 class:active={composeLock}
                 aria-label={composeLock ? 'Unlock send' : 'Lock send (compose mode)'}
+                disabled={noChannel}
                 on:click={() => composeLock = !composeLock}
             >
                 {#if composeLock}
@@ -612,12 +618,12 @@
             {/if}
 
             <div class="emoji-picker-anchor" bind:this={pickerAnchorEl}>
-                <button class="icon-button" aria-label="Emoji" on:click={() => showEmojiPicker = !showEmojiPicker}>
+                <button class="icon-button" aria-label="Emoji" disabled={noChannel} on:click={() => showEmojiPicker = !showEmojiPicker}>
                     <Icon name="emoji" />
                 </button>
 
                 {#if showEmojiPicker}
-                    <div class="emoji-picker">
+                    <div class="emoji-picker floating">
                         <div class="emoji-tabs">
                             {#each EMOJI_CATEGORIES as cat}
                                 <button
@@ -647,12 +653,15 @@
 </div>
 
 <style>
+    /* The padding keeps a one-line composer as tall as the user panel beside it. */
     .input-wrapper {
         position: relative;
+        box-sizing: border-box;
         width: 100%;
+        padding: 2px;
         background-color: transparent;
         border-radius: 10px;
-        border: 2px solid transparent;
+        border: var(--border-panel);
         transition: border-color 0.15s ease;
     }
 
@@ -669,8 +678,8 @@
         display: flex;
         align-items: center;
         justify-content: space-between;
-        padding: 6px 16px 4px 16px;
-        border-bottom: 1px solid var(--bg-hover);
+        padding: 8px 16px 6px 16px;
+        border-bottom: 1px solid var(--border-input);
     }
 
     .reply-info {
@@ -712,8 +721,8 @@
         display: flex;
         align-items: center;
         justify-content: space-between;
-        padding: 6px 16px 4px 16px;
-        border-bottom: 1px solid var(--bg-hover);
+        padding: 8px 16px 6px 16px;
+        border-bottom: 1px solid var(--border-input);
     }
 
     .attachment-info {
@@ -796,13 +805,17 @@
         display: flex;
         align-items: center;
         border-radius: 8px;
-        padding: 4px 16px;
+        padding: 4px 12px;
         min-height: 44px;
     }
 
     .icon-button {
+        width: 32px;
+        height: 32px;
+        flex-shrink: 0;
         background: none;
         border: none;
+        border-radius: 6px;
         padding: 0;
         margin: 0;
         cursor: pointer;
@@ -810,10 +823,11 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        transition: color 0.1s ease;
+        transition: color 0.1s ease, background-color 0.1s ease;
     }
 
-    .icon-button:hover { color: var(--text-primary); }
+    .icon-button:hover:not(:disabled) { color: var(--text-primary); background-color: var(--bg-hover); }
+    .icon-button:disabled { opacity: 0.4; cursor: default; }
 
     .lock-button.active { color: var(--accent); }
     .lock-button.active:hover { color: var(--accent-hover); }
@@ -821,9 +835,9 @@
     .send-button { color: var(--accent); }
     .send-button:hover { color: var(--accent-hover); }
 
-    .attach-button { margin-right: 16px; }
+    .attach-button { margin-right: 12px; }
 
-    .action-buttons { display: flex; gap: 12px; margin-left: 16px; }
+    .action-buttons { display: flex; gap: 4px; margin-left: 12px; }
 
     .message-box {
         flex-grow: 1;
@@ -846,22 +860,18 @@
 
     .emoji-picker {
         position: absolute;
-        bottom: 40px;
-        right: 0;
+        bottom: 46px;
+        right: -4px;
         width: 352px;
         height: 360px;
-        background-color: #2f3136;
-        border: 1px solid var(--border-subtle);
-        border-radius: 8px;
         display: flex;
         flex-direction: column;
         z-index: 20;
-        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
     }
 
     .emoji-tabs {
         display: flex;
-        border-bottom: 1px solid var(--border-subtle);
+        border-bottom: 1px solid var(--border-input);
         padding: 4px 4px 0;
     }
 
@@ -904,24 +914,22 @@
         transition: background-color 0.1s;
     }
 
-    .emoji-cell:hover { background-color: var(--bg-hover); }
+    .emoji-cell:hover { background-color: var(--bg-active); }
 
     .message-box::placeholder { color: var(--text-muted); }
 
 
     .mention-popup {
         position: absolute;
-        bottom: 100%;
-        left: 16px;
-        right: 16px;
+        bottom: calc(100% + 8px);
+        left: 0;
+        width: 100%;
+        max-width: 440px;
+        box-sizing: border-box;
         max-height: 240px;
         overflow-y: auto;
-        background-color: var(--bg-inset);
-        border: 1px solid var(--border-input);
-        border-radius: 8px;
         padding: 4px;
         z-index: 20;
-        box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.3);
     }
 
 
@@ -930,7 +938,7 @@
         align-items: center;
         gap: 8px;
         width: 100%;
-        padding: 8px 12px;
+        padding: 7px 10px;
         background: none;
         border: none;
         border-radius: 4px;
@@ -942,7 +950,7 @@
 
     .mention-option:hover,
     .mention-option.selected {
-        background-color: var(--bg-hover);
+        background-color: var(--bg-active);
     }
 
     .mention-name { font-weight: 500; }

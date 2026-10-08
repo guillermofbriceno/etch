@@ -14,9 +14,11 @@
     --bg-hover: rgba(255, 255, 255, 0.06);
     --bg-active: rgba(255, 255, 255, 0.08);
     --bg-panel: rgba(255, 255, 255, 0.04);
-    --border-panel: transparent;
-    --bg-inset: #2f3136;
-    --bg-floating: #18191c;
+    --border-panel: 1px solid var(--border-input);
+    --bg-inset: #262626;
+    --bg-floating: #1a1a1a;
+    --bg-message-hover: rgba(255, 255, 255, 0.025);
+    --shadow-floating: 0 8px 24px rgba(0, 0, 0, 0.45);
     --accent: #7289da;
     --accent-hover: #8ea1e1;
     --primary: #5865f2;
@@ -54,7 +56,7 @@
     --border-input: rgba(255, 255, 255, 0.06);
     --bg-hover: rgba(255, 255, 255, 0.04);
     --bg-active: rgba(255, 255, 255, 0.06);
-    --bg-inset: #1a1a1e;
+    --bg-inset: #161616;
     --bg-panel: #000000;
     --border-panel: 2px solid rgba(255, 255, 255, 0.08);
     --bg-floating: #000000;
@@ -70,4 +72,12 @@ body, html {
     background: var(--bg-base);
     font-family: var(--font-family);
     overflow: hidden;
+}
+
+/* Menus, pickers and toolbars that sit above the page share one surface. */
+.floating {
+    background-color: var(--bg-floating);
+    border: 1px solid var(--border-input);
+    border-radius: 8px;
+    box-shadow: var(--shadow-floating);
 }

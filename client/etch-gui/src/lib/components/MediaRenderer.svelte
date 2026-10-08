@@ -124,9 +124,9 @@
         gap: 8px;
         max-width: 400px;
         padding: 10px 14px;
-        background-color: #2f3136;
-        border: 1px solid var(--border-subtle);
-        border-radius: 4px;
+        background-color: var(--bg-input);
+        border: 1px solid var(--border-input);
+        border-radius: 8px;
     }
     .audio-label {
         display: flex;
@@ -140,16 +140,16 @@
         align-items: center;
         gap: 8px;
         padding: 10px 14px;
-        background-color: #2f3136;
-        border: 1px solid var(--border-subtle);
-        border-radius: 4px;
+        background-color: var(--bg-input);
+        border: 1px solid var(--border-input);
+        border-radius: 8px;
         color: var(--text-primary);
         cursor: pointer;
         font: inherit;
         transition: background-color 0.15s ease;
     }
-    .file-download:hover { background-color: #36393f; }
-    .file-download :global(.file-icon) { flex-shrink: 0; color: #7289da; }
+    .file-download:hover { background-color: var(--bg-active); }
+    .file-download :global(.file-icon) { flex-shrink: 0; color: var(--accent); }
     .file-name { color: var(--text-link); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .file-size { flex-shrink: 0; color: var(--text-muted); font-size: 12px; }
     .file-download :global(.download-icon) { flex-shrink: 0; color: var(--text-secondary); }

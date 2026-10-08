@@ -46,7 +46,15 @@
     {/each}
 </li>
 {#each users as user (user.session_id)}
-    <li class="voice-user" on:contextmenu={(e) => handleContextMenu(e, user)}>
+    {@const src = resolveMediaUrl(user.avatar_url)}
+    <li class="voice-user" class:talking={$talkingUsers.has(user.session_id)} on:contextmenu={(e) => handleContextMenu(e, user)}>
+        <span class="avatar-ring">
+            {#if src}
+                <img src={src} alt="" class="mini-avatar" />
+            {:else}
+                <AvatarFallback initial={initial(user)} size={18} />
+            {/if}
+        </span>
         <span class="voice-user-name">{user.display_name ?? user.name}</span>
         <div class="voice-status-icons">
             {#if user.deafened}
@@ -67,11 +75,19 @@
     .voice-user {
         display: flex;
         align-items: center;
-        padding: 3px 8px 3px 32px;
+        gap: 8px;
+        padding: 2px 8px 2px 28px;
         margin-bottom: 1px;
+        border-radius: 4px;
         color: var(--text-secondary);
         list-style: none;
+        transition: background-color 0.1s ease, color 0.1s ease;
     }
+
+    .voice-user:hover { background-color: var(--bg-hover); color: var(--text-primary); }
+    .voice-user .avatar-ring { border-color: transparent; transition: border-color 0.1s ease; }
+    .voice-user.talking .avatar-ring { border-color: var(--status-success); }
+    .voice-user.talking .voice-user-name { color: var(--text-bright); }
 
     .voice-user-name {
         font-size: var(--font-size-base);
@@ -95,7 +111,7 @@
         display: none;
         flex-wrap: wrap;
         justify-content: center;
-        gap: 3px;
+        gap: 2px;
         padding: 2px 0;
         list-style: none;
     }

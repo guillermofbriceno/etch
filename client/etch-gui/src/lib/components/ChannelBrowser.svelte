@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { channels, activeChannelId, setActiveChannel, openConnect, usersByChannel, setUserVolume, matrixConnecting, hideDm, dmLastActivity, sidebarCollapsed, sidebarTransitioning, toggleSidebar } from '$lib/stores';
+    import { channels, activeChannelId, setActiveChannel, openConnect, usersByChannel, setUserVolume, matrixStatus, matrixConnecting, connectingBookmark, hideDm, dmLastActivity, sidebarCollapsed, sidebarTransitioning, toggleSidebar } from '$lib/stores';
     import { sendCoreCommand } from '$lib/ipc';
     import { resolveMediaUrl, getInitial } from '$lib/media';
     import type { VoiceUser } from '$lib/stores/voiceState';
@@ -11,6 +11,8 @@
     import { onMount, onDestroy } from 'svelte';
 
     let dropdownOpen = false;
+
+    $: serverName = ($matrixStatus !== 'disconnected' && $connectingBookmark?.label) || 'Etch Server';
 
     // Close dropdown when the sidebar is toggled to collapsed.
     let unsubCollapsed: (() => void) | undefined;
@@ -104,12 +106,12 @@
             on:click|stopPropagation={toggleDropdown}
             aria-expanded={dropdownOpen}
         >
-            <h1>Etch Server</h1>
-            <span class="dropdown-indicator" class:open={dropdownOpen}>▾</span>
+            <h1>{serverName}</h1>
+            <span class="dropdown-indicator" class:open={dropdownOpen}><Icon name="chevron_down" size={16} /></span>
         </button>
 
         {#if dropdownOpen}
-            <div class="dropdown-menu">
+            <div class="dropdown-menu floating">
                 <button class="dropdown-item" on:click|stopPropagation={handleConnect}>Connect</button>
                 <button class="dropdown-item disabled" disabled>Disconnect</button>
                 <button class="dropdown-item disabled" disabled>Server Information</button>
@@ -125,63 +127,64 @@
             </div>
         {/if}
 
-        <div class="category">
-            <h2 class="category-name">Voice Channels</h2>
-            <ul class="channel-list">
-                {#each voiceChannels as channel (channel.id)}
-                    <li class="channel-item {$activeChannelId === channel.id ? 'active' : ''}">
-                        <button class="channel-btn"
-                            on:click={() => handleVoiceClick(channel)}
-                            on:dblclick={() => handleVoiceDblClick(channel)}
-                            title={channel.display_name}
-                        >
-                            <span class="unread-slot" class:visible={channel.unread_count > 0}><span class="unread-dot"></span></span>
-                            <Icon name="volume" size={16} class="channel-icon" />
-                            <span class="channel-name full">{channel.display_name}</span>
-                            <span class="channel-name abbr">{getInitial(channel.display_name)}</span>
-                        </button>
-                    </li>
-                    {#if channel.channel_id != null && $usersByChannel.has(channel.channel_id)}
-                        <VoiceUserList
-                            users={$usersByChannel.get(channel.channel_id) ?? []}
-                            on:usercontextmenu={handleUserContextMenu}
-                        />
-                    {/if}
-                {/each}
-            </ul>
-        </div>
+        {#if voiceChannels.length > 0}
+            <div class="category">
+                <h2 class="category-name">Voice Channels</h2>
+                <ul class="channel-list">
+                    {#each voiceChannels as channel (channel.id)}
+                        <li class="channel-item" class:active={$activeChannelId === channel.id} class:unread={channel.unread_count > 0}>
+                            <button class="channel-btn"
+                                on:click={() => handleVoiceClick(channel)}
+                                on:dblclick={() => handleVoiceDblClick(channel)}
+                                title={channel.display_name}
+                            >
+                                <Icon name="volume" size={16} class="channel-icon" />
+                                <span class="channel-name full">{channel.display_name}</span>
+                                <span class="channel-name abbr">{getInitial(channel.display_name)}</span>
+                            </button>
+                        </li>
+                        {#if channel.channel_id != null && $usersByChannel.has(channel.channel_id)}
+                            <VoiceUserList
+                                users={$usersByChannel.get(channel.channel_id) ?? []}
+                                on:usercontextmenu={handleUserContextMenu}
+                            />
+                        {/if}
+                    {/each}
+                </ul>
+            </div>
+        {/if}
 
-        <div class="category">
-            <h2 class="category-name">Text Channels</h2>
-            <ul class="channel-list">
-                {#each textChannels as channel (channel.id)}
-                    <li class="channel-item {$activeChannelId === channel.id ? 'active' : ''}">
-                        <button class="channel-btn"
-                            on:click={() => setActiveChannel(channel.id)}
-                            title={channel.display_name}
-                        >
-                            <span class="unread-slot" class:visible={channel.unread_count > 0}><span class="unread-dot"></span></span>
-                            <Icon name="hash" size={16} class="channel-icon" />
-                            <span class="channel-name full">{channel.display_name}</span>
-                            <span class="channel-name abbr">{getInitial(channel.display_name)}</span>
-                        </button>
-                    </li>
-                {/each}
-            </ul>
-        </div>
+        {#if textChannels.length > 0}
+            <div class="category">
+                <h2 class="category-name">Text Channels</h2>
+                <ul class="channel-list">
+                    {#each textChannels as channel (channel.id)}
+                        <li class="channel-item" class:active={$activeChannelId === channel.id} class:unread={channel.unread_count > 0}>
+                            <button class="channel-btn"
+                                on:click={() => setActiveChannel(channel.id)}
+                                title={channel.display_name}
+                            >
+                                <Icon name="hash" size={16} class="channel-icon" />
+                                <span class="channel-name full">{channel.display_name}</span>
+                                <span class="channel-name abbr">{getInitial(channel.display_name)}</span>
+                            </button>
+                        </li>
+                    {/each}
+                </ul>
+            </div>
+        {/if}
 
         {#if dmChannels.length > 0}
             <div class="category">
                 <h2 class="category-name">Direct Messages</h2>
                 <ul class="channel-list">
                     {#each dmChannels as channel (channel.id)}
-                        <li class="channel-item dm-item {$activeChannelId === channel.id ? 'active' : ''}">
+                        <li class="channel-item dm-item" class:active={$activeChannelId === channel.id} class:unread={channel.unread_count > 0}>
                             <button class="channel-btn"
                                 on:click={() => setActiveChannel(channel.id)}
                                 title={channel.display_name}
                             >
-                                <span class="unread-slot" class:visible={channel.unread_count > 0}><span class="unread-dot"></span></span>
-                                {#if channel.avatar_url}
+                                    {#if channel.avatar_url}
                                     <img
                                         src={resolveMediaUrl(channel.avatar_url)}
                                         alt=""
@@ -218,26 +221,50 @@
         height: 100%;
         background-color: transparent;
         color: var(--text-tertiary);
+        --gutter: 12px;
     }
 
     .browser-header {
+        box-sizing: border-box;
         height: 48px;
         display: flex;
         align-items: center;
-        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+        gap: 2px;
+        padding: 0 var(--gutter);
+        border-bottom: 1px solid var(--border-input);
         flex-shrink: 0;
         z-index: 2;
         position: relative;
     }
 
+    .collapse-btn {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 32px;
+        height: 32px;
+        flex-shrink: 0;
+        background: none;
+        border: none;
+        border-radius: 6px;
+        color: var(--text-secondary);
+        cursor: pointer;
+        transition: background-color 0.15s, color 0.15s;
+    }
+
+    .collapse-btn:hover { background-color: var(--bg-hover); color: var(--text-primary); }
+
     .header-toggle {
         display: flex;
         align-items: center;
-        width: 100%;
-        height: 100%;
-        padding: 0 16px;
+        gap: 4px;
+        flex: 1;
+        min-width: 0;
+        height: 32px;
+        padding: 0 8px;
         background: none;
         border: none;
+        border-radius: 6px;
         color: inherit;
         font: inherit;
         cursor: pointer;
@@ -245,36 +272,22 @@
         overflow: hidden;
     }
 
-    .header-toggle:hover { background-color: rgba(255, 255, 255, 0.04); }
-
-    .collapse-btn {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        width: 28px;
-        height: 48px;
-        margin-left: 12px;
-        flex-shrink: 0;
-        background: none;
-        border: none;
-        color: var(--text-secondary);
-        cursor: pointer;
-        transition: color 0.15s;
-    }
-
-    .collapse-btn:hover { color: var(--text-primary); }
+    .header-toggle:hover, .header-toggle[aria-expanded="true"] { background-color: var(--bg-hover); }
 
     .header-toggle h1 {
         font-size: var(--font-size-channel);
         font-weight: 700;
         color: var(--text-bright);
         margin: 0;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
     }
 
     .dropdown-indicator {
+        display: flex;
+        flex-shrink: 0;
         color: var(--text-secondary);
-        margin-left: 6px;
-        font-size: var(--font-size-base);
         transition: transform 0.15s;
     }
 
@@ -282,13 +295,10 @@
 
     .dropdown-menu {
         position: absolute;
-        top: 100%;
-        left: 8px;
-        right: 8px;
-        background-color: var(--bg-floating);
-        border-radius: 4px;
-        padding: 6px;
-        box-shadow: 0 8px 16px rgba(0, 0, 0, 0.24);
+        top: calc(100% + 4px);
+        left: var(--gutter);
+        right: var(--gutter);
+        padding: 4px;
         z-index: 10;
     }
 
@@ -299,33 +309,34 @@
         border: none;
         color: var(--text-secondary);
         text-align: left;
-        padding: 8px 10px;
-        border-radius: 3px;
+        padding: 7px 10px;
+        border-radius: 4px;
         font-size: var(--font-size-base);
         font-family: 'Inter', sans-serif;
         cursor: pointer;
         transition: background-color 0.1s, color 0.1s;
     }
 
-    .dropdown-item:hover:not(:disabled) { background-color: #7289da; color: var(--text-bright); }
-    .dropdown-item.disabled { color: #4f545c; cursor: default; }
+    .dropdown-item:hover:not(:disabled) { background-color: var(--bg-active); color: var(--text-bright); }
+    .dropdown-item.disabled { color: var(--text-muted); opacity: 0.6; cursor: default; }
 
     .scroller {
         flex-grow: 1;
         overflow-y: auto;
         overflow-x: hidden;
-        padding: 16px 8px 16px 16px;
+        padding: 16px var(--gutter);
     }
 
     .category { margin-bottom: 20px; }
+    .category:last-child { margin-bottom: 0; }
 
     .category-name {
         font-size: 12px;
         text-transform: uppercase;
-        font-weight: 600;
-        letter-spacing: 0.25px;
-        margin: 0 0 4px 0;
-        padding-left: 2px;
+        font-weight: 700;
+        letter-spacing: 0.2px;
+        margin: 0 0 6px 0;
+        padding-left: 8px;
         transition: opacity 150ms ease;
         overflow: hidden;
         white-space: nowrap;
@@ -346,6 +357,7 @@
     .channel-btn {
         display: flex;
         align-items: center;
+        gap: 6px;
         flex: 1;
         min-width: 0;
         padding: var(--channel-item-padding);
@@ -357,26 +369,20 @@
         text-align: left;
     }
 
-    .channel-btn :global(.channel-icon) { margin-right: 6px; flex-shrink: 0; }
+    .channel-btn :global(.channel-icon) { flex-shrink: 0; }
 
-    .unread-slot {
-        width: 12px;
-        display: flex;
-        align-items: center;
-        justify-content: flex-start;
-        flex-shrink: 0;
-        margin-left: -8px;
-    }
-
-    .unread-dot {
+    /* The dot sits in the gutter, so a row's content starts at the same place with or without it. */
+    .channel-item.unread::before {
+        content: '';
+        position: absolute;
+        left: calc(var(--gutter) / -2 - 3px);
+        top: 50%;
         width: 6px;
         height: 6px;
+        margin-top: -3px;
         border-radius: 50%;
         background-color: var(--primary);
-        opacity: 0;
     }
-
-    .unread-slot.visible .unread-dot { opacity: 1; }
 
     .channel-name {
         font-size: var(--font-size-channel);
@@ -391,33 +397,33 @@
     .transitioning .channel-name { opacity: 0; }
     .transitioning .category-name { opacity: 0; }
 
-    .channel-item:hover { background-color: #393c43; color: var(--text-primary); }
-    .channel-item.active { background-color: #42464d; color: var(--text-bright); }
+    .channel-item.unread { color: var(--text-primary); }
+    .channel-item:hover { background-color: var(--bg-hover); color: var(--text-primary); }
+    .channel-item.active { background-color: var(--bg-active); color: var(--text-bright); }
 
     /* Default: show full names, hide abbreviations */
     .channel-name.abbr { display: none; }
 
     .hide-dm-btn {
         display: none;
-        margin-left: auto;
+        margin: 0 6px 0 auto;
         background: transparent;
         border: none;
         color: var(--text-tertiary);
         cursor: pointer;
-        padding: 2px;
-        border-radius: 3px;
+        padding: 3px;
+        border-radius: 4px;
         flex-shrink: 0;
         align-items: center;
     }
 
-    .hide-dm-btn:hover { color: var(--text-bright); background-color: rgba(255, 255, 255, 0.1); }
+    .hide-dm-btn:hover { color: var(--text-bright); background-color: var(--bg-active); }
     .dm-item:hover .hide-dm-btn { display: flex; }
 
     .dm-avatar {
         width: 20px;
         height: 20px;
         border-radius: 50%;
-        margin-right: 6px;
         flex-shrink: 0;
         object-fit: cover;
     }
@@ -426,7 +432,7 @@
         display: flex;
         align-items: center;
         gap: 10px;
-        padding: 12px 8px;
+        padding: 4px 8px 12px;
         color: var(--text-secondary);
         font-size: var(--font-size-base);
     }
@@ -446,9 +452,11 @@
 
     /* Narrow container: collapsed sidebar layout */
     @container sidebar (max-width: 149px) {
+        .channel-browser { --gutter: 8px; }
+        .browser-header { justify-content: center; gap: 0; }
         .header-toggle {
+            flex: 0 0 0;
             opacity: 0;
-            width: 0;
             padding: 0;
             pointer-events: none;
         }
@@ -456,15 +464,14 @@
             opacity: 0;
             pointer-events: none;
         }
-        .scroller { padding: 16px 0; overflow-y: auto; scrollbar-width: none; }
-        .category + .category { border-top: 1px solid rgba(255, 255, 255, 0.06); }
-        .channel-btn { justify-content: center; padding: 6px 0; }
-        .channel-btn :global(.channel-icon) { margin-right: 4px; }
-        .unread-slot { position: absolute; left: 2px; top: 50%; transform: translateY(-50%); margin-left: 0; width: auto; }
-        .dm-avatar { margin-right: 0; }
+        .scroller { overflow-y: auto; scrollbar-width: none; }
+        .category + .category { border-top: 1px solid var(--border-input); }
+        .channel-btn { justify-content: center; gap: 4px; padding: 6px 0; }
         .channel-name.full { display: none; }
         .channel-name.abbr { display: inline; }
         .hide-dm-btn { display: none !important; }
         .dropdown-menu { display: none; }
+        .connecting-indicator { justify-content: center; padding: 4px 0 12px; }
+        .connecting-indicator span { display: none; }
     }
 </style>

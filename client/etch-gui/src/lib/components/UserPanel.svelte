@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { currentUser, isMuted, isDeafened, toggleMute, toggleDeafen, openSettings, mumbleStatus } from '$lib/stores';
+    import { currentUser, isMuted, isDeafened, toggleMute, toggleDeafen, openSettings, mumbleStatus, matrixStatus } from '$lib/stores';
     import Icon from './Icon.svelte';
     import AvatarFallback from './AvatarFallback.svelte';
     import { resolveMediaUrl, getInitial } from '$lib/media';
@@ -40,8 +40,12 @@
 
     <button class="user-identity" on:click={() => openSettings('account')}>
         <div class="user-text">
-            <div class="username">{$currentUser.displayName ?? $currentUser.username}</div>
-            <div class="discriminator">{$currentUser.matrixId.split(':')[0]}</div>
+            {#if $currentUser.matrixId}
+                <div class="username">{$currentUser.displayName ?? $currentUser.username}</div>
+                <div class="discriminator">{$currentUser.matrixId.split(':')[0]}</div>
+            {:else if $matrixStatus === 'disconnected'}
+                <div class="discriminator">Offline</div>
+            {/if}
         </div>
 
         <div class="avatar-wrapper">
@@ -68,8 +72,9 @@
         display: flex;
         align-items: center;
         margin-left: auto;
-        padding: 4px 8px;
-        border-radius: 4px;
+        margin-right: 4px;
+        padding: 4px 6px 4px 8px;
+        border-radius: 6px;
         cursor: pointer;
         min-width: 0;
         transition: background-color 0.15s ease, opacity 75ms ease, width 75ms ease;
@@ -81,7 +86,7 @@
         overflow: hidden;
     }
 
-    .user-identity:hover { background-color: rgba(79, 84, 92, 0.32); }
+    .user-identity:hover { background-color: var(--bg-hover); }
 
     .avatar-wrapper {
         position: relative;
@@ -91,7 +96,7 @@
         flex-shrink: 0;
     }
 
-    .avatar { width: 100%; height: 100%; border-radius: 50%; background-color: #202225; object-fit: cover; }
+    .avatar { width: 100%; height: 100%; border-radius: 50%; background-color: var(--bg-inset); object-fit: cover; }
 
     .status-dot {
         position: absolute;
@@ -100,7 +105,7 @@
         width: 10px;
         height: 10px;
         border-radius: 50%;
-        border: 2px solid #1a1a1a;
+        border: 2px solid var(--bg-primary);
         background-color: #747f8d;
     }
 
@@ -125,13 +130,13 @@
         overflow: hidden;
     }
 
-    .discriminator { font-size: 12px; color: var(--text-secondary); }
+    .discriminator { font-size: 12px; color: var(--text-secondary); white-space: nowrap; }
 
     .controls {
         display: flex;
         align-items: center;
         justify-content: center;
-        margin-left: 2px;
+        margin-left: 8px;
     }
 
     .control-btn {
@@ -139,10 +144,10 @@
         align-items: center;
         justify-content: center;
         width: 28px;
-        height: 42px;
+        height: 32px;
         background: transparent;
         border: none;
-        border-radius: 4px;
+        border-radius: 6px;
         color: var(--text-secondary);
         cursor: pointer;
         padding: 0;
@@ -150,7 +155,7 @@
         line-height: 0;
     }
 
-    .control-btn:hover { color: var(--text-primary); background-color: rgba(79, 84, 92, 0.4); }
+    .control-btn:hover { color: var(--text-primary); background-color: var(--bg-hover); }
     .control-btn.danger-state { color: var(--status-danger); }
     .control-btn.danger-state:hover { color: #ff6b6b; background-color: rgba(237, 66, 69, 0.15); }
 

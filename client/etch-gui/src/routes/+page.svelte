@@ -173,10 +173,14 @@
         border: var(--border-panel);
     }
 
+    /* Starts where the sidebar's panel does, border included, so the two headers share a line. */
     .chat-area {
         display: flex;
         flex-direction: column;
         background-color: rgba(0, 0, 0, 0.0);
+        margin-top: 10px;
+        border-top: var(--border-panel);
+        border-top-color: transparent;
         min-height: 0;
         min-width: 0;
     }
@@ -194,10 +198,10 @@
         min-height: 0;
     }
 
+    /* No border here: the composer draws the panel border itself, because its colour shows state. */
     .message-input-wrapper {
         flex-shrink: 0;
         background-color: var(--bg-panel);
-        border: var(--border-panel);
         border-radius: 10px;
         margin-bottom: 10px;
         margin-left: 10px;

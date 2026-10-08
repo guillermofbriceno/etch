@@ -1,10 +1,12 @@
 <script lang="ts">
     import { beforeUpdate, afterUpdate, onMount } from 'svelte';
-    import { activeWindow, loadOlder, activeChannel, activeChannelId, openImage, showRoomIds, encryptionStatus, unlockScreen, openEncryptionDialog } from '$lib/stores';
+    import { activeWindow, loadOlder, activeChannel, activeChannelId, openImage, openConnect, showRoomIds, encryptionStatus, unlockScreen, openEncryptionDialog, matrixStatus } from '$lib/stores';
     import { undecryptableLine } from '$lib/encryptionText';
     import type { ChatMessage, TimelineEntry, TimelineEntryKind, StateEventKind } from '$lib/types';
     import MessageGroup from './MessageGroup.svelte';
     import Icon from './Icon.svelte';
+    import AvatarFallback from './AvatarFallback.svelte';
+    import { resolveMediaUrl, getInitial } from '$lib/media';
     import { customScrollbar } from '$lib/scrollbar';
 
     let scrollerElement: HTMLDivElement;
@@ -107,6 +109,8 @@
             if (stuckAtBottom) scrollToBottom();
         });
         resizeObs.observe(contentElement);
+        // A composer that grows takes its height from the scroller, which would cover the newest messages.
+        resizeObs.observe(scrollerElement);
 
         return () => resizeObs.disconnect();
     });
@@ -255,14 +259,20 @@
 
 <div class="chat-window">
     <header class="chat-header">
-        {#if $activeChannel?.etch_room_type === 'Voice'}
-            <Icon name="volume" class="header-icon" />
-        {:else}
-            <Icon name="hash" class="header-icon" />
-        {/if}
-        <h2>{$activeChannel?.display_name ?? ''}</h2>
-        {#if $activeChannel?.is_encrypted}
-            <Icon name="lock" size={16} class="lock-icon" />
+        {#if $activeChannel}
+            {#if $activeChannel.etch_room_type === 'Voice'}
+                <Icon name="volume" size={20} class="header-icon" />
+            {:else if $activeChannel.etch_room_type !== 'Dm'}
+                <Icon name="hash" size={20} class="header-icon" />
+            {:else if $activeChannel.avatar_url}
+                <img src={resolveMediaUrl($activeChannel.avatar_url)} alt="" class="header-avatar" />
+            {:else}
+                <AvatarFallback initial={getInitial($activeChannel.display_name)} size={24} />
+            {/if}
+            <h2>{$activeChannel.display_name}</h2>
+            {#if $activeChannel.is_encrypted}
+                <Icon name="lock" size={16} class="lock-icon" />
+            {/if}
         {/if}
         {#if $showRoomIds && $activeChannel}
             <span class="room-id" role="button" tabindex="0" title="Click to copy" on:click={() => {
@@ -313,8 +323,24 @@
         </div>
     </div>
 
+    {#if $activeChannelId === null}
+        <div class="empty-state">
+            {#if $matrixStatus === 'disconnected'}
+                <h3>Not connected to a server</h3>
+                <p>Connect to a server to see its channels and messages.</p>
+                <button class="empty-action" on:click={openConnect}>Connect to a Server</button>
+            {:else if $matrixStatus === 'connecting'}
+                <h3>Connecting to the server</h3>
+                <p>Your channels will appear here in a moment.</p>
+            {:else}
+                <h3>No channel selected</h3>
+                <p>Choose a channel from the sidebar.</p>
+            {/if}
+        </div>
+    {/if}
+
     {#if !stuckAtBottom}
-        <button class="scroll-to-bottom" on:click={jumpToLatest}>
+        <button class="scroll-to-bottom floating" aria-label="Jump to the latest message" on:click={jumpToLatest}>
             {#if newMessagesPending}<span class="new-messages-dot"></span>{/if}
             <Icon name="chevron_down" size={18} />
         </button>
@@ -331,23 +357,35 @@
         position: relative;
     }
 
+    /* The margin matches the composer's, so the line under the header ends where the composer does. */
     .chat-header {
+        box-sizing: border-box;
         height: 48px;
-        padding: 0 16px;
+        margin: 0 10px;
+        padding: 0 6px;
         display: flex;
         align-items: center;
-        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+        gap: 8px;
+        border-bottom: 1px solid var(--border-input);
         flex-shrink: 0;
         z-index: 2;
         color: var(--text-bright);
     }
 
-    .chat-header :global(.header-icon) { color: var(--text-tertiary); margin-right: 8px; }
+    .chat-header :global(.header-icon) { color: var(--text-tertiary); flex-shrink: 0; }
+    .header-avatar { width: 24px; height: 24px; border-radius: 50%; object-fit: cover; flex-shrink: 0; }
 
-    .chat-header h2 { font-size: 16px; font-weight: 600; margin: 0; }
-    .chat-header :global(.lock-icon) { color: #43b581; margin-left: 8px; flex-shrink: 0; }
+    .chat-header h2 {
+        font-size: 16px;
+        font-weight: 600;
+        margin: 0;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .chat-header :global(.lock-icon) { color: var(--status-success); flex-shrink: 0; }
     .room-id {
-        margin-left: 10px;
+        margin-left: 2px;
         font-size: 12px;
         color: var(--text-muted);
         font-family: var(--font-family-mono);
@@ -355,7 +393,7 @@
         user-select: none;
     }
     .room-id:hover { color: var(--text-primary); }
-    .room-id:active { color: #43b581; }
+    .room-id:active { color: var(--status-success); }
 
     .messages-scroller {
         flex-grow: 1;
@@ -390,20 +428,48 @@
         width: 36px;
         height: 36px;
         border-radius: 50%;
-        background: #36393f;
-        border: 1px solid var(--border-subtle);
-        color: var(--text-primary);
+        color: var(--text-secondary);
         cursor: pointer;
         display: flex;
         align-items: center;
         justify-content: center;
-        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
         z-index: 3;
-        transition: background-color 0.15s;
+        transition: color 0.15s, border-color 0.15s;
     }
     .scroll-to-bottom:hover {
-        background: #40444b;
+        color: var(--text-bright);
+        border-color: var(--border-medium);
     }
+
+    .empty-state {
+        position: absolute;
+        inset: 48px 0 0 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        text-align: center;
+    }
+
+    .empty-state h3 { color: var(--text-bright); font-size: 18px; font-weight: 600; margin: 0 0 8px; }
+    .empty-state p { color: var(--text-tertiary); font-size: var(--font-size-base); line-height: 1.4; margin: 0; }
+
+    .empty-action {
+        margin-top: 20px;
+        padding: 8px 20px;
+        border: none;
+        border-radius: 4px;
+        background-color: var(--primary);
+        color: var(--text-bright);
+        font-size: var(--font-size-base);
+        font-family: 'Inter', sans-serif;
+        font-weight: 500;
+        cursor: pointer;
+        transition: background-color 0.15s;
+    }
+
+    .empty-action:hover { background-color: var(--primary-hover); }
 
     .new-messages-dot {
         position: absolute;
@@ -427,7 +493,7 @@
         content: '';
         flex: 1;
         height: 1px;
-        background-color: var(--border-medium);
+        background-color: var(--border-input);
     }
 
     .day-divider span {

@@ -35,7 +35,7 @@
 </script>
 
 <!-- svelte-ignore a11y-no-static-element-interactions -->
-<div class="message-actions" on:mouseleave={cancelDelete}>
+<div class="message-actions floating" on:mouseleave={cancelDelete}>
     {#if confirmingDelete}
         <button class="action-btn confirm-delete" aria-label="Confirm delete" on:click={handleDelete}>
             <Icon name="trash" size={16} />
@@ -69,11 +69,10 @@
     .message-actions {
         position: absolute;
         bottom: calc(100% - 8px);
-        right: 26px;
+        right: 16px;
         display: flex;
-        background-color: #2f3136;
-        border: 1px solid var(--border-subtle);
-        border-radius: 4px;
+        gap: 1px;
+        padding: 2px;
         opacity: 0;
         pointer-events: none;
         transition: opacity 0.1s ease;
@@ -91,14 +90,14 @@
         border: none;
         color: var(--text-secondary);
         cursor: pointer;
-        border-radius: 3px;
+        border-radius: 6px;
         transition: background-color 0.1s, color 0.1s;
     }
 
-    .action-btn:hover { background-color: #393c43; color: var(--text-bright); }
+    .action-btn:hover { background-color: var(--bg-active); color: var(--text-bright); }
 
-    .delete-btn:hover { color: #ed4245; }
-    .confirm-delete { color: #ed4245; }
+    .delete-btn:hover { color: var(--status-danger); }
+    .confirm-delete { color: var(--status-danger); }
 
     .emoji-btn { font-size: 16px; }
 </style>

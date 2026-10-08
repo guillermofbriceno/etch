@@ -5,6 +5,7 @@ import { tick } from 'svelte';
 import { get } from 'svelte/store';
 import { resetStores } from '$lib/stores/__tests__/helpers';
 import { activeChannelId } from '$lib/stores/activeChannel';
+import { activeOverlay } from '$lib/stores/overlay';
 import { handleMatrixEvent as handleTimelineEvent } from '$lib/stores/messages';
 import {
     handleMatrixEvent as handleEncryptionEvent, encryptionPromptDismissed,
@@ -106,5 +107,16 @@ describe('undecryptable messages in the chat window', () => {
 
         expect(screen.getByText('now readable')).toBeInTheDocument();
         expect(notices()).toEqual(['1 encrypted message cannot be read on this device.']);
+    });
+});
+
+describe('the chat window with no channel', () => {
+    it('offers the way to connect while no server is connected', async () => {
+        const user = userEvent.setup();
+        render(ChatWindow);
+
+        await user.click(screen.getByRole('button', { name: 'Connect to a Server' }));
+
+        expect(get(activeOverlay)).toBe('connect');
     });
 });

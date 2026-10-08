@@ -28,7 +28,7 @@
 </script>
 
 <div
-    class="user-context-menu"
+    class="user-context-menu floating"
     style="left: {x}px; top: {y}px;"
 >
     <div class="context-header">{user.display_name ?? user.name}</div>
@@ -65,11 +65,8 @@
     .user-context-menu {
         position: fixed;
         z-index: 100;
-        background-color: var(--bg-floating);
-        border-radius: 4px;
-        padding: 6px;
-        box-shadow: 0 8px 16px rgba(0, 0, 0, 0.24);
-        min-width: 180px;
+        padding: 4px;
+        min-width: 188px;
     }
 
     .context-header {
@@ -89,20 +86,20 @@
         border: none;
         color: var(--text-secondary);
         text-align: left;
-        padding: 8px 10px;
-        border-radius: 3px;
+        padding: 7px 10px;
+        border-radius: 4px;
         font-size: var(--font-size-base);
         font-family: 'Inter', sans-serif;
         cursor: pointer;
         transition: background-color 0.1s, color 0.1s;
     }
 
-    .context-item:hover { background-color: var(--primary); color: var(--text-bright); }
+    .context-item:hover { background-color: var(--bg-active); color: var(--text-bright); }
 
     .context-divider {
         height: 1px;
-        background-color: #2e3035;
-        margin: 4px 10px;
+        background-color: var(--border-input);
+        margin: 4px 0;
     }
 
     .context-volume {
@@ -133,7 +130,7 @@
         height: 4px;
         -webkit-appearance: none;
         appearance: none;
-        background: #4f545c;
+        background: var(--border-medium);
         border-radius: 2px;
         outline: none;
         cursor: pointer;
