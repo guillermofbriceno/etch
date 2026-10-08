@@ -30,6 +30,9 @@ pub trait MatrixBackend: Send {
     fn subscribe_to_room(&mut self, room_id: &str) -> impl Future<Output = ()> + Send;
 
     fn reset(&mut self) -> impl Future<Output = ()> + Send;
+
+    /// `Err` carries the reason for the user, and means the client and the saved login were kept.
+    fn sign_out(&mut self, form: ServerConnectionForm) -> impl Future<Output = Result<(), String>> + Send;
 }
 
 pub trait VoiceService: Send {

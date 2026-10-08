@@ -6,14 +6,14 @@
 
 <div class="modal-layout">
     <div class="modal-sidebar">
-        <div class="sidebar-content">
-            <slot name="sidebar" />
-        </div>
+        <slot name="sidebar" />
     </div>
 
-    <div class="modal-content" use:customScrollbar>
-        <div class="content-container">
-            <slot />
+    <div class="modal-main">
+        <div class="modal-content" use:customScrollbar>
+            <div class="content-container">
+                <slot />
+            </div>
         </div>
 
         <div class="close-action">
@@ -26,44 +26,59 @@
 </div>
 
 <style>
+    /* A dialog of bounded size: past these limits a larger window only adds backdrop around it. */
     .modal-layout {
         display: flex;
+        box-sizing: border-box;
         width: 100%;
+        max-width: 1120px;
         height: 100%;
+        max-height: 800px;
         background-color: var(--bg-primary);
+        border: 1px solid var(--border-input);
+        border-radius: 10px;
+        overflow: hidden;
     }
 
     .modal-sidebar {
-        flex: 1 1 auto;
+        flex: 0 0 clamp(184px, 24%, 240px);
+        box-sizing: border-box;
         display: flex;
-        justify-content: flex-end;
+        flex-direction: column;
         background-color: var(--bg-secondary);
-        padding-top: 60px;
-        padding-right: 20px;
+        border-right: 1px solid var(--border-input);
+        padding: 36px 12px 16px;
+        overflow-y: auto;
+        scrollbar-width: none;
     }
 
-    .sidebar-content { width: 218px; display: flex; flex-direction: column; flex: 1; }
+    .modal-main {
+        position: relative;
+        flex: 1 1 0;
+        min-width: 0;
+        display: flex;
+    }
 
     .modal-content {
-        flex: 1 1 800px;
-        display: flex;
-        position: relative;
-        background-color: var(--bg-primary);
-        padding-top: 60px;
-        padding-left: 40px;
+        flex: 1 1 0;
+        min-width: 0;
         overflow-y: auto;
     }
 
-    .content-container { width: 100%; max-width: 740px; padding-bottom: 60px; }
+    /* The right padding keeps the column clear of the close button, which does not scroll. */
+    .content-container {
+        max-width: 740px;
+        padding: 36px 100px 48px 40px;
+    }
 
     .close-action {
-        flex-shrink: 0;
-        margin-left: 20px;
-        margin-right: 20px;
+        position: absolute;
+        top: 28px;
+        right: 24px;
         display: flex;
         flex-direction: column;
         align-items: center;
-        gap: 8px;
+        gap: 6px;
     }
 
     .close-btn {

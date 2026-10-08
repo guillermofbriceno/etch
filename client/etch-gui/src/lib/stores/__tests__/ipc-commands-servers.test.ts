@@ -4,7 +4,8 @@ import { invoke } from '@tauri-apps/api/core';
 import {
     loadSettings, connectToServer, addBookmark, updateBookmark, removeBookmark,
     serverBookmarks, selectedBookmarkId, connectingBookmark,
-    handleSystemEvent, handleMatrixEvent, passwordRequested, matrixConnecting, mediaBaseUrl,
+    handleSystemEvent, handleMatrixEvent, passwordRequested, mediaBaseUrl,
+    signOut, signingOut, signOutError,
 } from '../servers';
 import { transmissionMode, vadThreshold, voiceHold, useMumbleSettings, deafenSuppressesNotifs } from '../voiceSettings';
 import { activeOverlay } from '../overlay';
@@ -115,6 +116,15 @@ describe('servers IPC commands', () => {
                 },
             });
         });
+    });
+
+    it('signOut sends System > SignOut and waits for core to answer', () => {
+        signOut();
+
+        expect(invoke).toHaveBeenCalledWith('core_command', {
+            command: { type: 'System', data: { type: 'SignOut' } },
+        });
+        expect(get(signingOut)).toBe(true);
     });
 
     describe('addBookmark', () => {
@@ -414,6 +424,28 @@ describe('handleSystemEvent (SettingsLoaded)', () => {
     });
 });
 
+describe('handleSystemEvent (sign out)', () => {
+    // That the dialog and its reason end with the login is covered by their probes in session.test.ts.
+    it('closes Settings on SignedOut', () => {
+        activeOverlay.set('settings');
+
+        handleSystemEvent({ type: 'SignedOut' });
+
+        expect(get(activeOverlay), 'the account page describes a session that is gone').toBe('none');
+    });
+
+    it('ends the request with its reason on SignOutFailed and stays where it was', () => {
+        activeOverlay.set('settings');
+        signOut();
+
+        handleSystemEvent({ type: 'SignOutFailed', data: { reason: 'Could not reach the server.' } });
+
+        expect(get(signingOut)).toBe(false);
+        expect(get(signOutError)).toBe('Could not reach the server.');
+        expect(get(activeOverlay)).toBe('settings');
+    });
+});
+
 describe('handleMatrixEvent (servers)', () => {
     it('sets passwordRequested on PasswordRequest', () => {
         handleMatrixEvent({ type: 'PasswordRequest' } as any);
@@ -427,25 +459,4 @@ describe('handleMatrixEvent (servers)', () => {
         expect(get(mediaBaseUrl)).toBe('https://matrix.etch.gg');
     });
 
-    it('sets matrixConnecting to true on Connecting', () => {
-        handleMatrixEvent({ type: 'ConnectionState', data: { type: 'Connecting' } } as any);
-
-        expect(get(matrixConnecting)).toBe(true);
-    });
-
-    it('sets matrixConnecting to false on Connected', () => {
-        matrixConnecting.set(true);
-
-        handleMatrixEvent({ type: 'ConnectionState', data: { type: 'Connected' } } as any);
-
-        expect(get(matrixConnecting)).toBe(false);
-    });
-
-    it('closes overlay on Connected', () => {
-        activeOverlay.set('connect');
-
-        handleMatrixEvent({ type: 'ConnectionState', data: { type: 'Connected' } } as any);
-
-        expect(get(activeOverlay)).toBe('none');
-    });
 });

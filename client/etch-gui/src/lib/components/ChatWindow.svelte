@@ -1,6 +1,7 @@
 <script lang="ts">
     import { beforeUpdate, afterUpdate, onMount } from 'svelte';
-    import { activeWindow, loadOlder, activeChannel, activeChannelId, openImage, showRoomIds } from '$lib/stores';
+    import { activeWindow, loadOlder, activeChannel, activeChannelId, openImage, showRoomIds, encryptionStatus, unlockScreen, openEncryptionDialog } from '$lib/stores';
+    import { undecryptableLine } from '$lib/encryptionText';
     import type { ChatMessage, TimelineEntry, TimelineEntryKind, StateEventKind } from '$lib/types';
     import MessageGroup from './MessageGroup.svelte';
     import Icon from './Icon.svelte';
@@ -211,6 +212,27 @@
         return '';
     }
 
+    function rendersNothing(kind: TimelineEntryKind): boolean {
+        if (isStateEvent(kind)) return stateEventText(kind.StateEvent) === '';
+        return kind === 'ReadMarker' || kind === 'Redacted' || kind === 'Other';
+    }
+
+    /** How many undecryptable entries the line at `index` stands for: the whole run for its first entry, 0 for the rest. */
+    function undecryptableRun(entries: TimelineEntry[], index: number): number {
+        for (let i = index - 1; i >= 0; i--) {
+            const kind = entries[i].kind;
+            if (kind === 'Undecryptable') return 0;
+            if (!rendersNothing(kind)) break;
+        }
+        let count = 0;
+        for (let i = index; i < entries.length; i++) {
+            const kind = entries[i].kind;
+            if (kind === 'Undecryptable') count++;
+            else if (!rendersNothing(kind)) break;
+        }
+        return count;
+    }
+
     const GROUP_THRESHOLD_MS = 5 * 60 * 1000;
 
     function isContinuation(entries: TimelineEntry[], index: number): boolean {
@@ -273,6 +295,18 @@
                     {@const text = stateEventText(entry.kind.StateEvent)}
                     {#if text}
                         <div class="state-event">{text}</div>
+                    {/if}
+                {:else if entry.kind === 'Undecryptable'}
+                    {@const count = undecryptableRun($activeWindow.entries, i)}
+                    {#if count > 0}
+                        {@const line = undecryptableLine(count, unlockScreen($encryptionStatus.type))}
+                        {#if line.remedy}
+                            <button class="undecryptable" on:click={openEncryptionDialog}>
+                                {line.text} <span class="undecryptable-remedy">{line.remedy}</span>
+                            </button>
+                        {:else}
+                            <div class="undecryptable">{line.text}</div>
+                        {/if}
                     {/if}
                 {/if}
             {/each}
@@ -410,5 +444,30 @@
         font-size: 13px;
         font-style: italic;
         color: var(--text-muted);
+    }
+
+    /* --- Undecryptable messages --- */
+    .undecryptable {
+        display: block;
+        padding: 4px 16px;
+        font-size: 13px;
+        font-style: italic;
+        color: var(--text-muted);
+    }
+
+    button.undecryptable {
+        background: none;
+        border: none;
+        font-family: inherit;
+        text-align: left;
+        cursor: pointer;
+    }
+
+    .undecryptable-remedy {
+        color: var(--text-link);
+    }
+
+    button.undecryptable:hover .undecryptable-remedy {
+        text-decoration: underline;
     }
 </style>

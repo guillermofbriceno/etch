@@ -5,12 +5,14 @@ import type { CoreEvent } from '$lib/ipc';
 import { handleMatrixEvent as messagesHandleMatrix } from './messages';
 import { handleMatrixEvent as channelsHandleMatrix } from './channels';
 import { handleMatrixEvent as serversHandleMatrix } from './servers';
+import { handleMatrixEvent as matrixConnectionHandleMatrix } from './matrixConnection';
 import { handleMatrixEvent as userHandleMatrix, handleSystemEvent as userHandleSystem } from './user';
 import { handleMatrixEvent as nameColorsHandleMatrix } from './nameColors';
+import { handleMatrixEvent as encryptionHandleMatrix } from './encryption';
 import { handleSystemEvent as serversHandleSystem } from './servers';
 import { handleSystemEvent as errorsHandleSystem } from './errors';
 import { handleMumbleEvent, handleSystemEvent as voiceHandleSystem } from './voiceState';
-import { resetMatrixSession, declareStores } from './session';
+import { resetMatrixSession, resetLoginSession, enterLogin, declareStores } from './session';
 
 // Eager, so every store has registered its session scope before the first ServerReset can fire.
 import.meta.glob('./*.ts', { eager: true });
@@ -30,11 +32,15 @@ export function initEventRouter(): void {
 
         switch (ce.type) {
             case 'Matrix':
+                // Before the handlers, so what they store belongs to the login this event names.
+                if (ce.data.type === 'CurrentUser') enterLogin(ce.data.data.matrix_id);
                 messagesHandleMatrix(ce.data);
                 channelsHandleMatrix(ce.data);
                 serversHandleMatrix(ce.data);
+                matrixConnectionHandleMatrix(ce.data);
                 userHandleMatrix(ce.data);
                 nameColorsHandleMatrix(ce.data);
+                encryptionHandleMatrix(ce.data);
                 break;
             case 'Mumble':
                 handleMumbleEvent(ce.data);
@@ -43,6 +49,8 @@ export function initEventRouter(): void {
                 if (ce.data.type === 'ServerReset') {
                     // Matrix only: the voice session survives a homeserver reconnect.
                     resetMatrixSession();
+                } else if (ce.data.type === 'SignedOut') {
+                    resetLoginSession();
                 }
                 serversHandleSystem(ce.data);
                 errorsHandleSystem(ce.data);

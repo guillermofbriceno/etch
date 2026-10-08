@@ -16,6 +16,9 @@ const INTERNAL_QUEUE: usize = 100;
 /// Bounds how long quitting waits for dispatched work, so a stuck launch cannot hold the app open.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
+const SIGN_OUT_UNSERVED: &str =
+    "Etch could not sign out, so this device is still signed in. Restart Etch and try again.";
+
 /// Voice state tracked in memory for restoration after Mumble restarts.
 /// Reset when connecting to a new server; preserved across process restarts
 /// on the same server.
@@ -79,6 +82,13 @@ enum SyncReport {
     Ended(SyncEnd),
 }
 
+/// A sign out the engine has dispatched and not yet had an answer for.
+#[derive(Default)]
+struct PendingSignOut {
+    /// A connect asked for meanwhile, started once the sign out has answered so the two cannot interleave.
+    then_connect: Option<ServerConnectionForm>,
+}
+
 /// A voice launch the engine has dispatched and not yet had an answer for.
 struct PendingLaunch {
     generation: u64,
@@ -106,6 +116,7 @@ pub struct CoreEngine {
 
     pending_connect: Option<PendingConnect>,
     pending_launch: Option<PendingLaunch>,
+    pending_sign_out: Option<PendingSignOut>,
     connect_generation: u64,
     /// The connect generation whose sync reports are current: set when that connect settles
     /// `Connected`, cleared when its sync ends or another connect starts.
@@ -149,6 +160,7 @@ impl CoreEngine {
             voice: VoiceSession::Idle,
             pending_connect: None,
             pending_launch: None,
+            pending_sign_out: None,
             connect_generation: 0,
             live_generation: None,
             launch_generation: 0,
@@ -195,7 +207,12 @@ impl CoreEngine {
 
                 // Gated on no attempt in flight, or a connect slower than the backoff
                 // would keep superseding itself.
-                _ = &mut retry_timer, if self.conn.state.is_failed() && self.pending_connect.is_none() => {
+                _ = &mut retry_timer, if self.conn.state.is_failed()
+                    // An elapsed timer with nothing to retry would fire on every turn of the loop.
+                    && self.conn.form.is_some()
+                    && self.pending_connect.is_none()
+                    && self.pending_sign_out.is_none() =>
+                {
                     if let Some(form) = self.conn.form.clone() {
                         log::info!("Retrying Matrix connection (attempt {})", self.conn.retries + 1);
                         self.connect_to_server(&form, &mut retry_timer).await;
@@ -242,6 +259,7 @@ impl CoreEngine {
         #[cfg(test)]
         if self.pending_connect.is_none()
             && self.pending_launch.is_none()
+            && self.pending_sign_out.is_none()
             && self.cmd_rx.is_empty()
         {
             for reply in self.pending_barriers.drain(..) {
@@ -257,9 +275,7 @@ impl CoreEngine {
     ) {
         match cmd {
             SystemCommand::ConnectToServer(form) => {
-                self.conn.form = Some(form.clone());
-                self.conn.retries = 0;
-                self.connect_to_server(&form, retry_timer).await;
+                self.connect_on_request(form, retry_timer).await;
             }
             SystemCommand::LoadSettings => {
                 let s = self.settings.get().clone();
@@ -268,11 +284,10 @@ impl CoreEngine {
                 )).await;
 
                 if let Some(bm) = s.bookmarks.iter().find(|b| b.auto_connect) {
-                    let form = ServerConnectionForm::from(bm);
-                    self.conn.form = Some(form.clone());
-                    self.connect_to_server(&form, retry_timer).await;
+                    self.connect_on_request(ServerConnectionForm::from(bm), retry_timer).await;
                 }
             }
+            SystemCommand::SignOut => self.sign_out(retry_timer).await,
             SystemCommand::SaveBookmarks(bookmarks) => {
                 self.settings.update(|s| s.bookmarks = bookmarks);
                 let s = self.settings.get().clone();
@@ -376,6 +391,9 @@ impl CoreEngine {
                     }
                     InternalMatrixEvent::ConnectFinished { generation, outcome } => {
                         self.finish_connect(generation, outcome, retry_timer).await;
+                    }
+                    InternalMatrixEvent::SignOutFinished { outcome } => {
+                        self.finish_sign_out(outcome, retry_timer).await;
                     }
                     InternalMatrixEvent::VoiceUserResolved {
                         session_id, name, volume_db, display_name, avatar_url,
@@ -507,6 +525,104 @@ impl CoreEngine {
         }
 
         self.send_voice_command(cmd).await;
+    }
+
+    /// A connect asked for while a sign out is in flight waits for its answer, so the two
+    /// cannot interleave.
+    async fn connect_on_request(
+        &mut self,
+        form: ServerConnectionForm,
+        retry_timer: &mut Pin<Box<Sleep>>,
+    ) {
+        if let Some(signing_out) = &mut self.pending_sign_out {
+            signing_out.then_connect = Some(form);
+            return;
+        }
+        self.conn.form = Some(form.clone());
+        self.conn.retries = 0;
+        self.connect_to_server(&form, retry_timer).await;
+    }
+
+    /// Served behind whatever the actor is already doing, a connect included, so a login
+    /// still being made is logged out instead of being left on the server.
+    async fn sign_out(&mut self, retry_timer: &mut Pin<Box<Sleep>>) {
+        if self.pending_sign_out.is_some() {
+            log::debug!("Ignoring a sign out: one is already in flight");
+            return;
+        }
+        self.pending_sign_out = Some(PendingSignOut::default());
+
+        let Some(form) = self.conn.form.clone() else {
+            self.finish_sign_out(Ok(()), retry_timer).await;
+            return;
+        };
+        let dispatched = self.matrix.send(MatrixRequest::SignOut {
+            form,
+            internal_tx: self.internal_tx.clone(),
+        }).await;
+
+        // An undispatched request never answers; fail it here so the frontend is not left waiting.
+        if !dispatched {
+            log::error!("Matrix actor is not accepting requests; failing the sign out");
+            self.finish_sign_out(Err(SIGN_OUT_UNSERVED.into()), retry_timer).await;
+        }
+    }
+
+    async fn finish_sign_out(
+        &mut self,
+        outcome: Result<(), String>,
+        retry_timer: &mut Pin<Box<Sleep>>,
+    ) {
+        let Some(signing_out) = self.pending_sign_out.take() else {
+            log::debug!("Discarding a sign out result: none was outstanding");
+            return;
+        };
+        let next = signing_out.then_connect.filter(|_| !self.shutting_down);
+
+        match outcome {
+            Ok(()) => {
+                log::info!("Signed out");
+                // A report the session sent on its way out must not arm a retry.
+                self.live_generation = None;
+                let _ = self.event_tx.send(CoreEvent::System(SystemEvent::ServerReset)).await;
+                self.conn.disconnect(&self.event_tx).await;
+                let _ = self.event_tx.send(CoreEvent::System(SystemEvent::SignedOut)).await;
+                self.end_voice().await;
+                if let Some(form) = next {
+                    self.connect_on_request(form, retry_timer).await;
+                }
+            }
+            Err(reason) => {
+                log::warn!("Sign out failed: {reason}");
+                // The actor stopped the session's sync before it tried, so the session is
+                // brought back the way a dropped one is; its saved login needs no password.
+                match (next, self.conn.form.clone()) {
+                    (Some(form), _) => self.connect_on_request(form, retry_timer).await,
+                    (None, Some(form)) if !self.shutting_down => {
+                        self.connect_to_server(&form, retry_timer).await;
+                    }
+                    _ => {}
+                }
+                // After the reconnect's `ServerReset`, so the frontend shows the reason on the session it now has.
+                let _ = self.event_tx.send(CoreEvent::System(
+                    SystemEvent::SignOutFailed { reason },
+                )).await;
+            }
+        }
+    }
+
+    /// A reconnect leaves voice alone; this is for the user leaving the server, so the
+    /// state that outlives a Mumble restart goes with it.
+    async fn end_voice(&mut self) {
+        self.voice_restore = VoiceRestoreState::default();
+        let was_launching = self.pending_launch.take().is_some();
+        if !was_launching && matches!(self.voice, VoiceSession::Idle) {
+            return;
+        }
+        self.voice = VoiceSession::Idle;
+        if !self.voice_service.send(VoiceRequest::Shutdown).await && !self.shutting_down {
+            log::error!("Voice actor is not accepting requests; Mumble was not stopped");
+        }
     }
 
     /// A new request supersedes an attempt in flight rather than queueing, since the
@@ -1757,6 +1873,189 @@ mod tests {
         assert_ne!(
             SyncEnd::SessionInvalidated { reason: "x".into() },
             SyncEnd::RetriesExhausted { reason: "x".into() },
+        );
+    }
+
+    fn sign_out() -> CoreCommand {
+        CoreCommand::System(SystemCommand::SignOut)
+    }
+
+    fn session_rejected(generation: u64) -> InternalEvent {
+        InternalEvent::Matrix(InternalMatrixEvent::Disconnected {
+            generation,
+            end: SyncEnd::SessionInvalidated { reason: "M_UNKNOWN_TOKEN".into() },
+        })
+    }
+
+    fn position(events: &[CoreEvent], what: &str, is: impl Fn(&CoreEvent) -> bool) -> usize {
+        events.iter().position(is).unwrap_or_else(|| panic!("the engine never emitted {what}"))
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn signing_out_leaves_the_connection_disconnected_voice_ended_and_nothing_retrying() {
+        use crate::test_mocks::MockCall;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let matrix = MockMatrix::new().with_repeating_connect_result(ConnectOutcome::Connected(None));
+        let matrix_state = matrix.state.clone();
+        let voice = MockVoice::new().with_internal_events(vec![
+            InternalEvent::Mumble(InternalMumbleEvent::Connected),
+            InternalEvent::Mumble(InternalMumbleEvent::LocalChannelChanged {
+                channel_path: "Voice/General".into(),
+            }),
+            InternalEvent::Mumble(InternalMumbleEvent::LocalMuteChanged(true)),
+        ]).with_internal_events(vec![
+            // The point at which a mute carried over from before would be sent again.
+            InternalEvent::Mumble(InternalMumbleEvent::Connected),
+        ]);
+        let voice_state = voice.state.clone();
+        let (engine, cmd_tx, event_rx) = build_engine(matrix, voice, tmp.path());
+        let driver = EngineDriver::start(engine, cmd_tx, event_rx);
+
+        driver.step(CoreCommand::System(SystemCommand::ConnectToServer(connect_form()))).await;
+        // The sync has given up, so a retry is armed for the sign out to disarm.
+        driver.inject(InternalEvent::Matrix(InternalMatrixEvent::Disconnected {
+            generation: 1,
+            end: SyncEnd::RetriesExhausted { reason: "out of retries".into() },
+        })).await;
+        driver.settle().await;
+
+        driver.step(sign_out()).await;
+        tokio::time::sleep(PAST_THE_FIRST_BACKOFF).await;
+        driver.settle().await;
+        assert_eq!(
+            matrix_state.call_log.lock().unwrap().as_slice(),
+            &[MockCall::Reset, MockCall::Connect, MockCall::SignOut],
+            "nothing may reconnect a user who signed out",
+        );
+        assert_eq!(*voice_state.shutdown_count.lock().unwrap(), 1, "signing out leaves voice as well");
+
+        driver.step(CoreCommand::System(SystemCommand::ConnectToServer(connect_form()))).await;
+        let events = driver.finish().await;
+
+        let signed_out = position(&events, "SignedOut", |e| {
+            matches!(e, CoreEvent::System(SystemEvent::SignedOut))
+        });
+        let disconnected = position(&events, "a Disconnected connection state", |e| {
+            matches!(e, CoreEvent::Matrix(MatrixEvent::ConnectionState(ConnectionState::Disconnected)))
+        });
+        assert!(
+            matches!(events[disconnected - 1], CoreEvent::System(SystemEvent::ServerReset))
+                && signed_out == disconnected + 1,
+            "the frontend should see the session reset, then disconnected, then signed out",
+        );
+        assert!(
+            events.iter().any(|e| matches!(
+                e, CoreEvent::Mumble(MumbleEvent::ConnectionState(ConnectionState::Disconnected))
+            )),
+            "the frontend must be told voice ended, since a killed Mumble may not say so itself",
+        );
+        assert_eq!(
+            voice_state.launched_channel_paths.lock().unwrap().as_slice(),
+            &[None, None],
+            "the channel remembered for a Mumble restart must not survive a sign out",
+        );
+        assert!(
+            !voice_state.commands.lock().unwrap().contains(&MumbleCommand::MuteSelf(true)),
+            "nor may the mute",
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_sign_out_reconnects_and_a_finished_one_is_not_taken_for_a_rejected_session() {
+        use crate::test_mocks::MockCall;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let matrix = MockMatrix::new()
+            .with_repeating_connect_result(ConnectOutcome::Connected(None))
+            .with_sign_out_result(Err("the server could not be reached".into()));
+        let matrix_state = matrix.state.clone();
+        let voice = MockVoice::new();
+        let voice_state = voice.state.clone();
+        let (engine, cmd_tx, event_rx) = build_engine(matrix, voice, tmp.path());
+        let driver = EngineDriver::start(engine, cmd_tx, event_rx);
+
+        driver.step(CoreCommand::System(SystemCommand::ConnectToServer(connect_form()))).await;
+        driver.step(sign_out()).await;
+        assert_eq!(
+            *voice_state.shutdown_count.lock().unwrap(), 0,
+            "a sign out that failed must leave voice alone",
+        );
+
+        driver.step(sign_out()).await;
+        // What a sync that outlived the logout would report: the server no longer knows its token.
+        driver.inject(session_rejected(2)).await;
+        driver.settle().await;
+        tokio::time::sleep(PAST_THE_FIRST_BACKOFF).await;
+        driver.settle().await;
+
+        let events = driver.finish().await;
+
+        assert!(
+            matches!(
+                conn_states(&events).as_slice(),
+                [ConnectionState::Connecting, ConnectionState::Connected,
+                 ConnectionState::Connecting, ConnectionState::Connected,
+                 ConnectionState::Disconnected],
+            ),
+            "the failed sign out should reconnect, and the one that succeeded should end \
+             disconnected rather than failed, got {:?}",
+            conn_states(&events),
+        );
+        assert_eq!(
+            matrix_state.call_log.lock().unwrap().as_slice(),
+            &[
+                MockCall::Reset, MockCall::Connect,
+                MockCall::SignOut, MockCall::Reset, MockCall::Connect,
+                MockCall::SignOut,
+            ],
+            "nothing may try to connect again once the sign out has succeeded",
+        );
+
+        let reconnect_reset = events.iter().enumerate()
+            .filter(|(_, e)| matches!(e, CoreEvent::System(SystemEvent::ServerReset)))
+            .map(|(at, _)| at)
+            .nth(1)
+            .expect("the reconnect should have reset the session");
+        let failed = position(&events, "SignOutFailed", |e| matches!(
+            e, CoreEvent::System(SystemEvent::SignOutFailed { reason }) if reason == "the server could not be reached"
+        ));
+        assert!(
+            reconnect_reset < failed,
+            "the reason must follow the reset, which clears what the frontend holds",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_connect_asked_for_during_a_sign_out_starts_once_it_has_answered() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (gate, gate_rx) = tokio::sync::oneshot::channel();
+        let matrix = MockMatrix::new()
+            .with_repeating_connect_result(ConnectOutcome::Connected(None))
+            .with_sign_out_gate(gate_rx);
+        let (engine, cmd_tx, event_rx) = build_engine(matrix, MockVoice::new(), tmp.path());
+        let driver = EngineDriver::start(engine, cmd_tx, event_rx);
+
+        driver.step(CoreCommand::System(SystemCommand::ConnectToServer(connect_form()))).await;
+        driver.send(sign_out()).await;
+        driver.send(CoreCommand::System(SystemCommand::ConnectToServer(connect_form()))).await;
+        // Long enough for the engine to have taken both commands while the sign out is held.
+        for _ in 0..100 {
+            tokio::task::yield_now().await;
+        }
+        gate.send(()).unwrap();
+        driver.settle().await;
+
+        let events = driver.finish().await;
+        assert!(
+            matches!(
+                conn_states(&events).as_slice(),
+                [ConnectionState::Connecting, ConnectionState::Connected,
+                 ConnectionState::Disconnected,
+                 ConnectionState::Connecting, ConnectionState::Connected],
+            ),
+            "the sign out must be over before the next connect shows, got {:?}",
+            conn_states(&events),
         );
     }
 

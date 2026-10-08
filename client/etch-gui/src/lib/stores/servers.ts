@@ -17,9 +17,18 @@ export const connectingBookmark = writable<ServerBookmark | null>(null);
 
 declareStores('device', 'serverBookmarks', 'selectedBookmarkId', 'connectingBookmark');
 
+export const signOutDialogOpen = writable<boolean>(false);
+// A failed sign out reconnects, and the reset that comes with it must not take the reason away.
+export const signOutError = writable<string | null>(null);
+
+registerSessionStore('login', 'signOutDialogOpen', () => { signOutDialogOpen.set(false); });
+registerSessionStore('login', 'signOutError', () => { signOutError.set(null); });
+
+
 export const passwordRequested = writable<boolean>(false);
-export const matrixConnecting = writable<boolean>(false);
 export const mediaBaseUrl = writable<string | null>(null);
+// A sign out is out and core has answered with neither SignedOut nor SignOutFailed.
+export const signingOut = writable<boolean>(false);
 
 export function loadSettings(): void {
     sendCoreCommand({ type: 'System', data: { type: 'LoadSettings' } });
@@ -49,6 +58,25 @@ export async function connectToServer(bookmark: ServerBookmark, password: string
                 mumble_password: bookmark.mumble_password,
             },
         },
+    });
+}
+
+export function openSignOut(): void {
+    signOutError.set(null);
+    signOutDialogOpen.set(true);
+}
+
+export function closeSignOut(): void {
+    signOutDialogOpen.set(false);
+    signOutError.set(null);
+}
+
+export function signOut(): void {
+    signOutError.set(null);
+    signingOut.set(true);
+    sendCoreCommand({ type: 'System', data: { type: 'SignOut' } }).catch((e) => {
+        signingOut.set(false);
+        signOutError.set(`Etch could not send the request: ${e}`);
     });
 }
 
@@ -94,11 +122,10 @@ export function removeBookmark(id: string): void {
 
 const clearMediaBaseUrl = (): void => { mediaBaseUrl.set(null); };
 const clearPasswordRequested = (): void => { passwordRequested.set(false); };
-const clearMatrixConnecting = (): void => { matrixConnecting.set(false); };
 
 registerSessionStore('matrix', 'mediaBaseUrl', clearMediaBaseUrl);
 registerSessionStore('matrix', 'passwordRequested', clearPasswordRequested);
-registerSessionStore('matrix', 'matrixConnecting', clearMatrixConnecting);
+registerSessionStore('matrix', 'signingOut', () => { signingOut.set(false); });
 
 // Handlers called by eventRouter
 export function handleMatrixEvent(me: MatrixEvent): void {
@@ -106,16 +133,17 @@ export function handleMatrixEvent(me: MatrixEvent): void {
         passwordRequested.set(true);
     } else if (me.type === 'HomeserverResolved') {
         mediaBaseUrl.set(me.data);
-    } else if (me.type === 'ConnectionState') {
-        matrixConnecting.set(me.data.type === 'Connecting');
-        if (me.data.type === 'Connected') {
-            closeOverlay();
-        }
     }
 }
 
 export function handleSystemEvent(se: SystemEvent): void {
-    if (se.type === 'SettingsLoaded') {
+    if (se.type === 'SignedOut') {
+        // Settings showed an account that is no longer signed in.
+        closeOverlay();
+    } else if (se.type === 'SignOutFailed') {
+        signingOut.set(false);
+        signOutError.set(se.data.reason);
+    } else if (se.type === 'SettingsLoaded') {
         serverBookmarks.set(se.data.bookmarks);
         if (se.data.transmission_mode != null) transmissionMode.set(se.data.transmission_mode as TransmissionMode);
         if (se.data.vad_threshold != null) vadThreshold.set(Math.round(se.data.vad_threshold * 100));

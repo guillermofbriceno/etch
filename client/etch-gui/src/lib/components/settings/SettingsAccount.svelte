@@ -1,6 +1,7 @@
 <script lang="ts">
-    import { currentUser, canSetNameColor } from '$lib/stores';
+    import { currentUser, canSetNameColor, matrixSessionLive, encryptionStatus, entryScreen, openEncryptionDialog } from '$lib/stores';
     import { sendCoreCommand } from '$lib/ipc';
+    import { ACTION, SUMMARY, NOT_CONNECTED } from '$lib/encryptionText';
     import Icon from '../Icon.svelte';
     import AvatarFallback from '../AvatarFallback.svelte';
     import NameColorSetting from './NameColorSetting.svelte';
@@ -17,6 +18,8 @@
     let passwordLabel = 'Change Password';
     let passwordError = '';
     $: passwordValid = currentPassword.length > 0 && newPassword.length > 0 && newPassword === confirmPassword;
+
+    $: recoveryKeyEntry = entryScreen($encryptionStatus.type);
 
     async function pickAvatar() {
         const path = await open({
@@ -55,6 +58,8 @@
 <div class="tab-pane">
     <h2>My Account</h2>
 
+    <h3 class="section-header">Profile</h3>
+
     <div class="profile-row">
         <button class="avatar-edit-wrapper" on:click={pickAvatar}>
             {#if $currentUser.avatarUrl}
@@ -82,7 +87,7 @@
         </div>
     </div>
 
-    <div class="divider"></div>
+    <h3 class="section-header">Password and Security</h3>
 
     <div class="setting-group">
         <label for="current-password">Change Password</label>
@@ -94,11 +99,27 @@
         {/if}
         <button class="action-btn" on:click={changePassword} disabled={!passwordValid}>{passwordLabel}</button>
     </div>
+
+    <div class="setting-group" role="group" aria-labelledby="recovery-key-label">
+        <span class="setting-label" id="recovery-key-label">Recovery Key</span>
+        {#if $matrixSessionLive}
+            <p class="setting-desc">{SUMMARY[$encryptionStatus.type]}</p>
+            {#if recoveryKeyEntry}
+                <button class="action-btn" class:secondary={recoveryKeyEntry === 'replace-key'} on:click={openEncryptionDialog}>
+                    {ACTION[recoveryKeyEntry]}
+                </button>
+            {/if}
+        {:else}
+            <p class="setting-desc">{NOT_CONNECTED}</p>
+        {/if}
+    </div>
 </div>
 
 <style>
     .profile-row { display: flex; align-items: flex-start; gap: 20px; }
     .profile-fields { flex: 1; min-width: 0; }
+    /* The row ends flush, so the space before the next section is the header's alone, as on other pages. */
+    .profile-fields > :global(.setting-group:last-child) { margin-bottom: 0; }
 
     .avatar-edit-wrapper {
         position: relative;

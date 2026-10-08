@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use serde::Deserialize;
+use crate::matrix::encryption::Secret;
 use crate::matrix::name_colors::NameColor;
 use crate::models::ServerBookmark;
 
@@ -38,6 +39,11 @@ pub enum MatrixCommand {
     SendReadReceipt { room_id: String, event_id: String },
     PaginateBackwards { room_id: String },
     EnableEncryption { room_id: String },
+    /// The first key when recovery is off, a replacement when it is on.
+    CreateRecoveryKey,
+    ConfirmRecoveryKeySaved,
+    SubmitRecoveryKey { key: Secret },
+    ResetEncryption { password: Secret },
 }
 
 #[derive(Debug, PartialEq, Deserialize)]
@@ -69,6 +75,8 @@ pub enum SystemCommand {
     HideDm { room_id: String },
     UnhideDm { room_id: String },
     AcceptMumbleCert { host: String, port: u16, fingerprint: String },
+    /// Removes this device from the account and leaves the server, voice included.
+    SignOut,
 }
 
 #[derive(Clone, Deserialize)]

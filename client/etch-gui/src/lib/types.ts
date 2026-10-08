@@ -52,6 +52,7 @@ export type TimelineEntryKind =
     | { DayDivider: number }
     | 'ReadMarker'
     | 'Redacted'
+    | 'Undecryptable'
     | 'Other';
 
 // Matches Rust TimelineEntry struct (serde serialization)
@@ -90,3 +91,12 @@ export type RoomInfo = {
 
 // Matches Rust NameColor: always lowercase `#rrggbb` coming from core.
 export type NameColor = { color: string };
+
+// Matches Rust EncryptionStatus enum (serde tag = "type", content = "data")
+export type EncryptionStatus =
+    | { type: 'Unknown' }
+    | { type: 'Ready' }
+    | { type: 'NeedsRecoverySetup' }
+    | { type: 'RecoveryKeyPending'; data: { key: string } }
+    | { type: 'NeedsRecoveryKey' }
+    | { type: 'NeedsVerifiedDevice' };

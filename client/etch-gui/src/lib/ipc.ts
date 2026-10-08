@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { TimelineEntry, RoomInfo, ServerBookmark, NameColor } from '$lib/types';
+import type { TimelineEntry, RoomInfo, ServerBookmark, NameColor, EncryptionStatus } from '$lib/types';
 
 // --- Event envelope types (Rust → Frontend) ---
 
@@ -22,7 +22,10 @@ export type MatrixEvent =
     | { type: 'SendFailed'; data: { room_id: string; reason: string } }
     | { type: 'ConnectionState'; data: { type: 'Disconnected' } | { type: 'Connecting' } | { type: 'Connected' } | { type: 'Failed'; reason: string; retries: number; retry_in_secs: number } }
     | { type: 'NameColors'; data: { user_id: string; color: NameColor | null }[] }
-    | { type: 'Capabilities'; data: { name_color: boolean } };
+    | { type: 'Capabilities'; data: { name_color: boolean } }
+    | { type: 'EncryptionStatus'; data: EncryptionStatus }
+    | { type: 'EncryptionActionSucceeded' }
+    | { type: 'EncryptionActionFailed'; data: { reason: string } };
 
 export type MumbleEvent =
     | { type: 'LocalSession'; data: number }
@@ -43,7 +46,9 @@ export type SystemEvent =
     | { type: 'ConnectionLost' }
     | { type: 'SettingsLoaded'; data: { bookmarks: ServerBookmark[]; transmission_mode: string | null; vad_threshold: number | null; voice_hold: number | null; use_mumble_settings: boolean | null; deafen_suppresses_notifs: boolean | null; hidden_dms: string[]; custom_css: string | null } }
     | { type: 'LogError'; data: { message: string; target: string } }
-    | { type: 'UserProfileChanged'; data: { username: string; display_name: string | null; avatar_url: string | null } };
+    | { type: 'UserProfileChanged'; data: { username: string; display_name: string | null; avatar_url: string | null } }
+    | { type: 'SignedOut' }
+    | { type: 'SignOutFailed'; data: { reason: string } };
 
 export type CoreEvent =
     | { type: 'Matrix'; data: MatrixEvent }
@@ -68,7 +73,11 @@ export type MatrixCommand =
     | { type: 'ChangePassword'; data: { current_password: string; new_password: string } }
     | { type: 'SendReadReceipt'; data: { room_id: string; event_id: string } }
     | { type: 'PaginateBackwards'; data: { room_id: string } }
-    | { type: 'EnableEncryption'; data: { room_id: string } };
+    | { type: 'EnableEncryption'; data: { room_id: string } }
+    | { type: 'CreateRecoveryKey' }
+    | { type: 'ConfirmRecoveryKeySaved' }
+    | { type: 'SubmitRecoveryKey'; data: { key: string } }
+    | { type: 'ResetEncryption'; data: { password: string } };
 
 export type MumbleCommand =
     | { type: 'SwitchChannel'; data: number }
@@ -93,7 +102,8 @@ export type SystemCommand =
     | { type: 'SetDeafenSuppressesNotifs'; data: boolean }
     | { type: 'HideDm'; data: { room_id: string } }
     | { type: 'UnhideDm'; data: { room_id: string } }
-    | { type: 'AcceptMumbleCert'; data: { host: string; port: number; fingerprint: string } };
+    | { type: 'AcceptMumbleCert'; data: { host: string; port: number; fingerprint: string } }
+    | { type: 'SignOut' };
 
 export type CoreCommand =
     | { type: 'Matrix'; data: MatrixCommand }

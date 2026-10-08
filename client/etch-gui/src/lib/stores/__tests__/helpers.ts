@@ -11,7 +11,10 @@ import { userVolumes } from '../userVolumes';
 import { transmissionMode, vadThreshold, voiceHold, useMumbleSettings, deafenSuppressesNotifs } from '../voiceSettings';
 import { activeOverlay, overlayImageUrl, settingsTab, showRoomIds } from '../overlay';
 import { replyingTo, editingMessage } from '../compose';
-import { serverBookmarks, selectedBookmarkId, connectingBookmark, passwordRequested, matrixConnecting, mediaBaseUrl } from '../servers';
+import { serverBookmarks, selectedBookmarkId, connectingBookmark, passwordRequested, mediaBaseUrl, signingOut, signOutError, signOutDialogOpen } from '../servers';
+import { matrixStatus } from '../matrixConnection';
+import { encryptionStatus, encryptionError, encryptionPromptDismissed, createKeyPromptPutOff, encryptionRequestedScreen, encryptionBusy } from '../encryption';
+import { resetLoginSession } from '../session';
 import { compactChat } from '../layout';
 
 /**
@@ -70,8 +73,21 @@ export function resetStores(): void {
     selectedBookmarkId.set(null);
     connectingBookmark.set(null);
     passwordRequested.set(false);
-    matrixConnecting.set(false);
+    matrixStatus.set('disconnected');
     mediaBaseUrl.set(null);
+    signingOut.set(false);
+    signOutError.set(null);
+    signOutDialogOpen.set(false);
+
+    // Encryption
+    encryptionStatus.set({ type: 'Unknown' });
+    encryptionError.set(null);
+    encryptionPromptDismissed.set(null);
+    createKeyPromptPutOff.set(false);
+    encryptionRequestedScreen.set(null);
+    encryptionBusy.set(false);
+    // Also forgets which account the last test was signed in as.
+    resetLoginSession();
 
     // Layout
     compactChat.set(false);

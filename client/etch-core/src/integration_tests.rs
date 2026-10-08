@@ -3,6 +3,7 @@
 //! Run with: cargo test -p etch-core --features integration-tests -- --test-threads=1
 //! Or via the orchestrator: ./tests/integration/run.sh
 
+use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -14,6 +15,7 @@ use crate::commands::{
 };
 use crate::engine::CoreEngine;
 use crate::events::{CoreEvent, MatrixEvent, SystemEvent};
+use crate::matrix::encryption::{self, EncryptionStatus, Secret};
 use crate::matrix::name_colors::{self, Fetched, NameColor, UserNameColor};
 use crate::matrix::service::MatrixService;
 use crate::matrix::timeline::{TimelineEntry, TimelineEntryKind};
@@ -65,8 +67,11 @@ fn init_test_logging() {
 
 impl TestHarness {
     fn new() -> Self {
+        Self::on(tempfile::tempdir().expect("failed to create temp dir"))
+    }
+
+    fn on(data_dir: tempfile::TempDir) -> Self {
         init_test_logging();
-        let data_dir = tempfile::tempdir().expect("failed to create temp dir");
         let (cmd_tx, cmd_rx) = mpsc::channel(32);
         let (media_tx, media_rx) = mpsc::channel(256);
         let (event_tx, event_rx) = mpsc::channel(256);
@@ -177,6 +182,7 @@ impl TestHarness {
                 format!("Message(id={}, body={:?})", msg.id, body)
             }
             TimelineEntryKind::Redacted => "Redacted".into(),
+            TimelineEntryKind::Undecryptable => "Undecryptable".into(),
             TimelineEntryKind::DayDivider(_) => "DayDivider".into(),
             TimelineEntryKind::ReadMarker => "ReadMarker".into(),
             TimelineEntryKind::StateEvent(s) => format!("StateEvent({:?})", s),
@@ -350,13 +356,71 @@ impl TestHarness {
         }
     }
 
+    /// The status and the connection arrive in either order, so both are waited for at once.
+    /// Returns every status reported on the way.
+    async fn connect_and_expect_status(
+        &mut self,
+        form: ServerConnectionForm,
+        wanted: EncryptionStatus,
+    ) -> Vec<EncryptionStatus> {
+        let (connected, reported) = (Cell::new(false), RefCell::new(Vec::new()));
+        self.send(CoreCommand::System(SystemCommand::ConnectToServer(form))).await;
+        self.expect_event(|e| {
+            match e {
+                CoreEvent::Matrix(MatrixEvent::ConnectionState(ConnectionState::Connected)) => connected.set(true),
+                CoreEvent::Matrix(MatrixEvent::EncryptionStatus(status)) => reported.borrow_mut().push(status.clone()),
+                _ => {}
+            }
+            (connected.get() && reported.borrow().last() == Some(&wanted)).then_some(())
+        }, CONNECT_TIMEOUT).await;
+        reported.into_inner()
+    }
+
+    async fn expect_status(&mut self, wanted: EncryptionStatus) {
+        self.expect_event(|e| match e {
+            CoreEvent::Matrix(MatrixEvent::EncryptionStatus(status)) if *status == wanted => Some(()),
+            _ => None,
+        }, CONNECT_TIMEOUT).await;
+    }
+
+    async fn expect_encryption_failure(&mut self) -> String {
+        self.expect_event(|e| match e {
+            CoreEvent::Matrix(MatrixEvent::EncryptionActionFailed { reason }) => Some(reason.clone()),
+            _ => None,
+        }, CONNECT_TIMEOUT).await
+    }
+
+    /// Creates a recovery key and confirms it as saved, as the dialog does.
+    async fn create_recovery_key(&mut self) -> Secret {
+        self.send(CoreCommand::Matrix(MatrixCommand::CreateRecoveryKey)).await;
+        let key = self.expect_event(|e| match e {
+            CoreEvent::Matrix(MatrixEvent::EncryptionStatus(EncryptionStatus::RecoveryKeyPending { key })) => {
+                Some(key.clone())
+            }
+            _ => None,
+        }, CONNECT_TIMEOUT).await;
+        self.send(CoreCommand::Matrix(MatrixCommand::ConfirmRecoveryKeySaved)).await;
+        self.expect_status(EncryptionStatus::Ready).await;
+        key
+    }
+
     /// Drop the command sender and wait for the engine to finish.
     async fn shutdown(self) {
+        self.stop().await;
+    }
+
+    /// Stops the engine and starts another on the same data, as closing and reopening the app does.
+    async fn restart(self) -> Self {
+        Self::on(self.stop().await)
+    }
+
+    async fn stop(self) -> tempfile::TempDir {
         drop(self.cmd_tx);
         timeout(Duration::from_secs(10), self.engine_handle)
             .await
             .expect("engine did not shut down within 10s")
             .expect("engine task panicked");
+        self._data_dir
     }
 }
 
@@ -402,6 +466,46 @@ fn timeline_entries(event: &CoreEvent) -> Option<(&str, &[TimelineEntry])> {
             Some((room_id, std::slice::from_ref(entry)))
         }
         _ => None,
+    }
+}
+
+/// One room's timeline as the frontend holds it, rebuilt from the same positional events.
+#[derive(Default)]
+struct RoomMirror {
+    entries: Vec<TimelineEntry>,
+}
+
+impl RoomMirror {
+    fn apply(&mut self, room_id: &str, event: &CoreEvent) {
+        let CoreEvent::Matrix(event) = event else { return };
+        let entries = &mut self.entries;
+        match event {
+            MatrixEvent::TimelineAppend(room, new) if room == room_id => entries.extend(new.iter().cloned()),
+            MatrixEvent::TimelinePushBack(room, entry) if room == room_id => entries.push(entry.clone()),
+            MatrixEvent::TimelinePushFront(room, entry) if room == room_id => entries.insert(0, entry.clone()),
+            MatrixEvent::TimelineInsert(room, index, entry) if room == room_id => {
+                entries.insert((*index).min(entries.len()), entry.clone());
+            }
+            MatrixEvent::TimelineSet(room, index, entry) if room == room_id => {
+                if let Some(slot) = entries.get_mut(*index) {
+                    *slot = entry.clone();
+                }
+            }
+            MatrixEvent::TimelineRemove(room, index) if room == room_id && *index < entries.len() => {
+                entries.remove(*index);
+            }
+            MatrixEvent::TimelineCleared(room) if room == room_id => entries.clear(),
+            MatrixEvent::TimelineReset(room, new) if room == room_id => *entries = new.clone(),
+            _ => {}
+        }
+    }
+
+    fn undecryptable(&self) -> usize {
+        self.entries.iter().filter(|entry| matches!(entry.kind, TimelineEntryKind::Undecryptable)).count()
+    }
+
+    fn shows(&self, body: &str) -> bool {
+        self.entries.iter().any(|entry| matches!(&entry.kind, TimelineEntryKind::Message(msg) if msg.body == body))
     }
 }
 
@@ -1249,4 +1353,298 @@ async fn name_color_round_trips_through_the_profile() {
     );
 
     h.shutdown().await;
+}
+
+/// A user no earlier test has logged in as, so the account starts without an identity or devices.
+async fn register_fresh_user(prefix: &str) -> ServerConnectionForm {
+    use matrix_sdk::ruma::api::client::{account::register::v3::Request, uiaa};
+
+    let form = test_connection_form();
+    let since_epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("the clock should be past 1970");
+    let username = format!("{prefix}{}", since_epoch.as_millis());
+    let password = "fresh_user_password";
+
+    let client = matrix_sdk::Client::builder()
+        .homeserver_url(form.homeserver_url.as_deref().expect("the test form names the homeserver"))
+        .build()
+        .await
+        .expect("registration client should build");
+    let mut request = Request::new();
+    request.username = Some(username.clone());
+    request.password = Some(password.into());
+    request.inhibit_login = true;
+    request.auth = Some(uiaa::AuthData::RegistrationToken(uiaa::RegistrationToken::new("devtoken".into())));
+    client.matrix_auth().register(request).await.expect("the test homeserver should register a new user");
+
+    ServerConnectionForm { username, password: Some(password.into()), ..form }
+}
+
+/// The account's master key and each device with whether the identity has signed it, as
+/// another user's client judges them.
+async fn identity_seen_by(
+    onlooker: &matrix_sdk::Client,
+    owner: &matrix_sdk::ruma::UserId,
+) -> (Option<String>, Vec<(String, bool)>) {
+    let identity = onlooker.encryption().request_user_identity(owner).await
+        .expect("the key query should succeed");
+    let master_key = identity.and_then(|i| i.master_key().get_first_key().map(|key| key.to_base64()));
+    let devices = onlooker.encryption().get_user_devices(owner).await
+        .expect("the owner's devices should be known after a key query");
+    let mut devices: Vec<(String, bool)> = devices.devices()
+        .map(|device| (device.device_id().to_string(), device.is_cross_signed_by_owner()))
+        .collect();
+    devices.sort();
+    (master_key, devices)
+}
+
+async fn device_ids(client: &matrix_sdk::Client) -> Vec<matrix_sdk::ruma::OwnedDeviceId> {
+    let mut ids: Vec<_> = client.devices().await.expect("the device list should be readable")
+        .devices.into_iter().map(|device| device.device_id).collect();
+    ids.sort();
+    ids
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_second_login_leaves_the_identity_alone_and_the_first_device_verified() {
+    let form = register_fresh_user("identity").await;
+    let owner = matrix_sdk::ruma::UserId::parse(format!("@{}:{}", form.username, form.hostname)).unwrap();
+    let onlooker = logged_in_reader("admin", "admin_password").await;
+
+    let mut first = TestHarness::new();
+    first.connect_as(form.clone()).await;
+    let (identity, devices) = identity_seen_by(&onlooker, &owner).await;
+    let identity = identity.expect("the first login should have created the account's identity");
+    let [(first_device, true)] = devices.as_slice() else {
+        panic!("the first login should be the one device, signed by the identity, got {devices:?}");
+    };
+
+    let mut second = TestHarness::new();
+    second.connect_as(form).await;
+    let (identity_after, devices_after) = identity_seen_by(&onlooker, &owner).await;
+
+    assert_eq!(
+        identity_after.as_deref(), Some(identity.as_str()),
+        "a later login must not replace the account's identity",
+    );
+    assert_eq!(devices_after.len(), 2, "the second login should be a second device, got {devices_after:?}");
+    assert!(
+        devices_after.contains(&(first_device.clone(), true)),
+        "the first device must still be signed by the identity, got {devices_after:?}",
+    );
+
+    first.shutdown().await;
+    second.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn logging_in_again_after_the_token_is_revoked_connects_without_adding_a_device() {
+    use matrix_sdk::ruma::api::client::{device::delete_device, uiaa};
+
+    let form = test_connection_form();
+    let password = form.password.clone().expect("the test form carries the password");
+    // Its own login is one of the devices counted below, before and after.
+    let observer = logged_in_reader(&form.username, &password).await;
+    let before = device_ids(&observer).await;
+
+    let mut h = TestHarness::new();
+    h.connect_as(form.clone()).await;
+    let connected = device_ids(&observer).await;
+    let etch_device = connected.iter().find(|id| !before.contains(id))
+        .expect("connecting should have registered a device")
+        .clone();
+
+    let challenge = observer.send(delete_device::v3::Request::new(etch_device.clone())).await
+        .expect_err("deleting a device should ask for the password");
+    let mut auth = uiaa::Password::new(
+        uiaa::UserIdentifier::UserIdOrLocalpart(form.username.clone()),
+        password,
+    );
+    auth.session = challenge.as_uiaa_response().and_then(|info| info.session.clone());
+    let mut request = delete_device::v3::Request::new(etch_device.clone());
+    request.auth = Some(uiaa::AuthData::Password(auth));
+    observer.send(request).await.expect("the device should be deleted");
+
+    // The engine only learns of it from its next sync, which can be a whole long poll away.
+    h.expect_event(|e| match e {
+        CoreEvent::Matrix(MatrixEvent::ConnectionState(state)) if state.is_failed() => Some(()),
+        _ => None,
+    }, Duration::from_secs(45)).await;
+    h.expect_event(|e| match e {
+        CoreEvent::Matrix(MatrixEvent::ConnectionState(ConnectionState::Connected)) => Some(()),
+        _ => None,
+    }, CONNECT_TIMEOUT).await;
+
+    let after = device_ids(&observer).await;
+    assert!(!after.contains(&etch_device), "the revoked device should be gone, got {after:?}");
+    assert_eq!(
+        after.len(), connected.len(),
+        "logging in again should replace the revoked device, not add to it, got {after:?}",
+    );
+
+    h.shutdown().await;
+}
+
+/// How many message keys the account's backup on the server holds.
+async fn backed_up_keys(client: &matrix_sdk::Client) -> u64 {
+    use matrix_sdk::ruma::api::client::backup::get_latest_backup_info;
+
+    client.send(get_latest_backup_info::v3::Request::new()).await
+        .map(|backup| backup.count.into())
+        .unwrap_or(0)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_device_reads_an_earlier_message_once_it_has_the_recovery_key() {
+    let form = register_fresh_user("recovery").await;
+    let password = form.password.clone().expect("the fresh user's form carries the password");
+
+    let mut first = TestHarness::new();
+    let reported = first.connect_and_expect_status(form.clone(), EncryptionStatus::NeedsRecoverySetup).await;
+    assert!(
+        reported.iter().all(|status| matches!(status, EncryptionStatus::Unknown | EncryptionStatus::NeedsRecoverySetup)),
+        "a first login must not be shown any other prompt on the way to its recovery key, got {reported:?}",
+    );
+    let replaced_key = first.create_recovery_key().await;
+    let key = first.create_recovery_key().await;
+
+    first.send(CoreCommand::Matrix(MatrixCommand::CreateDirectMessage {
+        target_user_id: format!("@{}:{}", bob_connection_form().username, form.hostname),
+    })).await;
+    let room = first.expect_event(|e| match e {
+        CoreEvent::Matrix(MatrixEvent::DmCreated(room)) => Some(room.clone()),
+        _ => None,
+    }, EVENT_TIMEOUT).await;
+    assert!(room.is_encrypted, "the test needs an encrypted room");
+    let body = first.send_unique_message(&room.id, "sent-before-the-new-device").await;
+    let is_the_message = |e: &CoreEvent| {
+        timeline_entries(e).is_some_and(|(room_id, entries)| {
+            room_id == room.id && entries.iter().any(|entry| {
+                matches!(&entry.kind, TimelineEntryKind::Message(msg) if msg.body == body && msg.id.starts_with('$'))
+            })
+        })
+    };
+    first.expect_event(|e| is_the_message(e).then_some(()), EVENT_TIMEOUT).await;
+
+    let observer = logged_in_reader(&form.username, &password).await;
+    timeout(CONNECT_TIMEOUT, async {
+        while backed_up_keys(&observer).await == 0 {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }).await.expect("the first device should back the message's key up");
+    // Gone before the new device exists, so the key can only reach it through the backup.
+    first.shutdown().await;
+
+    let mut second = TestHarness::new();
+    let timeline = RefCell::new(RoomMirror::default());
+    let (connected, asked_for_the_key) = (Cell::new(false), Cell::new(false));
+    second.send(CoreCommand::System(SystemCommand::ConnectToServer(form))).await;
+    second.expect_event(|e| {
+        timeline.borrow_mut().apply(&room.id, e);
+        match e {
+            CoreEvent::Matrix(MatrixEvent::ConnectionState(ConnectionState::Connected)) => connected.set(true),
+            CoreEvent::Matrix(MatrixEvent::EncryptionStatus(status)) => {
+                asked_for_the_key.set(*status == EncryptionStatus::NeedsRecoveryKey);
+            }
+            _ => {}
+        }
+        (connected.get() && asked_for_the_key.get() && timeline.borrow().undecryptable() > 0).then_some(())
+    }, CONNECT_TIMEOUT).await;
+
+    second.send(CoreCommand::Matrix(MatrixCommand::SubmitRecoveryKey { key: replaced_key })).await;
+    let reason = second.expect_event(|e| {
+        timeline.borrow_mut().apply(&room.id, e);
+        match e {
+            CoreEvent::Matrix(MatrixEvent::EncryptionActionFailed { reason }) => Some(reason.clone()),
+            _ => None,
+        }
+    }, CONNECT_TIMEOUT).await;
+    assert_eq!(reason, encryption::WRONG_KEY, "a key that was since replaced must be refused as wrong");
+    assert_eq!(
+        (timeline.borrow().shows(&body), timeline.borrow().undecryptable()), (false, 1),
+        "before the right key is entered the earlier message must be a placeholder and nothing more",
+    );
+
+    second.send(CoreCommand::Matrix(MatrixCommand::SubmitRecoveryKey { key })).await;
+    let ready = Cell::new(false);
+    second.expect_event(|e| {
+        timeline.borrow_mut().apply(&room.id, e);
+        if matches!(e, CoreEvent::Matrix(MatrixEvent::EncryptionStatus(EncryptionStatus::Ready))) {
+            ready.set(true);
+        }
+        let timeline = timeline.borrow();
+        // The placeholder must give way to the message, not stay beside it.
+        (ready.get() && timeline.shows(&body) && timeline.undecryptable() == 0).then_some(())
+    }, CONNECT_TIMEOUT).await;
+
+    second.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_recovery_key_the_app_stopped_showing_before_it_was_saved_is_not_counted_as_saved() {
+    let form = register_fresh_user("unsaved").await;
+    let shown = |e: &CoreEvent| match e {
+        CoreEvent::Matrix(MatrixEvent::EncryptionStatus(EncryptionStatus::RecoveryKeyPending { key })) => Some(key.clone()),
+        _ => None,
+    };
+
+    let mut device = TestHarness::new();
+    device.connect_and_expect_status(form.clone(), EncryptionStatus::NeedsRecoverySetup).await;
+    device.send(CoreCommand::Matrix(MatrixCommand::CreateRecoveryKey)).await;
+    let never_saved = device.expect_event(shown, CONNECT_TIMEOUT).await;
+
+    let mut device = device.restart().await;
+    let reported = device.connect_and_expect_status(form.clone(), EncryptionStatus::NeedsRecoverySetup).await;
+    assert!(
+        !reported.contains(&EncryptionStatus::Ready),
+        "the account's recovery has a key nobody holds, which must not be reported as set up: {reported:?}",
+    );
+    let saved = device.create_recovery_key().await;
+    assert_ne!(saved, never_saved, "the key nobody saw must be replaced, not offered again");
+
+    let mut device = device.restart().await;
+    device.connect_and_expect_status(form, EncryptionStatus::Ready).await;
+    device.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn resetting_encryption_gives_a_device_that_could_not_be_verified_a_new_identity() {
+    let form = register_fresh_user("reset").await;
+    let password = form.password.clone().expect("the fresh user's form carries the password");
+    let owner = matrix_sdk::ruma::UserId::parse(format!("@{}:{}", form.username, form.hostname)).unwrap();
+    let onlooker = logged_in_reader("admin", "admin_password").await;
+
+    let mut first = TestHarness::new();
+    first.connect_and_expect_status(form.clone(), EncryptionStatus::NeedsRecoverySetup).await;
+    first.create_recovery_key().await;
+    let (identity, _) = identity_seen_by(&onlooker, &owner).await;
+
+    // It has the password but not the recovery key, which is what a reset is for.
+    let mut stranded = TestHarness::new();
+    stranded.connect_and_expect_status(form, EncryptionStatus::NeedsRecoveryKey).await;
+
+    stranded.send(CoreCommand::Matrix(MatrixCommand::ResetEncryption {
+        password: "not the password".to_owned().into(),
+    })).await;
+    assert_eq!(stranded.expect_encryption_failure().await, encryption::WRONG_PASSWORD);
+
+    stranded.send(CoreCommand::Matrix(MatrixCommand::ResetEncryption { password: password.into() })).await;
+    stranded.expect_status(EncryptionStatus::NeedsRecoverySetup).await;
+
+    let (identity_after, devices) = identity_seen_by(&onlooker, &owner).await;
+    assert!(identity.is_some() && identity_after.is_some(), "the account should have an identity throughout");
+    assert_ne!(identity_after, identity, "a reset should replace the account's identity");
+    assert_eq!(
+        devices.iter().filter(|(_, signed)| *signed).count(), 1,
+        "only the device that reset should be signed by the new identity, got {devices:?}",
+    );
+
+    let new_key = stranded.create_recovery_key().await;
+    first.expect_status(EncryptionStatus::NeedsRecoveryKey).await;
+    first.send(CoreCommand::Matrix(MatrixCommand::SubmitRecoveryKey { key: new_key })).await;
+    first.expect_status(EncryptionStatus::Ready).await;
+
+    first.shutdown().await;
+    stranded.shutdown().await;
 }

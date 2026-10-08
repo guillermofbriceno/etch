@@ -45,6 +45,7 @@ function declarations(): Declaration[] {
     return [
         ...sessionStoreNames('matrix').map(name => ({ name, bucket: 'matrix session' })),
         ...sessionStoreNames('voice').map(name => ({ name, bucket: 'voice session' })),
+        ...sessionStoreNames('login').map(name => ({ name, bucket: 'login' })),
         ...exemptStoreEntries().map(([name, reason]) => ({ name, bucket: reason })),
     ];
 }

@@ -438,6 +438,18 @@ describe('handleMumbleEvent', () => {
             expect(get(mumbleStatus)).toBe('disconnected');
             expect(get(voiceChannels).size).toBe(0);
         });
+
+        it('plays the disconnect sound once when the disconnect is reported twice', async () => {
+            const { playSfx } = await import('../sfx');
+            handleMumbleEvent({ type: 'ConnectionState', data: { type: 'Connected' } } as any);
+            vi.mocked(playSfx).mockClear();
+
+            // A sign out ends voice on purpose, and both the bridge and core can report it.
+            handleMumbleEvent({ type: 'ConnectionState', data: { type: 'Disconnected' } } as any);
+            handleMumbleEvent({ type: 'ConnectionState', data: { type: 'Disconnected' } } as any);
+
+            expect(vi.mocked(playSfx).mock.calls).toEqual([['server_disconnect']]);
+        });
     });
 
     describe('TransmissionModeChanged', () => {

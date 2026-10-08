@@ -8,6 +8,8 @@
     import ImageModal from '$lib/components/ImageModal.svelte';
     import ServerConnectionModal from '$lib/components/ServerConnectionModal.svelte';
     import PasswordDialog from '$lib/components/PasswordDialog.svelte';
+    import EncryptionDialog from '$lib/components/EncryptionDialog.svelte';
+    import SignOutDialog from '$lib/components/SignOutDialog.svelte';
     import CertDialog from '$lib/components/CertDialog.svelte';
     import ErrorToast from '$lib/components/ErrorToast.svelte';
 
@@ -61,6 +63,8 @@
     </main>
 
     <PasswordDialog />
+    <EncryptionDialog />
+    <SignOutDialog />
     <CertDialog />
 
     {#if $activeOverlay !== 'none'}

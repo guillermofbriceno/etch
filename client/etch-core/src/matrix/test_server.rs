@@ -70,6 +70,11 @@ impl CannedHomeserver {
     }
 }
 
+/// A logged-in client whose homeserver refuses every connection.
+pub(crate) fn unreachable_client(user_id: &str) -> impl Future<Output = Client> {
+    logged_in_client("http://127.0.0.1:1", user_id, MatrixVersion::V1_1)
+}
+
 /// Pins the versions so the client never probes `/versions`, and disables the SDK's own
 /// retries so each call is one request.
 async fn logged_in_client(homeserver: &str, user_id: &str, version: MatrixVersion) -> Client {

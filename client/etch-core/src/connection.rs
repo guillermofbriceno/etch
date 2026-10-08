@@ -47,6 +47,14 @@ impl MatrixConnection {
         let _ = event_tx.send(matrix_conn_event(ConnectionState::Connecting)).await;
     }
 
+    /// The user has left the server, so the form goes too: nothing may reconnect with it.
+    pub async fn disconnect(&mut self, event_tx: &mpsc::Sender<CoreEvent>) {
+        self.form = None;
+        self.retries = 0;
+        self.state = ConnectionState::Disconnected;
+        let _ = event_tx.send(matrix_conn_event(ConnectionState::Disconnected)).await;
+    }
+
     /// Only a `Connected` session can degrade; `Failed` arms the retry timer and a
     /// stale report must not overwrite it.
     pub async fn degraded(&mut self, event_tx: &mpsc::Sender<CoreEvent>) {

@@ -14,6 +14,7 @@ use crate::traits::{MatrixBackend, VoiceService};
 pub enum MockCall {
     Reset,
     Connect,
+    SignOut,
 }
 
 /// Shared state for `MockMatrix`. Clone the `Arc` before moving the
@@ -37,6 +38,10 @@ pub struct MockMatrix {
     pub connect_gate: Option<oneshot::Receiver<()>>,
     /// Sent by the first connect before it returns, as a sync task it spawned would.
     pub reports_during_connect: Vec<fn(u64) -> InternalMatrixEvent>,
+    /// Answers to successive sign outs; one beyond the list succeeds.
+    pub sign_out_results: VecDeque<Result<(), String>>,
+    /// Hold successive sign outs in flight, in order.
+    pub sign_out_gates: VecDeque<oneshot::Receiver<()>>,
 }
 
 impl MockMatrix {
@@ -53,6 +58,8 @@ impl MockMatrix {
             media_response: Ok(vec![0xDE, 0xAD]),
             connect_gate: None,
             reports_during_connect: Vec::new(),
+            sign_out_results: VecDeque::new(),
+            sign_out_gates: VecDeque::new(),
         }
     }
 
@@ -82,6 +89,16 @@ impl MockMatrix {
         reports: Vec<fn(u64) -> InternalMatrixEvent>,
     ) -> Self {
         self.reports_during_connect = reports;
+        self
+    }
+
+    pub fn with_sign_out_result(mut self, outcome: Result<(), String>) -> Self {
+        self.sign_out_results.push_back(outcome);
+        self
+    }
+
+    pub fn with_sign_out_gate(mut self, gate: oneshot::Receiver<()>) -> Self {
+        self.sign_out_gates.push_back(gate);
         self
     }
 }
@@ -133,6 +150,14 @@ impl MatrixBackend for MockMatrix {
 
     async fn reset(&mut self) {
         self.state.call_log.lock().unwrap().push(MockCall::Reset);
+    }
+
+    async fn sign_out(&mut self, _form: ServerConnectionForm) -> Result<(), String> {
+        self.state.call_log.lock().unwrap().push(MockCall::SignOut);
+        if let Some(gate) = self.sign_out_gates.pop_front() {
+            let _ = gate.await;
+        }
+        self.sign_out_results.pop_front().unwrap_or(Ok(()))
     }
 }
 

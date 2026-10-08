@@ -1,5 +1,6 @@
 use serde::Serialize;
 use crate::models::{ConnectionState, RoomInfo};
+use crate::matrix::encryption::EncryptionStatus;
 use crate::matrix::name_colors::UserNameColor;
 use crate::matrix::timeline::TimelineEntry;
 
@@ -35,6 +36,11 @@ pub enum MatrixEvent {
     /// Answers to `ResolveNameColors`, and changes nobody asked about.
     NameColors(Vec<UserNameColor>),
     Capabilities { name_color: bool },
+    /// What the device needs. Sent when it changes and on every connect, never as the answer to a request.
+    EncryptionStatus(EncryptionStatus),
+    /// Every encryption request is answered by exactly one of these two, after any status it led to.
+    EncryptionActionSucceeded,
+    EncryptionActionFailed { reason: String },
 }
 
 #[derive(Debug, Serialize)]
@@ -62,6 +68,10 @@ pub enum SystemEvent {
     SettingsLoaded(crate::settings::Settings),
     LogError { message: String, target: String },
     UserProfileChanged { username: String, display_name: Option<String>, avatar_url: Option<String> },
+    /// Follows the `ServerReset` and the `Disconnected` connection state of a sign out.
+    SignedOut,
+    /// The login is kept, and the session is already being reconnected when this arrives.
+    SignOutFailed { reason: String },
 }
 
 // internal process -> core
@@ -103,6 +113,8 @@ pub enum InternalMatrixEvent {
         generation: u64,
         outcome: crate::models::ConnectOutcome,
     },
+    /// `Err` carries the reason for the user; the client and the saved login were then kept.
+    SignOutFinished { outcome: Result<(), String> },
     VoiceUserResolved {
         session_id: u32,
         name: String,

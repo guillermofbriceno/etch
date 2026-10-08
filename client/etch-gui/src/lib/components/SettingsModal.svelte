@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { settingsTab, errorLog } from '$lib/stores';
+    import { settingsTab, errorLog, matrixSessionLive, openSignOut } from '$lib/stores';
     import { getVersion } from '@tauri-apps/api/app';
 
     import ModalLayout from './ModalLayout.svelte';
@@ -41,6 +41,13 @@
             {/if}
         </button>
 
+        <div class="divider"></div>
+
+        <button class="tab sign-out" on:click={openSignOut} disabled={!$matrixSessionLive}>Sign Out</button>
+        {#if !$matrixSessionLive}
+            <p class="tab-hint">Available once Etch is connected.</p>
+        {/if}
+
         <div class="version-info">Etch v{appVersion}</div>
     </svelte:fragment>
 
@@ -73,7 +80,7 @@
 
     .version-info {
         margin-top: auto;
-        padding: 10px 10px 20px;
+        padding: 10px 10px 4px;
         font-size: 12px;
         color: #4f5660;
     }
@@ -104,6 +111,11 @@
     .tab:hover { background-color: var(--bg-hover); color: var(--text-primary); }
     .tab.active { background-color: var(--bg-active); color: var(--text-bright); }
 
+    .tab.sign-out, .tab.sign-out:hover { color: var(--status-danger); }
+    .tab.sign-out:disabled { opacity: 0.4; background-color: transparent; cursor: default; }
+
+    .tab-hint { margin: 0 10px; font-size: 12px; color: var(--text-muted); }
+
     .divider { height: 1px; background-color: var(--bg-active); margin: 10px 10px 14px 10px; }
 
     .error-badge {
@@ -133,7 +145,11 @@
         letter-spacing: 0.3px;
         margin: 8px 0 16px;
     }
-    .settings-form :global(.section-header:not(:first-of-type)) { margin-top: 20px; }
+    .settings-form :global(.section-header:not(:first-of-type)) {
+        margin-top: 32px;
+        padding-top: 32px;
+        border-top: 1px solid var(--bg-active);
+    }
 
     .settings-form :global(.placeholder-text) { color: var(--text-secondary); }
 
@@ -151,8 +167,6 @@
     .settings-form :global(.setting-group.disabled) { opacity: 0.4; pointer-events: none; }
 
     .settings-form :global(.setting-desc) { color: var(--text-tertiary); font-size: 13px; margin: 0 0 12px; }
-
-    .settings-form :global(.divider) { height: 1px; background-color: var(--bg-active); margin: 10px 0 14px 0; }
 
     .settings-form :global(.action-btn) {
         background-color: var(--primary);
@@ -246,5 +260,5 @@
 
     .settings-form :global(.slider-container) { display: flex; align-items: center; gap: 16px; }
     .settings-form :global(.range-input) { flex-grow: 1; cursor: pointer; }
-    .settings-form :global(.volume-readout) { color: var(--text-primary); font-size: var(--font-size-base); min-width: 40px; }
+    .settings-form :global(.volume-readout) { color: var(--text-primary); font-size: var(--font-size-base); min-width: 56px; text-align: right; }
 </style>

@@ -13,9 +13,11 @@ use crate::commands::{AttachmentSend, MatrixCommand, ServerConnectionForm};
 use crate::events::{CoreEvent, MatrixEvent, InternalEvent, InternalMatrixEvent};
 use crate::matrix::attachment;
 use crate::temp_files::TempFiles;
-use crate::matrix::client::{session_path, start_matrix_client, ConnectionResult};
+use crate::matrix::client::{log_out, start_matrix_client, ConnectionResult};
+use crate::matrix::encryption::{self, EncryptionWorker};
 use crate::matrix::name_colors::{self, NameColorResolver, NameColorSender};
 use crate::matrix::retry::credentials_rejected;
+use crate::matrix::saved_session::{self, session_path};
 use crate::matrix::timeline::TimelineManager;
 use crate::models::{ConnectOutcome, RoomInfo, RoomType};
 use crate::scripting::ScriptDispatcher;
@@ -27,6 +29,18 @@ use std::path::PathBuf;
 
 /// How long a sync long-poll is left open before the server answers it empty.
 const SYNC_POLL_TIMEOUT: Duration = Duration::from_secs(30);
+
+const SIGN_OUT_UNREACHABLE: &str =
+    "Could not reach the server, so this device is still signed in. Check your connection and try again.";
+const SIGN_OUT_NOT_CONNECTED: &str =
+    "Etch is not connected to the server, so this device is still signed in. Try again once it is connected.";
+
+fn sign_out_failure(error: &matrix_sdk::HttpError) -> String {
+    match error {
+        matrix_sdk::HttpError::Reqwest(_) => SIGN_OUT_UNREACHABLE.into(),
+        other => format!("Signing out failed, so this device is still signed in: {other}"),
+    }
+}
 
 /// The SDK reports `http://host/` for a client built from `http://host`.
 fn normalize_url(url: &str) -> String {
@@ -79,13 +93,14 @@ impl std::fmt::Display for SessionKey {
 /// An `Idle` client may serve reads but nothing that writes.
 enum MatrixSession {
     None,
-    Idle { key: SessionKey, client: Client, name_colors: NameColorResolver },
+    Idle { key: SessionKey, client: Client, name_colors: NameColorResolver, encryption: EncryptionWorker },
     /// Owning its tasks means leaving `Live` aborts them instead of stranding them
     /// against a replaced client.
     Live {
         key: SessionKey,
         client: Client,
         name_colors: NameColorResolver,
+        encryption: EncryptionWorker,
         _sync: AbortOnDrop,
         _pagination: AbortOnDrop,
         _send_errors: AbortOnDrop,
@@ -105,6 +120,13 @@ impl MatrixSession {
         match self {
             Self::None => None,
             Self::Idle { name_colors, .. } | Self::Live { name_colors, .. } => Some(name_colors.sender()),
+        }
+    }
+
+    fn encryption(&self) -> Option<&EncryptionWorker> {
+        match self {
+            Self::None => None,
+            Self::Idle { encryption, .. } | Self::Live { encryption, .. } => Some(encryption),
         }
     }
 
@@ -134,28 +156,31 @@ impl MatrixSession {
     }
 
     fn install(&mut self, key: SessionKey, client: Client, event_tx: mpsc::Sender<CoreEvent>) {
-        let name_colors = NameColorResolver::spawn(client.clone(), event_tx);
-        *self = Self::Idle { key, client, name_colors };
+        let name_colors = NameColorResolver::spawn(client.clone(), event_tx.clone());
+        let encryption = EncryptionWorker::spawn(client.clone(), event_tx);
+        *self = Self::Idle { key, client, name_colors, encryption };
     }
 
     fn go_live(&mut self, sync: AbortOnDrop, pagination: AbortOnDrop, send_errors: AbortOnDrop) {
-        let (key, client, name_colors) = match std::mem::replace(self, Self::None) {
-            Self::Idle { key, client, name_colors }
-            | Self::Live { key, client, name_colors, .. } => (key, client, name_colors),
+        let (key, client, name_colors, encryption) = match std::mem::replace(self, Self::None) {
+            Self::Idle { key, client, name_colors, encryption }
+            | Self::Live { key, client, name_colors, encryption, .. } => (key, client, name_colors, encryption),
             Self::None => {
                 log::error!("No Matrix session to bring live; stopping the tasks just started");
                 return;
             }
         };
         *self = Self::Live {
-            key, client, name_colors,
+            key, client, name_colors, encryption,
             _sync: sync, _pagination: pagination, _send_errors: send_errors,
         };
     }
 
     fn stand_down(&mut self) {
         match std::mem::replace(self, Self::None) {
-            Self::Live { key, client, name_colors, .. } => *self = Self::Idle { key, client, name_colors },
+            Self::Live { key, client, name_colors, encryption, .. } => {
+                *self = Self::Idle { key, client, name_colors, encryption };
+            }
             other => *self = other,
         }
     }
@@ -193,6 +218,9 @@ pub struct MatrixService {
     event_tx: mpsc::Sender<CoreEvent>,
     data_dir: PathBuf,
     temp_files: TempFiles,
+    /// Set once the stores no session uses have been removed, which is only safe before
+    /// this process has built its first client.
+    stores_cleaned: bool,
 }
 
 impl MatrixService {
@@ -209,6 +237,7 @@ impl MatrixService {
             event_tx,
             data_dir,
             temp_files,
+            stores_cleaned: false,
         }
     }
 
@@ -319,6 +348,10 @@ impl MatrixService {
         // Release the old client first so its stores close before the new ones open.
         self.session.invalidate();
 
+        if !std::mem::replace(&mut self.stores_cleaned, true) {
+            saved_session::remove_unreferenced_stores(&self.data_dir);
+        }
+
         match start_matrix_client(
             internal_tx.clone(), self.event_tx.clone(), form.clone(), &self.data_dir,
         ).await {
@@ -381,6 +414,21 @@ impl MatrixService {
         self.timeline_manager.subscribe_to_room(room, name_colors).await;
     }
 
+    /// Hands the request to the worker without waiting for its round trips, and answers
+    /// one the worker will never see, because the frontend is waiting on an outcome.
+    async fn ask_encryption(&self, command: &str, request: encryption::Request) {
+        let reason = if self.serving_client(command).is_none() {
+            encryption::NOT_CONNECTED
+        } else if self.session.encryption().is_some_and(|worker| worker.ask(request)) {
+            return;
+        } else {
+            encryption::BUSY
+        };
+        let _ = self.event_tx.send(
+            CoreEvent::Matrix(MatrixEvent::EncryptionActionFailed { reason: reason.into() })
+        ).await;
+    }
+
     fn serving_client(&self, command: &str) -> Option<Client> {
         match self.session.live_client() {
             Some(client) => Some(client.clone()),
@@ -435,6 +483,11 @@ impl MatrixBackend for MatrixService {
         let _ = self.event_tx.send(
             CoreEvent::Matrix(MatrixEvent::Capabilities { name_color })
         ).await;
+
+        // The frontend dropped the status with the rest of the session's state, and the worker only speaks on a change.
+        if let Some(worker) = self.session.encryption() {
+            worker.ask(encryption::Request::Announce);
+        }
 
         // Enable the event cache BEFORE syncing so events from
         // sync_once are captured even without active Timeline subscriptions.
@@ -639,6 +692,18 @@ impl MatrixBackend for MatrixService {
                     }
                 });
             }
+            MatrixCommand::CreateRecoveryKey => {
+                self.ask_encryption("CreateRecoveryKey", encryption::Request::CreateRecoveryKey).await;
+            }
+            MatrixCommand::ConfirmRecoveryKeySaved => {
+                self.ask_encryption("ConfirmRecoveryKeySaved", encryption::Request::ConfirmRecoveryKeySaved).await;
+            }
+            MatrixCommand::SubmitRecoveryKey { key } => {
+                self.ask_encryption("SubmitRecoveryKey", encryption::Request::SubmitRecoveryKey(key)).await;
+            }
+            MatrixCommand::ResetEncryption { password } => {
+                self.ask_encryption("ResetEncryption", encryption::Request::Reset { password }).await;
+            }
             MatrixCommand::EnableEncryption { room_id } => {
                 let Some(client) = self.serving_client("EnableEncryption") else { return };
                 let Ok(rid) = matrix_sdk::ruma::RoomId::parse(&room_id) else {
@@ -799,6 +864,34 @@ impl MatrixBackend for MatrixService {
         self.session.stand_down();
         self.timeline_manager.clear();
     }
+
+    /// A sign out that fails keeps the client and the saved login, so reconnecting needs no password.
+    async fn sign_out(&mut self, form: ServerConnectionForm) -> Result<(), String> {
+        // Stopped first: the logout invalidates the token, and a sync still running would
+        // report the session as rejected by the server.
+        self.session.stand_down();
+
+        match self.session.client().cloned() {
+            Some(client) => {
+                if let Err(e) = log_out(&client).await {
+                    // A token the server no longer knows means the device is already gone.
+                    if !credentials_rejected(e.client_api_error_kind()) {
+                        log::warn!("Could not sign out: {e}");
+                        return Err(sign_out_failure(&e));
+                    }
+                }
+            }
+            // With no client to log it out, forgetting a saved login would leave its device on the server.
+            None if session_path(&self.data_dir, &form).exists() => {
+                return Err(SIGN_OUT_NOT_CONNECTED.into());
+            }
+            None => {}
+        }
+
+        self.discard_saved_session(&form);
+        self.timeline_manager.clear();
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -808,7 +901,7 @@ mod tests {
     use super::*;
     use crate::commands::ChatMessageSend;
     use crate::matrix::name_colors::{NameColor, UserNameColor};
-    use crate::matrix::test_server::CannedHomeserver;
+    use crate::matrix::test_server::{unreachable_client, CannedHomeserver};
     use matrix_sdk::ruma::api::MatrixVersion;
     use serde_json::json;
 
@@ -986,6 +1079,64 @@ mod tests {
             matches!(outcome, Err(ConnectOutcome::NeedsPassword)),
             "the next attempt should have rebuilt and reached the login path",
         );
+    }
+
+    fn save_login(dir: &std::path::Path, form: &ServerConnectionForm) -> PathBuf {
+        let saved = session_path(dir, form);
+        std::fs::create_dir_all(saved.parent().unwrap()).unwrap();
+        std::fs::write(
+            &saved,
+            r#"{"user_id":"@alice:example.com","device_id":"TESTDEVICE","access_token":"token"}"#,
+        ).unwrap();
+        saved
+    }
+
+    /// Returns the handle of the session's sync task.
+    fn go_live(service: &mut MatrixService, client: Client, form: &ServerConnectionForm) -> tokio::task::AbortHandle {
+        let (sync, sync_abort) = parked_task();
+        let (pagination, _) = parked_task();
+        let (send_errors, _) = parked_task();
+        service.session.install(SessionKey::of(&client, form), client, service.event_tx.clone());
+        service.session.go_live(sync, pagination, send_errors);
+        sync_abort
+    }
+
+    #[tokio::test]
+    async fn signing_out_logs_the_device_out_and_forgets_the_session() {
+        // The second server has already removed the device, which leaves nothing to stay signed in to.
+        for server in [CannedHomeserver::ok().await, CannedHomeserver::rejecting_the_token().await] {
+            let tmp = tempfile::tempdir().unwrap();
+            let form = ServerConnectionForm { homeserver_url: Some(server.url.clone()), ..test_form() };
+            let mut service = service(tmp.path());
+            let saved = save_login(tmp.path(), &form);
+            let sync = go_live(&mut service, server.client_for("@alice:example.com").await, &form);
+
+            let outcome = service.sign_out(form).await;
+
+            assert_eq!(outcome, Ok(()));
+            assert_eq!(server.requests_to("/logout"), 1, "the server should be asked to remove the device");
+            assert!(!saved.exists(), "a login left on disk would be restored at the next start");
+            assert!(service.session.client().is_none(), "the client holds the token, so it must go");
+            tokio::task::yield_now().await;
+            assert!(sync.is_finished(), "the session's tasks should have stopped with it");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_sign_out_that_cannot_reach_the_server_keeps_the_login() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (internal_tx, _internal_rx) = mpsc::channel(1);
+        let form = test_form();
+        let mut service = service(tmp.path());
+        let saved = save_login(tmp.path(), &form);
+        go_live(&mut service, unreachable_client("@alice:example.com").await, &form);
+
+        let outcome = service.sign_out(form.clone()).await;
+
+        assert_eq!(outcome, Err(SIGN_OUT_UNREACHABLE.to_owned()));
+        assert!(saved.exists(), "the device is still on the server, so its login must stay usable");
+        service.prepare_session(&form, &internal_tx).await
+            .expect("the session should be there to reconnect with, without a password");
     }
 
     #[tokio::test]
