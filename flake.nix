@@ -17,6 +17,179 @@
       system = "x86_64-linux";
       overlays = [ (import rust-overlay) ];
       pkgs = import nixpkgs { inherit system overlays; };
+      lib = pkgs.lib;
+
+      # pinned to 1.93 due to issues with matrix-rust-sdk
+      # https://github.com/matrix-org/matrix-rust-sdk/issues/6254
+      rustToolchain = pkgs.rust-bin.stable."1.93.0".default;
+      rustPlatform = pkgs.makeRustPlatform { cargo = rustToolchain; rustc = rustToolchain; };
+      rustTarget = pkgs.stdenv.hostPlatform.rust.rustcTarget;
+
+      # Named by the hash in the fork's 3rdparty/rnnoise-src/model_version.
+      rnnoise-model = pkgs.fetchzip {
+        url = "https://media.xiph.org/rnnoise/models/rnnoise_data-5e7841199cf2947fc32f6eeaf6faffab5c2dd3da69e6a6e4830625a10285a09d.tar.gz";
+        hash = "sha256-EVVKJIDvZZdZjCV3M9qmHYYkKYudDDWvoLr31y7mJV0=";
+        stripRoot = false;
+      };
+
+      # The Mumble fork with the extended plugin API (tag etch-mumble-patch),
+      # configured like the dev build in ../mumble/shell.nix.
+      etch-mumble = pkgs.stdenv.mkDerivation {
+        pname = "etch-mumble";
+        version = "1.7.0";
+
+        src = pkgs.fetchFromGitHub {
+          owner = "guillermofbriceno";
+          repo = "mumble";
+          rev = "d9c54ade27a941c938495d7e7ef2a081a5dd1289";
+          fetchSubmodules = true;
+          hash = "sha256-4CxuNI6OHNCCievjg16wHy616TNLxfWu2coIGAW6ezc=";
+        };
+
+        nativeBuildInputs = with pkgs; [
+          cmake
+          pkg-config
+          python3
+          qt6.qttools
+          qt6.wrapQtAppsHook
+        ];
+
+        buildInputs = with pkgs; [
+          qt6.qtbase
+          qt6.qtsvg
+          qt6.qtwayland
+          openssl
+          libopus
+          libsndfile
+          poco
+          # Mumble 1.7's generated protobuf code does not build against protobuf 34.
+          protobuf_33
+          speechd
+          glib
+          zlib
+          boost
+          alsa-lib
+          libpulseaudio
+          (avahi.override { withLibdnssdCompat = true; })
+          libglvnd
+          libx11
+          libxext
+          libxi
+          libxfixes
+          libxrender
+          libxcomposite
+          libxtst
+          libxcb
+          libxcb-util
+          libxcb-cursor
+          libxcb-image
+          libxcb-keysyms
+          libxcb-render-util
+          libxcb-wm
+          libxkbcommon
+        ];
+
+        cmakeFlags = [
+          "-Dclient=ON"
+          "-Dserver=OFF"
+          # The overlay needs a 32-bit multilib toolchain.
+          "-Doverlay=OFF"
+          "-Dplugins=ON"
+          "-Dalsa=ON"
+          "-Dpulseaudio=ON"
+          "-Dspeechd=ON"
+          "-Dzeroconf=ON"
+          "-Dpipewire=OFF"
+          "-Djackaudio=OFF"
+          "-Dtests=OFF"
+          "-Dupdate=OFF"
+          "-Dwarnings-as-errors=OFF"
+          # Otherwise CMake downloads the model at configure time, which the sandbox blocks.
+          "-DFETCHCONTENT_SOURCE_DIR_RNNOISE_MODEL=${rnnoise-model}"
+        ];
+      };
+
+      etch = rustPlatform.buildRustPackage (finalAttrs: {
+        pname = "etch";
+        inherit (lib.importJSON ./client/etch-gui/src-tauri/tauri.conf.json) version;
+
+        src = lib.fileset.toSource {
+          root = ./.;
+          fileset = lib.fileset.unions [ ./Cargo.toml ./Cargo.lock ./client ./plugin ./shared ];
+        };
+
+        cargoHash = "sha256-qer22IkXVr6xhJHgjgMgwAgMajOcsjqvbcQRFnMdkos=";
+
+        pnpmDeps = pkgs.fetchPnpmDeps {
+          inherit (finalAttrs) pname version src;
+          pnpm = pkgs.pnpm_10;
+          sourceRoot = "source/client/etch-gui";
+          fetcherVersion = 3;
+          hash = "sha256-Q5wPjtNCiUow4QzOovFgxcxsC2JXYJ6HLpfy6P2CO2Y=";
+        };
+        pnpmRoot = "client/etch-gui";
+
+        buildAndTestSubdir = "client/etch-gui/src-tauri";
+
+        # Updater artifacts need the release signing key, and Nix owns updates here.
+        tauriBuildFlags = [ "--config" (builtins.toJSON { bundle.createUpdaterArtifacts = false; }) ];
+
+        nativeBuildInputs = with pkgs; [
+          (cargo-tauri.hook.override { cargo = rustToolchain; })
+          nodejs
+          pnpm_10
+          pnpmConfigHook
+          pkg-config
+          wrapGAppsHook3
+          rustPlatform.bindgenHook
+        ];
+
+        buildInputs = with pkgs; [
+          openssl
+          alsa-lib
+          webkitgtk_4_1
+          gtk3
+          libsoup_3
+          glib-networking
+          librsvg
+          libayatana-appindicator
+          gst_all_1.gstreamer
+          gst_all_1.gst-plugins-base
+          gst_all_1.gst-plugins-good
+          gst_all_1.gst-plugins-bad
+          gst_all_1.gst-libav
+        ];
+
+        preBuild = ''
+          cargo build --offline -j $NIX_BUILD_CORES --profile release --target ${rustTarget} -p etch-bridge
+          mkdir -p client/etch-gui/src-tauri/bundled
+          cp target/${rustTarget}/release/libetch_bridge.so client/etch-gui/src-tauri/bundled/
+        '';
+
+        postInstall = ''
+          mkdir -p $out/lib/etch-gui/bundled/mumble/bin
+          ln -s ${etch-mumble}/bin/mumble $out/lib/etch-gui/bundled/mumble/bin/mumble
+        '';
+
+        preFixup = ''
+          gappsWrapperArgs+=(
+            # The tray icon dlopens libayatana-appindicator at runtime.
+            --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath [ pkgs.libayatana-appindicator ]}
+            --set-default WEBKIT_DISABLE_COMPOSITING_MODE 1
+          )
+        '';
+
+        # The workspace tests run in CI; several need containers and a network.
+        doCheck = false;
+
+        meta = {
+          description = "Chat client built on Matrix, with voice over Mumble";
+          homepage = "https://github.com/guillermofbriceno/etch";
+          license = lib.licenses.gpl3Only;
+          mainProgram = "etch-gui";
+          platforms = [ system ];
+        };
+      });
 
       continuwuity-bin = pkgs.stdenv.mkDerivation {
         pname = "continuwuity-bin";
@@ -93,11 +266,14 @@
       ];
     in
     {
+      packages.${system} = {
+        inherit etch etch-mumble;
+        default = etch;
+      };
+
       devShells.${system}.default = pkgs.mkShell {
         buildInputs = nativeDeps ++ [
-          # pinned to 1.93 due to issues with matrix-rust-sdk
-          # https://github.com/matrix-org/matrix-rust-sdk/issues/6254
-          (pkgs.rust-bin.stable."1.93.0".default.override {
+          (rustToolchain.override {
             extensions = [ "rust-src" "rust-analyzer" "llvm-tools-preview" ];
           })
         ];

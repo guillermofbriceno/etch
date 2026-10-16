@@ -179,7 +179,7 @@ fn init_mumble_config(config_dir: &Path, resource_dir: &Path) -> Result<(), Core
         if !dest.exists() {
             let src = seed_dir.join(filename);
             if src.exists() {
-                std::fs::copy(&src, &dest)
+                copy_writable(&src, &dest)
                     .context(CopyFileSnafu { src: &src, dest: &dest })?;
                 log::info!("Seeded mumble config: {}", dest.display());
             }
@@ -195,7 +195,7 @@ fn init_mumble_config(config_dir: &Path, resource_dir: &Path) -> Result<(), Core
 
     std::fs::create_dir_all(&plugins_dir)
         .context(CreateDirSnafu { path: &plugins_dir })?;
-    std::fs::copy(&plugin_src, &plugin_dest)
+    copy_writable(&plugin_src, &plugin_dest)
         .context(CopyFileSnafu { src: &plugin_src, dest: &plugin_dest })?;
     log::info!("Installed plugin → {}", plugin_dest.display());
 
@@ -236,6 +236,20 @@ fn init_mumble_config(config_dir: &Path, resource_dir: &Path) -> Result<(), Core
             .context(RenameFileSnafu { src: &tmp_path, dest: &conf_path })?;
     }
 
+    Ok(())
+}
+
+/// Copy a file so the copy is owner-writable even when the source is read-only
+/// (as in the Nix store), since `std::fs::copy` carries the source mode over.
+fn copy_writable(src: &Path, dest: &Path) -> std::io::Result<()> {
+    std::fs::copy(src, dest)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(dest)?.permissions();
+        perms.set_mode(perms.mode() | 0o200);
+        std::fs::set_permissions(dest, perms)?;
+    }
     Ok(())
 }
 
@@ -367,6 +381,9 @@ fn build_mumble_command(mumble_path: &Path, url: &str, sock_name: &str, show_gui
         .env("ETCH_BRIDGE_SOCK", sock_name)
         .env("QT_PLUGIN_PATH", &qt_plugin_path)
         .env("LD_LIBRARY_PATH", &ld_library_path)
+        // Desktop style plugins (qt6ct, Breeze) built against another Qt or glibc crash Mumble on load.
+        .env_remove("QT_QPA_PLATFORMTHEME")
+        .env_remove("QT_STYLE_OVERRIDE")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     cmd
@@ -456,6 +473,25 @@ mod tests {
         // stays 'realhost', not 'evil.com'.
         let url = build_mumble_url("realhost", 64738, "alice@evil.com", Some("pw"), None);
         assert_eq!(url, "mumble://alice%40evil.com:pw@realhost:64738");
+    }
+
+    // ---- copy_writable ----
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_from_read_only_source_stays_writable_across_launches() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("libetch_bridge.so");
+        let dest = dir.path().join("installed.so");
+        std::fs::write(&src, b"plugin").unwrap();
+        std::fs::set_permissions(&src, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        copy_writable(&src, &dest).unwrap();
+        copy_writable(&src, &dest).unwrap();
+
+        let mode = std::fs::metadata(&dest).unwrap().permissions().mode();
+        assert_ne!(mode & 0o200, 0);
     }
 
     // ---- patch_config_json ----
@@ -586,5 +622,21 @@ mod tests {
             .get_envs()
             .any(|(k, v)| k == OsStr::new("ETCH_BRIDGE_SOCK") && v == Some(OsStr::new("sock-xyz")));
         assert!(has_sock, "the bridge socket name must be passed to Mumble via ETCH_BRIDGE_SOCK");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn command_does_not_inherit_desktop_qt_theme() {
+        let cmd = build_mumble_command(
+            Path::new("/opt/mumble/bin/mumble"),
+            "mumble://u@h:1",
+            "sock-xyz",
+            false,
+            &[],
+            Path::new("/cfg"),
+        );
+        let removed: Vec<_> = cmd.as_std().get_envs().filter(|(_, v)| v.is_none()).map(|(k, _)| k).collect();
+        assert!(removed.contains(&OsStr::new("QT_QPA_PLATFORMTHEME")));
+        assert!(removed.contains(&OsStr::new("QT_STYLE_OVERRIDE")));
     }
 }
