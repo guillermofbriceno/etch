@@ -152,19 +152,6 @@ describe('handleMumbleEvent', () => {
             expect(get(voiceUsers).get(10)?.name).toBe('');
         });
 
-        it('defaults channel_id to 0 for a new user with null channel_id', () => {
-            handleMumbleEvent({
-                type: 'UserState',
-                data: {
-                    session_id: 10, name: 'alice', display_name: null,
-                    avatar_url: null, channel_id: null,
-                    self_mute: false, self_deaf: false, hash: null,
-                },
-            } as any);
-
-            expect(get(voiceUsers).get(10)?.channel_id).toBe(0);
-        });
-
         it('tracks muted and deafened state independently', () => {
             handleMumbleEvent({
                 type: 'UserState',
@@ -356,6 +343,22 @@ describe('handleMumbleEvent', () => {
 
             expect(get(voiceUsers).has(10)).toBe(false);
             expect(get(talkingUsers).has(10)).toBe(false);
+        });
+
+        it('a profile answer arriving after the user left does not bring them back', () => {
+            addUser(10, 'alice', 1);
+            handleMumbleEvent({ type: 'UserRemoved', data: 10 } as any);
+
+            handleMumbleEvent({
+                type: 'UserState',
+                data: {
+                    session_id: 10, name: 'alice', display_name: 'Alice',
+                    avatar_url: 'mxc://example.com/avatar', channel_id: null,
+                    self_mute: null, self_deaf: null, hash: null,
+                },
+            } as any);
+
+            expect(get(voiceUsers).has(10)).toBe(false);
         });
 
         it('does not throw when removing a nonexistent user', () => {

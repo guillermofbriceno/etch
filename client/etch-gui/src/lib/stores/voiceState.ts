@@ -82,6 +82,8 @@ export function handleMumbleEvent(me: MumbleEvent): void {
         }
         case 'UserState': {
             const u = me.data;
+            // Without a channel this is a late patch, and the session may already have left.
+            if (u.channel_id == null && !get(voiceUsers).has(u.session_id)) break;
             voiceUsers.update((m) => {
                 const existing = m.get(u.session_id);
                 if (settled && u.session_id !== localSession) {
