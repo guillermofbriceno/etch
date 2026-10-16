@@ -211,6 +211,16 @@
     }
 
     .message-block.continuation { margin-top: 0; padding-top: 1px; padding-bottom: 1px; }
+    /* Claims the gap above for hover, so the pointer is never between rows. */
+    .message-block::before {
+        content: '';
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 100%;
+        height: var(--message-spacing);
+    }
+    .message-block.continuation::before { height: 0; }
     .message-block:hover { background-color: var(--bg-message-hover); }
     .message-block.mentioned {
         background-color: color-mix(in srgb, var(--accent) 8%, transparent);
@@ -371,6 +381,8 @@
     /* --- Compact mode --- */
     .compact { padding: 0px 6px; margin-top: 1px; }
     .compact.continuation { margin-top: 0; padding-top: 0px; padding-bottom: 0px; }
+    .compact::before { height: 1px; }
+    .compact.continuation::before { height: 0; }
 
     .compact-avatar {
         width: 20px;

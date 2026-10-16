@@ -75,7 +75,6 @@
         padding: 2px;
         opacity: 0;
         pointer-events: none;
-        transition: opacity 0.1s ease;
     }
 
     /* Parent .message-block:hover reveals this via :global */
