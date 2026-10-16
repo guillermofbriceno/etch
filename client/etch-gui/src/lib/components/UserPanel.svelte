@@ -2,7 +2,7 @@
     import { currentUser, isMuted, isDeafened, toggleMute, toggleDeafen, openSettings, mumbleStatus, matrixStatus } from '$lib/stores';
     import Icon from './Icon.svelte';
     import AvatarFallback from './AvatarFallback.svelte';
-    import { resolveMediaUrl, getInitial } from '$lib/media';
+    import { resolveAvatarUrl, getInitial } from '$lib/media';
 </script>
 
 <div class="user-panel">
@@ -50,7 +50,7 @@
 
         <div class="avatar-wrapper">
             {#if $currentUser.avatarUrl}
-                <img src={resolveMediaUrl($currentUser.avatarUrl)} alt="avatar" class="avatar" />
+                <img src={resolveAvatarUrl($currentUser.avatarUrl, 32)} alt="avatar" class="avatar" />
             {:else}
                 <AvatarFallback initial={getInitial($currentUser.displayName ?? $currentUser.username)} size={32} fontSize={14} />
             {/if}

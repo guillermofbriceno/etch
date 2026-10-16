@@ -5,7 +5,7 @@
     import Icon from '../Icon.svelte';
     import AvatarFallback from '../AvatarFallback.svelte';
     import NameColorSetting from './NameColorSetting.svelte';
-    import { resolveMediaUrl, getInitial } from '$lib/media';
+    import { resolveAvatarUrl, getInitial } from '$lib/media';
     import { open } from '@tauri-apps/plugin-dialog';
 
     let displayNameInput = $currentUser.displayName ?? $currentUser.username;
@@ -63,7 +63,7 @@
     <div class="profile-row">
         <button class="avatar-edit-wrapper" on:click={pickAvatar}>
             {#if $currentUser.avatarUrl}
-                <img src={resolveMediaUrl($currentUser.avatarUrl)} alt="avatar" class="profile-avatar" />
+                <img src={resolveAvatarUrl($currentUser.avatarUrl, 72)} alt="avatar" class="profile-avatar" />
             {:else}
                 <AvatarFallback initial={getInitial($currentUser.displayName ?? $currentUser.username)} size={72} fontSize={28} />
             {/if}

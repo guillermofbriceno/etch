@@ -24,6 +24,7 @@ pub trait MatrixBackend: Send {
     fn spawn_media_fetch(
         &self,
         mxc_url: String,
+        thumbnail: Option<u32>,
         respond: oneshot::Sender<Result<Vec<u8>, String>>,
     );
 

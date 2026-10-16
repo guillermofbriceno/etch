@@ -41,4 +41,5 @@ time = { version = "0.3", features = ["macros"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = { version = "0.18", features = ["v3_24"] }
+webkit2gtk = { version = "2.0", features = ["v2_34"] }
 

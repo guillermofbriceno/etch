@@ -12,6 +12,16 @@ pub(crate) fn mxc_url(uri: &Uri, on_windows: bool) -> String {
     }
 }
 
+/// The edge of the square thumbnail asked for with `?thumbnail=<px>`, if any.
+pub(crate) fn thumbnail(uri: &Uri) -> Option<u32> {
+    uri.query()?
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("thumbnail="))?
+        .parse()
+        .ok()
+        .filter(|&px| px > 0)
+}
+
 pub(crate) fn percent_decode(s: &str) -> Option<String> {
     let hex = |b: u8| (b as char).to_digit(16).map(|d| d as u8);
     let bytes = s.as_bytes();
@@ -67,8 +77,26 @@ mod tests {
                 true,
                 "mxc://localhost/AbC123",
             ),
+            (
+                "etch-media://example.org/AbC123?thumbnail=96",
+                false,
+                "mxc://example.org/AbC123",
+            ),
         ] {
             assert_eq!(mxc_url(&uri(request), on_windows), expected, "{request}");
+        }
+    }
+
+    #[test]
+    fn thumbnail_reads_a_positive_size_and_ignores_anything_else() {
+        for (request, expected) in [
+            ("etch-media://example.org/AbC123?thumbnail=96", Some(96)),
+            ("etch-media://localhost/example.org/AbC123?v=2&thumbnail=40", Some(40)),
+            ("etch-media://example.org/AbC123", None),
+            ("etch-media://example.org/AbC123?thumbnail=0", None),
+            ("etch-media://example.org/AbC123?thumbnail=big", None),
+        ] {
+            assert_eq!(thumbnail(&uri(request)), expected, "{request}");
         }
     }
 

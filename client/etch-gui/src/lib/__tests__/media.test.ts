@@ -1,5 +1,18 @@
-import { describe, it, expect } from 'vitest';
-import { fitWithin, formatSize } from '../media';
+import { describe, it, expect, afterEach } from 'vitest';
+import { fitWithin, formatSize, resolveAvatarUrl } from '../media';
+
+describe('resolveAvatarUrl', () => {
+    afterEach(() => {
+        Object.defineProperty(window, 'devicePixelRatio', { value: 1, configurable: true });
+    });
+
+    it('asks for a thumbnail covering the size in device pixels, and leaves other URLs alone', () => {
+        Object.defineProperty(window, 'devicePixelRatio', { value: 1.25, configurable: true });
+        expect(resolveAvatarUrl('mxc://example.org/AbC123', 18)).toBe('etch-media://example.org/AbC123?thumbnail=23');
+        expect(resolveAvatarUrl('/demo_shibe_pfp.png', 40)).toBe('/demo_shibe_pfp.png');
+        expect(resolveAvatarUrl(null, 40)).toBeNull();
+    });
+});
 
 describe('formatSize', () => {
     it('uses the largest unit that fits and never shows 1024 of a smaller one', () => {

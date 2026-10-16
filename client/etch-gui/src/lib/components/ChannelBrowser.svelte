@@ -1,7 +1,7 @@
 <script lang="ts">
     import { channels, activeChannelId, setActiveChannel, openConnect, usersByChannel, setUserVolume, matrixStatus, matrixConnecting, connectingBookmark, hideDm, dmLastActivity, sidebarCollapsed, sidebarTransitioning, toggleSidebar } from '$lib/stores';
     import { sendCoreCommand } from '$lib/ipc';
-    import { resolveMediaUrl, getInitial } from '$lib/media';
+    import { resolveAvatarUrl, getInitial } from '$lib/media';
     import type { VoiceUser } from '$lib/stores/voiceState';
     import VoiceUserList from './VoiceUserList.svelte';
     import AvatarFallback from './AvatarFallback.svelte';
@@ -186,7 +186,7 @@
                             >
                                     {#if channel.avatar_url}
                                     <img
-                                        src={resolveMediaUrl(channel.avatar_url)}
+                                        src={resolveAvatarUrl(channel.avatar_url, 20)}
                                         alt=""
                                         class="dm-avatar"
                                     />

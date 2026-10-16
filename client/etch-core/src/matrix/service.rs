@@ -3,7 +3,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use matrix_sdk::Client;
 use matrix_sdk::config::SyncSettings;
-use matrix_sdk::media::{MediaRequestParameters, MediaFormat};
+use matrix_sdk::media::{MediaRequestParameters, MediaFormat, MediaThumbnailSettings};
+use matrix_sdk::ruma::api::client::media::get_content_thumbnail::v3::Method;
 use matrix_sdk::ruma::api::client::room::create_room::v3::{Request as CreateRoomRequest, RoomPreset};
 use matrix_sdk::ruma::api::client::{account::change_password, uiaa};
 use matrix_sdk::ruma::events::room::MediaSource;
@@ -315,6 +316,7 @@ impl MatrixService {
         client: Option<&Client>,
         sources: &crate::matrix::timeline::MediaSourceMap,
         mxc_url: &str,
+        thumbnail: Option<u32>,
     ) -> Result<Vec<u8>, String> {
         let client = client.ok_or("Not connected")?;
 
@@ -325,6 +327,16 @@ impl MatrixService {
                 MediaSource::Plain(uri)
             }
         };
+
+        if let Some(px) = thumbnail {
+            let settings = MediaThumbnailSettings::with_method(Method::Crop, px.into(), px.into());
+            let params = MediaRequestParameters { source: source.clone(), format: MediaFormat::Thumbnail(settings) };
+            match client.media().get_media_content(&params, true).await {
+                Ok(bytes) => return Ok(bytes),
+                // A server may decline to thumbnail some media that it still serves whole.
+                Err(e) => log::debug!("No thumbnail for {mxc_url}, fetching the file: {e}"),
+            }
+        }
 
         let params = MediaRequestParameters { source, format: MediaFormat::File };
         client.media().get_media_content(&params, true)
@@ -841,13 +853,14 @@ impl MatrixBackend for MatrixService {
     fn spawn_media_fetch(
         &self,
         mxc_url: String,
+        thumbnail: Option<u32>,
         respond: oneshot::Sender<Result<Vec<u8>, String>>,
     ) {
         let client = self.session.client().cloned();
         let sources = self.timeline_manager.media_sources.clone();
         tokio::spawn(async move {
             let result = MatrixService::fetch_media_static(
-                client.as_ref(), &sources, &mxc_url,
+                client.as_ref(), &sources, &mxc_url, thumbnail,
             ).await;
             let _ = respond.send(result);
         });

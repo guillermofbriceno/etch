@@ -307,9 +307,9 @@ impl TestHarness {
         }, EVENT_TIMEOUT).await
     }
 
-    async fn fetch_media(&self, mxc_url: &str) -> Vec<u8> {
+    async fn fetch_media(&self, mxc_url: &str, thumbnail: Option<u32>) -> Vec<u8> {
         let (respond, response) = tokio::sync::oneshot::channel();
-        self.media_tx.send(MediaRequest { mxc_url: mxc_url.to_string(), respond }).await
+        self.media_tx.send(MediaRequest { mxc_url: mxc_url.to_string(), thumbnail, respond }).await
             .expect("engine already stopped");
         timeout(EVENT_TIMEOUT, response).await
             .expect("the media fetch was not answered in time")
@@ -609,7 +609,7 @@ async fn an_attachment_reaches_another_user_intact_with_its_type_size_and_measur
                 "{name} in {room}, as {who} sees it",
             );
         }
-        let downloaded = bob.fetch_media(&received.mxc_url).await;
+        let downloaded = bob.fetch_media(&received.mxc_url, None).await;
         assert!(
             downloaded == bytes,
             "{name} in {room}: another user downloaded {} bytes that are not the {} that were sent",
@@ -619,6 +619,43 @@ async fn an_attachment_reaches_another_user_intact_with_its_type_size_and_measur
 
     alice.shutdown().await;
     bob.shutdown().await;
+}
+
+/// Avatars ask for a thumbnail, because WebKitGTK shrinks a full size image to avatar size crudely.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_thumbnail_request_gets_a_small_square_crop_instead_of_the_image() {
+    use crate::matrix::compress::fixtures::{encoded, opaque};
+
+    let mut alice = TestHarness::new();
+    let rooms = alice.connect().await;
+    let room_id = TestHarness::find_room(&rooms, "Test Text").id.clone();
+
+    let files = tempfile::tempdir().unwrap();
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+    let name = format!("portrait-{stamp}.png");
+    let path = files.path().join(&name);
+    std::fs::write(&path, encoded(&opaque(600, 400), image::ImageFormat::Png)).unwrap();
+
+    alice.send(CoreCommand::Matrix(MatrixCommand::SendAttachment(AttachmentSend {
+        room_id: room_id.clone(),
+        path,
+        compress: false,
+        media_info: None,
+    }))).await;
+    let sent = alice.expect_attachment(&room_id, &name).await;
+
+    let thumbnail = image::load_from_memory(&alice.fetch_media(&sent.mxc_url, Some(40)).await)
+        .expect("the thumbnail should be an image");
+    let (width, height) = (thumbnail.width(), thumbnail.height());
+    assert!(
+        width == height && width < 400,
+        "a 40px thumbnail of a 600x400 image came back {width}x{height}",
+    );
+
+    alice.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

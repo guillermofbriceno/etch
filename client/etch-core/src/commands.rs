@@ -18,6 +18,8 @@ pub enum CoreCommand {
 /// so images cannot crowd out control commands.
 pub struct MediaRequest {
     pub mxc_url: String,
+    /// Edge in pixels of a square, cropped thumbnail to fetch instead of the file.
+    pub thumbnail: Option<u32>,
     pub respond: tokio::sync::oneshot::Sender<Result<Vec<u8>, String>>,
 }
 

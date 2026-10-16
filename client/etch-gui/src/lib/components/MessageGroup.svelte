@@ -8,7 +8,7 @@
     import { markdownToHtml } from '$lib/markdown';
     import { HTML_BODY_SANITIZE } from '$lib/sanitize';
     import { replaceInTextNodes } from '$lib/dom';
-    import { resolveMediaUrl, getInitial } from '$lib/media';
+    import { resolveMediaUrl, resolveAvatarUrl, getInitial } from '$lib/media';
     import MediaRenderer from './MediaRenderer.svelte';
     import AvatarFallback from './AvatarFallback.svelte';
     import EmojiPicker from './EmojiPicker.svelte';
@@ -130,7 +130,7 @@
     {#if !continuation}
         <div class={$compactChat ? 'compact-avatar' : 'avatar'}>
             {#if sender?.avatar_url}
-                <img src={resolveMediaUrl(sender.avatar_url)} alt="avatar" />
+                <img src={resolveAvatarUrl(sender.avatar_url, $compactChat ? 20 : 40)} alt="avatar" />
             {:else}
                 <AvatarFallback initial={getInitial(msg.sender)} size={$compactChat ? 20 : 40} fontSize={$compactChat ? 10 : 16} />
             {/if}

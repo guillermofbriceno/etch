@@ -15,6 +15,14 @@ export function resolveMediaUrl(url: string | null | undefined): string | null {
     return url;
 }
 
+/** Like resolveMediaUrl, but asks the server for a square thumbnail that fills `size` CSS pixels on
+ *  this screen, since WebKitGTK shrinks a full size image to avatar size crudely. */
+export function resolveAvatarUrl(url: string | null | undefined, size: number): string | null {
+    const resolved = resolveMediaUrl(url);
+    if (!resolved || !url?.startsWith('mxc://')) return resolved;
+    return `${resolved}?thumbnail=${Math.ceil(size * window.devicePixelRatio)}`;
+}
+
 export function fitWithin(width: number, height: number, maxWidth: number, maxHeight: number): { width: number; height: number } | null {
     if (!(width > 0) || !(height > 0)) return null;
     const scale = Math.min(1, maxWidth / width, maxHeight / height);

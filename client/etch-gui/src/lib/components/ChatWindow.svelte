@@ -6,7 +6,7 @@
     import MessageGroup from './MessageGroup.svelte';
     import Icon from './Icon.svelte';
     import AvatarFallback from './AvatarFallback.svelte';
-    import { resolveMediaUrl, getInitial } from '$lib/media';
+    import { resolveAvatarUrl, getInitial } from '$lib/media';
     import { customScrollbar } from '$lib/scrollbar';
 
     let scrollerElement: HTMLDivElement;
@@ -265,7 +265,7 @@
             {:else if $activeChannel.etch_room_type !== 'Dm'}
                 <Icon name="hash" size={20} class="header-icon" />
             {:else if $activeChannel.avatar_url}
-                <img src={resolveMediaUrl($activeChannel.avatar_url)} alt="" class="header-avatar" />
+                <img src={resolveAvatarUrl($activeChannel.avatar_url, 24)} alt="" class="header-avatar" />
             {:else}
                 <AvatarFallback initial={getInitial($activeChannel.display_name)} size={24} />
             {/if}

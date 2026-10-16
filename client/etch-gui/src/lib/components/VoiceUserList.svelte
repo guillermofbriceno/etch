@@ -4,7 +4,7 @@
     import { talkingUsers } from '$lib/stores';
     import Icon from './Icon.svelte';
     import AvatarFallback from './AvatarFallback.svelte';
-    import { resolveMediaUrl, getInitial } from '$lib/media';
+    import { resolveAvatarUrl, getInitial } from '$lib/media';
 
     export let users: VoiceUser[];
 
@@ -29,7 +29,7 @@
 
 <li class="voice-avatars">
     {#each users as user (user.session_id)}
-        {@const src = resolveMediaUrl(user.avatar_url)}
+        {@const src = resolveAvatarUrl(user.avatar_url, 18)}
         <!-- svelte-ignore a11y-no-static-element-interactions -->
         <span
             class="avatar-ring"
@@ -46,7 +46,7 @@
     {/each}
 </li>
 {#each users as user (user.session_id)}
-    {@const src = resolveMediaUrl(user.avatar_url)}
+    {@const src = resolveAvatarUrl(user.avatar_url, 18)}
     <li class="voice-user" class:talking={$talkingUsers.has(user.session_id)} on:contextmenu={(e) => handleContextMenu(e, user)}>
         <span class="avatar-ring">
             {#if src}

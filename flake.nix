@@ -118,7 +118,7 @@
           fileset = lib.fileset.unions [ ./Cargo.toml ./Cargo.lock ./client ./plugin ./shared ];
         };
 
-        cargoHash = "sha256-qer22IkXVr6xhJHgjgMgwAgMajOcsjqvbcQRFnMdkos=";
+        cargoHash = "sha256-xdm3K0D8e+lwAIlJSbwRUbNicY20Cj2H0eaTW1ez7RY=";
 
         pnpmDeps = pkgs.fetchPnpmDeps {
           inherit (finalAttrs) pname version src;
@@ -225,8 +225,8 @@
         pkg-config
         gobject-introspection
         cargo-tauri
-        nodejs_20
-        pnpm
+        nodejs_22
+        pnpm_10
         libsecret
         
         # GTK & WebKit for Tauri GUI

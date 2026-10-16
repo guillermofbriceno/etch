@@ -139,6 +139,7 @@ impl MatrixBackend for MockMatrix {
     fn spawn_media_fetch(
         &self,
         _mxc_url: String,
+        _thumbnail: Option<u32>,
         respond: oneshot::Sender<Result<Vec<u8>, String>>,
     ) {
         let _ = respond.send(self.media_response.clone());

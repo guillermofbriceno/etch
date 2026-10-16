@@ -324,6 +324,26 @@ fn setup_cursor_events(app: &tauri::App) {
     }
 }
 
+/// WebKitGTK 2.54 only lets pages from an app's own scheme load etch-media://, and in dev the
+/// page comes from the Vite server's http:// origin instead of tauri://.
+#[cfg(target_os = "linux")]
+fn allow_media_from_dev_server(app: &tauri::App) {
+    if !tauri::is_dev() {
+        return;
+    }
+    let Some(win) = app.get_webview_window("main") else {
+        log::warn!("Could not find main window to allow media from the dev server");
+        return;
+    };
+    let result = win.with_webview(|webview| {
+        use webkit2gtk::WebViewExt;
+        webview.inner().set_cors_allowlist(&["etch-media://*/*"]);
+    });
+    if let Err(e) = result {
+        log::warn!("Failed to allow media from the dev server: {:?}", e);
+    }
+}
+
 /// Must cover the engine's own bounded drain.
 const ENGINE_SHUTDOWN_WAIT: std::time::Duration = std::time::Duration::from_secs(6);
 
@@ -349,9 +369,10 @@ pub fn run() {
             let media_tx = media_tx.clone();
             tauri::async_runtime::spawn(async move {
                 let mxc_url = media::mxc_url(request.uri(), cfg!(windows));
+                let thumbnail = media::thumbnail(request.uri());
 
                 let (tx, rx) = tokio::sync::oneshot::channel();
-                let _ = media_tx.send(MediaRequest { mxc_url, respond: tx }).await;
+                let _ = media_tx.send(MediaRequest { mxc_url, thumbnail, respond: tx }).await;
 
                 match rx.await {
                     Ok(Ok(bytes)) => {
@@ -419,6 +440,9 @@ pub fn run() {
 
             #[cfg(target_os = "linux")]
             setup_cursor_events(app);
+
+            #[cfg(target_os = "linux")]
+            allow_media_from_dev_server(app);
 
             #[cfg(unix)]
             exit_on_termination_signal(app.handle().clone());

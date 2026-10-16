@@ -269,7 +269,7 @@ describe('MessageGroup media', () => {
                 roomId: '!room:test',
             },
         }).container;
-        expect(photo.querySelector('.avatar img')?.getAttribute('src')).toBe('etch-media://example.org/avatar');
+        expect(photo.querySelector('.avatar img')?.getAttribute('src')).toBe('etch-media://example.org/avatar?thumbnail=40');
         const img = photo.querySelector('.image-btn img') as HTMLElement;
         expect(img.getAttribute('src')).toBe('etch-media://example.org/abc123');
         expect(img.style.width).toBe('400px');

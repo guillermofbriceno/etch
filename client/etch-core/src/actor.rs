@@ -46,6 +46,7 @@ pub(crate) enum MatrixRequest {
 
 pub(crate) struct MediaFetch {
     pub mxc_url: String,
+    pub thumbnail: Option<u32>,
     pub respond: oneshot::Sender<Result<Vec<u8>, String>>,
 }
 
@@ -78,12 +79,17 @@ impl MatrixHandle {
 
     /// Never awaits: a fetch that does not fit is answered with an error instead of
     /// parking the engine.
-    pub(crate) fn fetch_media(&self, mxc_url: String, respond: oneshot::Sender<Result<Vec<u8>, String>>) {
+    pub(crate) fn fetch_media(
+        &self,
+        mxc_url: String,
+        thumbnail: Option<u32>,
+        respond: oneshot::Sender<Result<Vec<u8>, String>>,
+    ) {
         let Some(tx) = &self.media_tx else {
             let _ = respond.send(Err("Matrix actor has stopped".into()));
             return;
         };
-        if let Err(e) = tx.try_send(MediaFetch { mxc_url, respond }) {
+        if let Err(e) = tx.try_send(MediaFetch { mxc_url, thumbnail, respond }) {
             let (reason, request) = match e {
                 mpsc::error::TrySendError::Full(r) => ("media queue is full", r),
                 mpsc::error::TrySendError::Closed(r) => ("Matrix actor has stopped", r),
@@ -135,7 +141,7 @@ async fn matrix_actor<M: MatrixBackend>(
                 fetch = media_rx.recv(), if media_open => {
                     match fetch {
                         Some(fetch) => {
-                            service.spawn_media_fetch(fetch.mxc_url, fetch.respond);
+                            service.spawn_media_fetch(fetch.mxc_url, fetch.thumbnail, fetch.respond);
                             continue;
                         }
                         None => {

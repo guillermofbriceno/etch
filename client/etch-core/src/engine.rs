@@ -197,7 +197,7 @@ impl CoreEngine {
                 }
 
                 Some(request) = self.media_rx.recv() => {
-                    self.matrix.fetch_media(request.mxc_url, request.respond);
+                    self.matrix.fetch_media(request.mxc_url, request.thumbnail, request.respond);
                 }
 
                 Some(internal_event) = self.internal_rx.recv() => {
@@ -1142,6 +1142,7 @@ mod tests {
 
         media_tx.send(MediaRequest {
             mxc_url: "mxc://example.com/abc".into(),
+            thumbnail: None,
             respond: respond_tx,
         }).await.unwrap();
 
@@ -1185,7 +1186,7 @@ mod tests {
         for i in 0..ACTOR_QUEUE + OVERFLOW {
             let (tx, rx) = tokio::sync::oneshot::channel();
             replies.push(rx);
-            media_tx.send(MediaRequest { mxc_url: format!("mxc://example.com/{i}"), respond: tx })
+            media_tx.send(MediaRequest { mxc_url: format!("mxc://example.com/{i}"), thumbnail: None, respond: tx })
                 .await.unwrap();
         }
 
