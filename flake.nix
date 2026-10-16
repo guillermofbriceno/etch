@@ -175,7 +175,6 @@
           gappsWrapperArgs+=(
             # The tray icon dlopens libayatana-appindicator at runtime.
             --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath [ pkgs.libayatana-appindicator ]}
-            --set-default WEBKIT_DISABLE_COMPOSITING_MODE 1
           )
         '';
 
