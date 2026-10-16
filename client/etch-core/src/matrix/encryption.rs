@@ -213,17 +213,22 @@ async fn run(client: Client, mut requests: mpsc::Receiver<Request>, event_tx: mp
     let mut recovery_changes = std::pin::pin!(recovery.state_stream().fuse());
     let mut created = if unsaved_key_marked(&client).await { CreatedKey::Lost } else { CreatedKey::Settled };
     let mut announced: Option<EncryptionStatus> = None;
+    let mut resend = false;
     let mut answer: Option<Result<(), String>> = None;
 
     loop {
         let status = EncryptionStatus::of(verification_changes.get(), recovery.state(), &created);
-        if announced.as_ref() != Some(&status) {
-            log::info!("Encryption status is now {status:?}");
+        let changed = announced.as_ref() != Some(&status);
+        if changed || resend {
+            if changed {
+                log::info!("Encryption status is now {status:?}");
+            }
             let event = MatrixEvent::EncryptionStatus(status.clone());
             if event_tx.send(CoreEvent::Matrix(event)).await.is_err() {
                 return;
             }
             announced = Some(status);
+            resend = false;
         }
         // After the status, so the frontend already holds the state its request led to.
         if let Some(outcome) = answer.take() {
@@ -244,7 +249,7 @@ async fn run(client: Client, mut requests: mpsc::Receiver<Request>, event_tx: mp
                 let Some(request) = request else { return };
                 match request {
                     // A reconnect cleared the frontend's copy, so the status goes out again even if unchanged.
-                    Request::Announce => announced = None,
+                    Request::Announce => resend = true,
                     Request::ConfirmRecoveryKeySaved => {
                         if matches!(created, CreatedKey::Shown(_)) {
                             settle(&client, &mut created).await;

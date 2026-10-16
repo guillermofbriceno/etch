@@ -92,7 +92,7 @@ pub async fn sync_loop(
 
     let result = client
         .sync_with_result_callback(SyncSettings::default().timeout(poll_timeout), |result| async move {
-            let reason = result.as_ref().err().map(|e| format!("Sync error: {e}"));
+            let reason = result.as_ref().err().map(|e| format!("Sync error: {}", error_chain(e)));
             let failure = result.as_ref().err().map(SyncFailure::of);
 
             let step = {
@@ -106,7 +106,7 @@ pub async fn sync_loop(
                 SyncStep::Proceed => Ok(LoopCtrl::Continue),
 
                 SyncStep::Recovered => {
-                    log::info!("Matrix sync recovered; the session was never dropped");
+                    log::info!("Matrix sync #{generation} recovered; the session was never dropped");
                     let _ = tx.send(InternalEvent::Matrix(
                         InternalMatrixEvent::SyncRecovered { generation },
                     )).await;
@@ -116,7 +116,7 @@ pub async fn sync_loop(
                 SyncStep::Retry { attempt, delay } => {
                     let reason = reason();
                     log::warn!(
-                        "Matrix sync failed ({reason}); retry {attempt} of {} in {delay:?}, \
+                        "Matrix sync #{generation} failed ({reason}); retry {attempt} of {} in {delay:?}, \
                          session left intact",
                         SyncRetryPolicy::MAX_RETRIES,
                     );
@@ -244,6 +244,21 @@ pub async fn find_voice_server(client: &Client, rooms: &[RoomInfo]) -> Option<Vo
     }
 }
 
+/// The top error often says only "error sending request"; the actual cause sits a few sources down.
+fn error_chain(e: &dyn std::error::Error) -> String {
+    let mut text = e.to_string();
+    let mut source = e.source();
+    while let Some(cause) = source {
+        let cause_text = cause.to_string();
+        if !text.contains(&cause_text) {
+            text.push_str(": ");
+            text.push_str(&cause_text);
+        }
+        source = cause.source();
+    }
+    text
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -360,6 +375,32 @@ mod tests {
             )),
             "the driver reports the end by returning it, not on the channel; got {reported:?}",
         );
+    }
+
+    #[derive(Debug)]
+    struct Layer(&'static str, Option<Box<Layer>>);
+
+    impl std::fmt::Display for Layer {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.0)
+        }
+    }
+
+    impl std::error::Error for Layer {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            self.1.as_deref().map(|e| e as _)
+        }
+    }
+
+    #[test]
+    fn error_chain_reaches_the_root_cause_without_repeating_wrappers() {
+        let error = Layer("error sending request", Some(Box::new(
+            Layer("error sending request", Some(Box::new(
+                Layer("connection reset by peer", None),
+            ))),
+        )));
+
+        assert_eq!(error_chain(&error), "error sending request: connection reset by peer");
     }
 
     /// On the real clock, because a paused one can time the request out before the

@@ -367,15 +367,10 @@ impl CoreEngine {
                     InternalMatrixEvent::SubscribeToRoom(room_id) => {
                         let _ = self.matrix.send(MatrixRequest::Subscribe(room_id.to_string())).await;
                     }
-                    InternalMatrixEvent::SyncDegraded { generation, reason } => {
-                        log::warn!(
-                            "Matrix sync #{generation} degraded ({reason}); retrying in place, \
-                             session untouched",
-                        );
+                    InternalMatrixEvent::SyncDegraded { generation, .. } => {
                         self.on_sync_report(generation, SyncReport::Degraded, retry_timer).await;
                     }
                     InternalMatrixEvent::SyncRecovered { generation } => {
-                        log::info!("Matrix sync #{generation} recovered without a reconnect");
                         self.on_sync_report(generation, SyncReport::Recovered, retry_timer).await;
                     }
                     InternalMatrixEvent::Disconnected { generation, end } => {

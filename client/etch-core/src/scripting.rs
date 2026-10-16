@@ -55,10 +55,7 @@ impl ScriptDispatcher {
     /// No-op on Windows.
     #[cfg(not(target_os = "windows"))]
     pub fn fire(&self, event: &str, vars: &[(&str, &str)]) {
-        let Some(script) = self.scripts.get(event) else {
-            log::debug!("[scripting] No script configured for '{}'", event);
-            return;
-        };
+        let Some(script) = self.scripts.get(event) else { return };
 
         // Debounce check
         {

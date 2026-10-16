@@ -162,6 +162,10 @@ impl BridgeState {
         self.local_session.and_then(|ls| self.session_channels.get(&ls).copied())
     }
 
+    fn channel_name(&self, channel_id: u32) -> String {
+        self.channel_tree.get(&channel_id).map_or_else(|| format!("channel {channel_id}"), |c| c.name.clone())
+    }
+
     async fn translate(
         &mut self,
         tx: &mpsc::Sender<CoreEvent>,
@@ -170,9 +174,15 @@ impl BridgeState {
     ) {
         match event {
             BridgeEvent::ServerConnected => {
+                log::info!("Mumble connected to the voice server");
                 let _ = tx.send(mumble(MumbleEvent::ConnectionState(ConnectionState::Connecting))).await;
             }
             BridgeEvent::ServerSync { local_session, channels, users } => {
+                log::info!(
+                    "Voice synced as session {local_session}: {} users in {} channels",
+                    users.len(),
+                    channels.len(),
+                );
                 self.local_session = Some(local_session);
                 self.channel_tree.clear();
                 let _ = tx.send(mumble(MumbleEvent::LocalSession(local_session))).await;
@@ -217,6 +227,10 @@ impl BridgeState {
                 let volume_db = 20.0 * user.volume_adjustment.log10();
                 self.session_names.insert(user.session, user.name.clone());
                 self.session_channels.insert(user.session, user.channel_id as u32);
+                log::info!(
+                    "{} joined voice as session {} in {}",
+                    user.name, user.session, self.channel_name(user.channel_id as u32),
+                );
                 if self.local_channel() == Some(user.channel_id as u32) {
                     self.dispatcher.fire("user_join", &[("USER", &user.name)]);
                 }
@@ -242,7 +256,9 @@ impl BridgeState {
                     let user_ch = self.session_channels.remove(&session);
                     local_ch.is_some() && local_ch == user_ch
                 };
-                if let Some(name) = self.session_names.remove(&session)
+                let name = self.session_names.remove(&session);
+                log::info!("{} (session {session}) left voice", name.as_deref().unwrap_or("Unknown user"));
+                if let Some(name) = name
                     && was_in_local_ch
                 {
                     self.dispatcher.fire("user_leave", &[("USER", &name)]);
@@ -253,6 +269,11 @@ impl BridgeState {
                 let new_ch = channel_id as u32;
                 let old_ch = self.session_channels.insert(session, new_ch);
                 let local_ch = self.local_channel();
+                log::info!(
+                    "{} (session {session}) moved to {}",
+                    self.session_names.get(&session).map_or("Unknown user", String::as_str),
+                    self.channel_name(new_ch),
+                );
 
                 // Only fire scripts for other users moving in/out of our channel
                 if Some(session) != self.local_session

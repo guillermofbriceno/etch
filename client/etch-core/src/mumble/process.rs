@@ -5,13 +5,16 @@ use sha1::{Sha1, Digest};
 use snafu::ResultExt;
 use bridge_types::MumbleCommand as BridgeCommand;
 use tokio::process::{Child, Command};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
+use tokio::task::JoinHandle;
 use crate::error::*;
 use crate::events::{CoreEvent, InternalEvent};
 use crate::scripting::ScriptDispatcher;
 
 pub struct MumbleProcess {
-    child: Child,
+    /// Sending or dropping it makes the watcher kill Mumble.
+    kill_tx: Option<oneshot::Sender<()>>,
+    watcher: JoinHandle<()>,
     pub sock_name: String,
     pub cmd_tx: mpsc::Sender<BridgeCommand>,
     _bridge_task: crate::task::AbortOnDrop,
@@ -116,8 +119,12 @@ impl MumbleProcess {
             job
         };
 
+        let (kill_tx, kill_rx) = oneshot::channel();
+        let watcher = tokio::spawn(watch_child(child, kill_rx));
+
         Ok(Self {
-            child,
+            kill_tx: Some(kill_tx),
+            watcher,
             sock_name,
             cmd_tx,
             _bridge_task: bridge_task,
@@ -127,16 +134,31 @@ impl MumbleProcess {
     }
 
     pub async fn kill(&mut self) {
-        let _ = self.child.kill().await;
+        if let Some(kill_tx) = self.kill_tx.take() {
+            let _ = kill_tx.send(());
+        }
+        if tokio::time::timeout(KILL_WAIT, &mut self.watcher).await.is_err() {
+            log::warn!("Mumble was not reaped within {KILL_WAIT:?} of being killed");
+        }
         // Explicit because `kill` does not drop `self`.
         self._bridge_task.abort();
-        log::info!("Mumble process killed");
     }
 }
 
-impl Drop for MumbleProcess {
-    fn drop(&mut self) {
-        let _ = self.child.start_kill();
+const KILL_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Owns the child so an exit Etch did not ask for is noticed and logged.
+async fn watch_child(mut child: Child, kill_rx: oneshot::Receiver<()>) {
+    tokio::select! {
+        status = child.wait() => match status {
+            Ok(status) if status.success() => log::info!("Mumble exited ({status})"),
+            Ok(status) => log::warn!("Mumble exited unexpectedly ({status})"),
+            Err(e) => log::warn!("Lost track of the Mumble process: {e}"),
+        },
+        _ = kill_rx => {
+            let _ = child.kill().await;
+            log::info!("Mumble process killed");
+        }
     }
 }
 
@@ -384,6 +406,7 @@ fn build_mumble_command(mumble_path: &Path, url: &str, sock_name: &str, show_gui
         // Desktop style plugins (qt6ct, Breeze) built against another Qt or glibc crash Mumble on load.
         .env_remove("QT_QPA_PLATFORMTHEME")
         .env_remove("QT_STYLE_OVERRIDE")
+        .kill_on_drop(true)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     cmd
@@ -414,6 +437,7 @@ fn build_mumble_command(mumble_path: &Path, url: &str, sock_name: &str, show_gui
         .arg("-m")
         .args(extra)
         .env("ETCH_BRIDGE_SOCK", sock_name)
+        .kill_on_drop(true)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     cmd
@@ -473,6 +497,25 @@ mod tests {
         // stays 'realhost', not 'evil.com'.
         let url = build_mumble_url("realhost", 64738, "alice@evil.com", Some("pw"), None);
         assert_eq!(url, "mumble://alice%40evil.com:pw@realhost:64738");
+    }
+
+    // ---- watch_child ----
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropping_the_kill_sender_kills_and_reaps_the_child() {
+        let child = Command::new("sleep").arg("30").spawn().unwrap();
+        let pid = child.id().unwrap() as libc::pid_t;
+        let (kill_tx, kill_rx) = oneshot::channel();
+        let watcher = tokio::spawn(watch_child(child, kill_rx));
+
+        drop(kill_tx);
+        tokio::time::timeout(std::time::Duration::from_secs(5), watcher)
+            .await
+            .expect("the watcher should finish once its kill sender is gone")
+            .unwrap();
+
+        assert_eq!(unsafe { libc::kill(pid, 0) }, -1, "the child should no longer exist");
     }
 
     // ---- copy_writable ----

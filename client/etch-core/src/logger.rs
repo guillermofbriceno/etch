@@ -79,6 +79,18 @@ pub fn init(event_tx: mpsc::Sender<CoreEvent>, backend: Box<dyn Log>) {
     log::set_boxed_logger(Box::new(logger))
         .map(|()| log::set_max_level(level))
         .unwrap();
+
+    log_panics();
+}
+
+/// Without this a panic reaches only stderr, which nobody sees in a packaged build.
+fn log_panics() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let thread = std::thread::current();
+        log::error!("Panic on thread '{}': {info}", thread.name().unwrap_or("unnamed"));
+        default_hook(info);
+    }));
 }
 
 pub fn set_level(level_str: &str) {

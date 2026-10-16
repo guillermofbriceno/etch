@@ -33,7 +33,9 @@ use crate::engine::*;
 pub type ProductionEngine = CoreEngine;
 
 /// Must be called inside a Tokio runtime: the engine spawns its subsystem tasks on construction.
+#[allow(clippy::too_many_arguments)]
 pub fn init_core(
+    app_version: &str,
     data_dir: PathBuf,
     resource_dir: PathBuf,
     cmd_tx: mpsc::Sender<commands::CoreCommand>,
@@ -46,7 +48,7 @@ pub fn init_core(
 
     logger::init(event_tx.clone(), logger);
 
-    log::info!("Etch core start.");
+    log::info!("Etch {app_version} starting");
     log::info!("Data directory set to: {:?}", data_dir);
     log::info!("Resource directory set to: {:?}", resource_dir);
 

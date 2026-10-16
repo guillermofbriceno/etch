@@ -274,6 +274,24 @@ fn build_logger(log_path: &Path) -> Box<dyn log::Log> {
     ])
 }
 
+/// A logout or `kill` would otherwise end Etch with no trace in the log and no clean shutdown.
+#[cfg(unix)]
+fn exit_on_termination_signal(app: tauri::AppHandle) {
+    use tokio::signal::unix::{signal, SignalKind};
+    tauri::async_runtime::spawn(async move {
+        let (Ok(mut term), Ok(mut hup)) = (signal(SignalKind::terminate()), signal(SignalKind::hangup())) else {
+            log::warn!("Could not listen for termination signals");
+            return;
+        };
+        let name = tokio::select! {
+            _ = term.recv() => "SIGTERM",
+            _ = hup.recv() => "SIGHUP",
+        };
+        log::info!("Received {name}; shutting down");
+        app.exit(0);
+    });
+}
+
 /// Register GTK enter/leave events so the frontend can suppress sidebar
 /// peek when the cursor leaves the window.
 #[cfg(target_os = "linux")]
@@ -371,6 +389,7 @@ pub fn run() {
             let app_handle = app.handle().clone();
             let data_dir = app.path().app_data_dir().expect("Failed to get app data dir");
             let resource_dir = app.path().resource_dir().expect("Failed to get resource dir");
+            let app_version = app.package_info().version.to_string();
 
             std::fs::create_dir_all(&data_dir).expect("Failed to create data dir");
             let log_path = data_dir.join("etch.log");
@@ -382,7 +401,7 @@ pub fn run() {
             app.manage(temp_files.clone());
             // `setup` runs outside a Tokio context, and `init_core` spawns tasks.
             let (mut core_handle, engine) = tauri::async_runtime::block_on(async {
-                init_core(data_dir, resource_dir, cmd_tx, cmd_rx, media_rx, temp_files, logger)
+                init_core(&app_version, data_dir, resource_dir, cmd_tx, cmd_rx, media_rx, temp_files, logger)
             });
             app.manage(TauriState::new(core_handle.cmd_tx));
             app.manage(sfx_player);
@@ -400,6 +419,9 @@ pub fn run() {
 
             #[cfg(target_os = "linux")]
             setup_cursor_events(app);
+
+            #[cfg(unix)]
+            exit_on_termination_signal(app.handle().clone());
 
             Ok(())
         })
