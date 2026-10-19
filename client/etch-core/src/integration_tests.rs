@@ -4,6 +4,7 @@
 //! Or via the orchestrator: ./tests/integration/run.sh
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -34,6 +35,8 @@ struct TestHarness {
     cmd_tx: mpsc::Sender<CoreCommand>,
     media_tx: mpsc::Sender<MediaRequest>,
     event_rx: mpsc::Receiver<CoreEvent>,
+    /// Each room's timeline as the frontend would show it, from every event the harness receives.
+    shown: HashMap<String, RoomMirror>,
     engine_handle: tokio::task::JoinHandle<()>,
     // Held so the temp directory outlives the engine. Fields are dropped in
     // declaration order, so _data_dir is dropped after engine_handle.
@@ -87,7 +90,16 @@ impl TestHarness {
         );
         let engine_handle = tokio::spawn(engine.run());
 
-        Self { cmd_tx, media_tx, event_rx, engine_handle, _data_dir: data_dir }
+        Self { cmd_tx, media_tx, event_rx, shown: HashMap::new(), engine_handle, _data_dir: data_dir }
+    }
+
+    fn observe(&mut self, event: &CoreEvent) {
+        // As the frontend does: every connect attempt starts its timelines over.
+        if matches!(event, CoreEvent::System(SystemEvent::ServerReset)) {
+            self.shown.clear();
+        } else if let Some(room_id) = timeline_room(event) {
+            self.shown.entry(room_id.to_owned()).or_default().apply(room_id, event);
+        }
     }
 
     async fn send(&self, cmd: CoreCommand) {
@@ -121,6 +133,7 @@ impl TestHarness {
             }
             match timeout(remaining, self.event_rx.recv()).await {
                 Ok(Some(event)) => {
+                    self.observe(&event);
                     if let Some(val) = predicate(&event) {
                         return val;
                     }
@@ -267,29 +280,28 @@ impl TestHarness {
         }, EVENT_TIMEOUT).await
     }
 
-    /// Sends a message and counts how often the server's copy of it is added to the room's timeline, which each stream for the room does once.
+    /// Sends a message and counts the copies of it the room's timeline shows once it settles. A
+    /// second stream for the room shows a second copy; the SDK moving its one copy, as the event
+    /// cache does when sync brings back an event it already holds, does not.
     async fn send_and_count_copies(&mut self, room_id: &str, prefix: &str) -> usize {
         let body = self.send_unique_message(room_id, prefix).await;
-        let is_the_copy = |event: &CoreEvent| match event {
-            // Replaces an entry in place, as when the sender's name arrives after the message.
-            CoreEvent::Matrix(MatrixEvent::TimelineSet(..)) => false,
-            _ => timeline_entries(event).is_some_and(|(room, entries)| {
-                room == room_id && entries.iter().any(|entry| {
-                    matches!(&entry.kind, TimelineEntryKind::Message(msg) if msg.body == body && msg.id.starts_with('$'))
-                })
-            }),
-        };
-        self.expect_event(|e| is_the_copy(e).then_some(()), EVENT_TIMEOUT).await;
+        let copies = |h: &Self| h.shown.get(room_id).map_or(0, |timeline| timeline.copies(&body));
+        let accepted = |h: &Self| h.shown.get(room_id).is_some_and(|timeline| timeline.accepted(&body));
 
-        // Another stream would have added its copy by now.
-        tokio::time::sleep(Duration::from_secs(3)).await;
-        let mut copies = 1;
-        while let Ok(event) = self.event_rx.try_recv() {
-            if is_the_copy(&event) {
-                copies += 1;
-            }
+        let deadline = tokio::time::Instant::now() + EVENT_TIMEOUT;
+        while !accepted(self) {
+            let event = tokio::time::timeout_at(deadline, self.event_rx.recv()).await
+                .unwrap_or_else(|_| panic!("the server never accepted {body}"))
+                .expect("the engine stopped");
+            self.observe(&event);
         }
-        copies
+
+        // Another stream would have shown its copy by now.
+        let settled = tokio::time::Instant::now() + Duration::from_secs(3);
+        while let Ok(Some(event)) = tokio::time::timeout_at(settled, self.event_rx.recv()).await {
+            self.observe(&event);
+        }
+        copies(self)
     }
 
     /// Waits for the copy the server accepted; the local echo before it has no event ID yet.
@@ -317,14 +329,6 @@ impl TestHarness {
             .unwrap_or_else(|e| panic!("{mxc_url} should download: {e}"))
     }
 
-    /// Non-blocking drain: collect message bodies from any timeline events
-    /// already buffered for `room_id`.
-    fn drain_timeline_messages(&mut self, room_id: &str, out: &mut Vec<String>) {
-        while let Ok(event) = self.event_rx.try_recv() {
-            Self::collect_message_bodies(&event, room_id, out);
-        }
-    }
-
     /// Like `expect_event`, but also collects message bodies from timeline
     /// events for `room_id` while waiting for the predicate to match.
     async fn expect_event_collecting<F, T>(
@@ -345,6 +349,7 @@ impl TestHarness {
             }
             match timeout(remaining, self.event_rx.recv()).await {
                 Ok(Some(event)) => {
+                    self.observe(&event);
                     Self::collect_message_bodies(&event, room_id, out);
                     if let Some(val) = predicate(&event) {
                         return val;
@@ -495,6 +500,13 @@ fn bob_connection_form() -> ServerConnectionForm {
     }
 }
 
+fn timeline_room(event: &CoreEvent) -> Option<&str> {
+    match event {
+        CoreEvent::Matrix(MatrixEvent::TimelineRemove(room_id, _) | MatrixEvent::TimelineCleared(room_id)) => Some(room_id),
+        _ => timeline_entries(event).map(|(room_id, _)| room_id),
+    }
+}
+
 fn timeline_entries(event: &CoreEvent) -> Option<(&str, &[TimelineEntry])> {
     match event {
         CoreEvent::Matrix(MatrixEvent::TimelineAppend(room_id, entries))
@@ -546,6 +558,17 @@ impl RoomMirror {
 
     fn shows(&self, body: &str) -> bool {
         self.entries.iter().any(|entry| matches!(&entry.kind, TimelineEntryKind::Message(msg) if msg.body == body))
+    }
+
+    fn copies(&self, body: &str) -> usize {
+        self.entries.iter().filter(|entry| matches!(&entry.kind, TimelineEntryKind::Message(msg) if msg.body == body)).count()
+    }
+
+    /// The server took the message, so its entry carries the event ID the server gave it.
+    fn accepted(&self, body: &str) -> bool {
+        self.entries.iter().any(|entry| {
+            matches!(&entry.kind, TimelineEntryKind::Message(msg) if msg.body == body && msg.id.starts_with('$'))
+        })
     }
 }
 
@@ -869,15 +892,11 @@ async fn backwards_pagination_loads_full_history() {
         CONNECT_TIMEOUT,
     ).await;
 
-    // Give background pagination a moment to deliver items, then drain.
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    h.drain_timeline_messages(&room_id, &mut seen_bodies);
-
     // Paginate until the server says there's no more history.
     // Timeline diff events arrive asynchronously (via a spawned task that
     // processes the SDK's VectorDiff stream), so they may lag behind
     // PaginationComplete. We collect what we can during pagination, then
-    // drain remaining events after the loop.
+    // wait for the rest after the loop.
     let mut pages = 0;
     loop {
         h.send(CoreCommand::Matrix(MatrixCommand::PaginateBackwards {
@@ -903,24 +922,27 @@ async fn backwards_pagination_loads_full_history() {
         }
     }
 
-    // The diff stream task delivers timeline items asynchronously.
-    // Drain remaining events until the stream is quiet.
-    loop {
-        match timeout(Duration::from_secs(2), h.event_rx.recv()).await {
+    let seeds = |bodies: &[String]| {
+        let mut seeds: Vec<u32> = bodies.iter()
+            .filter_map(|b| b.strip_prefix("seed-msg-"))
+            .filter_map(|n| n.parse().ok())
+            .collect();
+        seeds.sort();
+        seeds.dedup();
+        seeds
+    };
+    // Waits for the whole history rather than for a lull, which a slow runner can leave mid-stream.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while seeds(&seen_bodies).len() < 500 {
+        match tokio::time::timeout_at(deadline, h.event_rx.recv()).await {
             Ok(Some(event)) => {
+                h.observe(&event);
                 TestHarness::collect_message_bodies(&event, &room_id, &mut seen_bodies);
             }
             _ => break,
         }
     }
-
-    // Extract only the seed messages and sort them to verify the full set.
-    let mut seed_msgs: Vec<u32> = seen_bodies.iter()
-        .filter_map(|b| b.strip_prefix("seed-msg-"))
-        .filter_map(|n| n.parse().ok())
-        .collect();
-    seed_msgs.sort();
-    seed_msgs.dedup();
+    let seed_msgs = seeds(&seen_bodies);
 
     assert!(
         pages >= 2,
@@ -1293,10 +1315,10 @@ async fn reconnecting_does_not_duplicate_timeline_events() {
 
     h.shutdown().await;
 
-    assert_eq!(before, 1, "a message was added {before} times before any reconnect");
+    assert_eq!(before, 1, "a message was shown {before} times before any reconnect");
     assert_eq!(
         after, 1,
-        "a message was added {after} times after {RECONNECTS} reconnects; \
+        "a message was shown {after} times after {RECONNECTS} reconnects; \
          each reconnect left its predecessor's timeline subscription running",
     );
 }
@@ -1323,10 +1345,10 @@ async fn reconnecting_does_not_duplicate_events_in_a_created_dm() {
 
     h.shutdown().await;
 
-    assert_eq!(before, 1, "a message in a DM created this session was added {before} times before any reconnect");
+    assert_eq!(before, 1, "a message in a DM created this session was shown {before} times before any reconnect");
     assert_eq!(
         after, 1,
-        "a message in a DM created this session was added {after} times after a reconnect; \
+        "a message in a DM created this session was shown {after} times after a reconnect; \
          the DM has more than one timeline stream",
     );
 }
@@ -1374,6 +1396,7 @@ impl TestHarness {
             deadline.saturating_duration_since(tokio::time::Instant::now()),
             self.event_rx.recv(),
         ).await {
+            self.observe(&event);
             collect(&event);
         }
         seen.into_inner()
@@ -1480,12 +1503,16 @@ async fn a_message_above_a_stuck_local_echo_is_unread_with_notifications_muted_a
         }
     }).await;
     assert!(unread_again.is_ok(), "the second message did not make the room unread");
-    let marked = mark_read(&timeline, room_id.as_str(), EVENT_TIMEOUT);
-    let confirming = async {
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        sync().await.unwrap();
+    let syncing = async {
+        loop {
+            sync().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     };
-    let (outcome, ()) = tokio::join!(marked, confirming);
+    let outcome = tokio::select! {
+        outcome = mark_read(&timeline, room_id.as_str(), EVENT_TIMEOUT) => outcome,
+        never = syncing => never,
+    };
     assert_eq!(outcome, ReceiptOutcome::Confirmed);
 }
 
