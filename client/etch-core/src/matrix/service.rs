@@ -12,6 +12,7 @@ use matrix_sdk::ruma::{RoomId, UserId};
 use matrix_sdk::send_queue::SendQueueRoomError;
 use crate::commands::{AttachmentSend, MatrixCommand, ServerConnectionForm};
 use crate::events::{CoreEvent, MatrixEvent, InternalEvent, InternalMatrixEvent};
+use crate::matrix::room_activity;
 use crate::matrix::attachment;
 use crate::temp_files::TempFiles;
 use crate::matrix::client::{log_out, start_matrix_client, ConnectionResult};
@@ -475,7 +476,6 @@ impl MatrixBackend for MatrixService {
         if let Some(user_id) = client.user_id() {
             let username = user_id.localpart().to_string();
             let matrix_id = user_id.to_string();
-            self.timeline_manager.set_local_user_id(matrix_id.clone());
             let (display_name, avatar_url) = match client.account().fetch_user_profile_of(user_id).await {
                 Ok(profile) => (
                     profile.get("displayname").and_then(|v| v.as_str()).map(|s| s.to_string()),
@@ -549,13 +549,16 @@ impl MatrixBackend for MatrixService {
 
         // Subscribe to all timelines BEFORE starting the sync loop
         // so that events arriving via sync flow through the diff streams.
+        let mut watched = 0;
         for room_info in &rooms {
             if let Ok(room_id) = matrix_sdk::ruma::RoomId::parse(&room_info.id)
                 && let Some(room) = client.get_room(&room_id)
             {
                 self.subscribe(&room).await;
+                watched += 1;
             }
         }
+        log::info!("Watching {watched} of {} rooms for new messages and unread state", rooms.len());
 
         // Ensure the crypto store has device keys for members of
         // encrypted rooms. Without this, messages sent while the
@@ -595,7 +598,7 @@ impl MatrixBackend for MatrixService {
     async fn handle_command(&mut self, cmd: MatrixCommand) {
         match cmd {
             MatrixCommand::SendMessage(msg) => {
-                log::debug!("[MATRIX] TX -> {}: {}", msg.room_id, msg.text);
+                log::debug!("[MATRIX] TX -> {}: {} characters", msg.room_id, msg.text.chars().count());
                 let Some(client) = self.serving_client("SendMessage") else { return };
                 Self::resume_send_queue(&client, &msg.room_id);
                 // Text messages go through Timeline::send for immediate local echo
@@ -686,22 +689,17 @@ impl MatrixBackend for MatrixService {
                     ).await;
                 }
             }
-            MatrixCommand::SendReadReceipt { room_id, event_id } => {
-                let Some(client) = self.serving_client("SendReadReceipt") else { return };
+            MatrixCommand::MarkRead { room_id } => {
+                if self.serving_client("MarkRead").is_none() { return };
                 let Ok(rid) = matrix_sdk::ruma::RoomId::parse(&room_id) else { return };
-                let Ok(eid) = matrix_sdk::ruma::EventId::parse(&event_id) else { return };
+                let Some(timeline) = self.timeline_manager.timeline(&rid) else {
+                    log::warn!("Not marking {room_id} read: it has no timeline subscription");
+                    return;
+                };
                 // Spawn as a background task so slow receipt RPCs don't block
                 // the command loop and delay subsequent commands.
                 tokio::spawn(async move {
-                    if let Some(room) = client.get_room(&rid)
-                        && let Err(e) = room.send_single_receipt(
-                            matrix_sdk::ruma::api::client::receipt::create_receipt::v3::ReceiptType::Read,
-                            matrix_sdk::ruma::events::receipt::ReceiptThread::Unthreaded,
-                            eid,
-                        ).await
-                    {
-                        log::error!("Failed to send read receipt: {:?}", e);
-                    }
+                    room_activity::mark_read(&timeline, &room_id, room_activity::RECEIPT_CONFIRM_WAIT).await;
                 });
             }
             MatrixCommand::CreateRecoveryKey => {
@@ -761,14 +759,12 @@ impl MatrixBackend for MatrixService {
                     {
                         let is_encrypted = room.latest_encryption_state().await
                             .map(|s| s.is_encrypted()).unwrap_or(false);
-                        let unread = room.unread_notification_counts();
                         let room_info = RoomInfo {
                             id: existing_room_id,
                             display_name: display_name.clone(),
                             etch_room_type: RoomType::Dm,
                             channel_id: None,
                             is_default: false,
-                            unread_count: unread.notification_count,
                             is_encrypted,
                             avatar_url: avatar_url.clone(),
                         };
@@ -803,7 +799,6 @@ impl MatrixBackend for MatrixService {
                             etch_room_type: RoomType::Dm,
                             channel_id: None,
                             is_default: false,
-                            unread_count: 0,
                             is_encrypted,
                             avatar_url,
                         };

@@ -4,6 +4,8 @@ import type { CoreEvent } from '$lib/ipc';
 
 import { handleMatrixEvent as messagesHandleMatrix } from './messages';
 import { handleMatrixEvent as channelsHandleMatrix } from './channels';
+import { handleMatrixEvent as roomActivityHandleMatrix } from './roomActivity';
+import { handleMatrixEvent as newMessageHandleMatrix } from './newMessage';
 import { handleMatrixEvent as serversHandleMatrix } from './servers';
 import { handleMatrixEvent as matrixConnectionHandleMatrix } from './matrixConnection';
 import { handleMatrixEvent as userHandleMatrix, handleSystemEvent as userHandleSystem } from './user';
@@ -36,6 +38,8 @@ export function initEventRouter(): void {
                 if (ce.data.type === 'CurrentUser') enterLogin(ce.data.data.matrix_id);
                 messagesHandleMatrix(ce.data);
                 channelsHandleMatrix(ce.data);
+                roomActivityHandleMatrix(ce.data);
+                newMessageHandleMatrix(ce.data);
                 serversHandleMatrix(ce.data);
                 matrixConnectionHandleMatrix(ce.data);
                 userHandleMatrix(ce.data);

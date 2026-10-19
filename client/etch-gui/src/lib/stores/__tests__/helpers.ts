@@ -1,7 +1,8 @@
 import { vi } from 'vitest';
 import { voiceChannels, voiceUsers, talkingUsers, mumbleStatus, certChangeRequest } from '../voiceState';
 import { handleMumbleEvent } from '../voiceState';
-import { channels, dmLastActivity } from '../channels';
+import { channels } from '../channels';
+import { roomActivity } from '../roomActivity';
 import { activeChannelId } from '../activeChannel';
 import { isMuted, isDeafened } from '../audio';
 import { currentUser } from '../user';
@@ -35,7 +36,7 @@ export function resetStores(): void {
     // Channels
     channels.set([]);
     activeChannelId.set(null);
-    dmLastActivity.set({});
+    roomActivity.set({});
 
     // Audio
     isMuted.set(false);

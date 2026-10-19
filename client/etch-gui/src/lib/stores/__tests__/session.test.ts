@@ -17,7 +17,8 @@ import { sessionStoreNames } from '../session';
 
 import { activeChannelId } from '../activeChannel';
 import { isMuted, isDeafened } from '../audio';
-import { channels, dmLastActivity, initHiddenDms, unhideDm } from '../channels';
+import { channels, initHiddenDms, unhideDm } from '../channels';
+import { roomActivity } from '../roomActivity';
 import { replyingTo, editingMessage } from '../compose';
 import { activeWindow, setActiveChannel } from '../messages';
 import { matrixStatus } from '../matrixConnection';
@@ -80,7 +81,6 @@ function makeRoom(id: string, name: string, kind: RoomType): RoomInfo {
         etch_room_type: kind,
         channel_id: null,
         is_default: false,
-        unread_count: 0,
         is_encrypted: false,
         avatar_url: null,
     };
@@ -146,9 +146,11 @@ const MATRIX_PROBES: SessionStoreProbe[] = [
         expectCleared: () => { expect(get(channels)).toEqual([]); },
     },
     {
-        name: 'dmLastActivity',
-        populate: () => { dmLastActivity.set({ [ROOM_ID]: 1000 }); },
-        expectCleared: () => { expect(get(dmLastActivity)).toEqual({}); },
+        name: 'roomActivity',
+        populate: () => {
+            fireMatrixEvent({ type: 'RoomActivity', data: { room_id: ROOM_ID, unread: true, last_activity: 1000 } });
+        },
+        expectCleared: () => { expect(get(roomActivity)).toEqual({}); },
     },
     {
         name: 'activeChannelId',

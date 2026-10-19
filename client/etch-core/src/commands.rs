@@ -38,7 +38,8 @@ pub enum MatrixCommand {
     SetNameColor(Option<NameColor>),
     ResolveNameColors(Vec<String>),
     ChangePassword { current_password: String, new_password: String },
-    SendReadReceipt { room_id: String, event_id: String },
+    /// Marks the room read up to its latest event, which the core chooses.
+    MarkRead { room_id: String },
     PaginateBackwards { room_id: String },
     EnableEncryption { room_id: String },
     /// The first key when recovery is off, a replacement when it is on.

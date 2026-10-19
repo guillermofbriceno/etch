@@ -16,7 +16,6 @@ use crate::models::{RoomInfo, RoomType, VoiceServerConfig};
 
 pub async fn build_room_info(room: &Room) -> anyhow::Result<RoomInfo> {
     let config = get_room_config(room).await?;
-    let unread = room.unread_notification_counts();
 
     let avatar_url = match room.avatar_url() {
         Some(url) => Some(url.to_string()),
@@ -40,7 +39,6 @@ pub async fn build_room_info(room: &Room) -> anyhow::Result<RoomInfo> {
         etch_room_type: config.room_type,
         channel_id: config.channel_id,
         is_default: config.is_default,
-        unread_count: unread.notification_count,
         is_encrypted: room.latest_encryption_state().await.map(|s| s.is_encrypted()).unwrap_or(false),
         avatar_url,
     })

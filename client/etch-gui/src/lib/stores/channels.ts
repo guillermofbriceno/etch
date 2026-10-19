@@ -1,28 +1,14 @@
 import { writable, derived, get } from 'svelte/store';
-import type { RoomInfo, TimelineEntry } from '$lib/types';
+import type { RoomInfo } from '$lib/types';
 import type { MatrixEvent } from '$lib/ipc';
 import { sendCoreCommand } from '$lib/ipc';
-import { activeChannelId, onUnreadMessage } from './activeChannel';
+import { activeChannelId } from './activeChannel';
 import { setActiveChannel } from './messages';
-import { currentUser } from './user';
 import { isComposing } from './compose';
 import { followNewMessages } from './followMessages';
-import { notifyMessage } from './desktopNotifications';
 import { registerSessionStore, declareStores } from './session';
 
-/** Return the timestamp of the last Message in a list of entries, or null. */
-function lastMessageTs(entries: TimelineEntry[]): number | null {
-    for (let i = entries.length - 1; i >= 0; i--) {
-        const kind = entries[i].kind;
-        if (typeof kind === 'object' && 'Message' in kind) {
-            return kind.Message.timestamp;
-        }
-    }
-    return null;
-}
-
 export const channels = writable<RoomInfo[]>([]);
-export const dmLastActivity = writable<Record<string, number>>({});
 
 // --- Hidden DM state (Etch-level, not Matrix) ---
 
@@ -65,7 +51,7 @@ export function unhideDm(roomId: string): void {
     if (info) {
         channels.update(list => {
             if (list.some(c => c.id === roomId)) return list;
-            return [...list, { ...info, unread_count: 1 }];
+            return [...list, info];
         });
     }
 
@@ -74,38 +60,23 @@ export function unhideDm(roomId: string): void {
 
 const clearChannels = (): void => { channels.set([]); };
 const clearHiddenDmInfos = (): void => { hiddenDmInfos.set(new Map()); };
-const clearDmLastActivity = (): void => { dmLastActivity.set({}); };
 
 registerSessionStore('matrix', 'channels', clearChannels);
 registerSessionStore('matrix', 'hiddenDmInfos', clearHiddenDmInfos);
-registerSessionStore('matrix', 'dmLastActivity', clearDmLastActivity);
 
-// --- Unread / active channel bookkeeping ---
+// --- A new message from someone else ---
 
 // A draft travels with the composer, so following mid-message would send it to the wrong room.
-function followMessage(roomId: string): boolean {
-    if (!get(followNewMessages) || isComposing()) return false;
-    if (!get(channels).some(c => c.id === roomId)) return false;
+function followMessage(roomId: string): void {
+    if (!get(followNewMessages) || isComposing()) return;
+    if (!get(channels).some(c => c.id === roomId)) return;
     setActiveChannel(roomId);
-    return true;
 }
 
-export function initChannels(): void {
-    // Clear unread count when switching to a channel
-    activeChannelId.subscribe(id => {
-        if (!id) return;
-        channels.update(list =>
-            list.map(c => c.id === id ? { ...c, unread_count: 0 } : c)
-        );
-    });
-
-    // A message in a non-active channel is followed, or else counted as unread
-    onUnreadMessage((roomId: string) => {
-        if (followMessage(roomId)) return;
-        channels.update(list =>
-            list.map(c => c.id === roomId ? { ...c, unread_count: c.unread_count + 1 } : c)
-        );
-    });
+/** Brings back a hidden DM, and opens the room if the user follows new messages. */
+export function surfaceRoom(roomId: string): void {
+    unhideDm(roomId);
+    if (roomId !== get(activeChannelId)) followMessage(roomId);
 }
 
 export const activeChannel = derived(
@@ -153,34 +124,5 @@ export function handleMatrixEvent(me: MatrixEvent): void {
             return [...list, me.data];
         });
         setActiveChannel(me.data.id);
-    } else if (me.type === 'TimelinePushBack') {
-        const [roomId, entry] = me.data;
-        const kind = entry.kind;
-        if (typeof kind === 'object' && 'Message' in kind) {
-            const sender = kind.Message.sender;
-            if (sender && sender !== get(currentUser).matrixId) {
-                // Auto-unhide hidden DMs when the other person messages
-                if (get(hiddenDmIds).has(roomId)) {
-                    unhideDm(roomId);
-                    followMessage(roomId);
-                }
-                const senderName = entry.sender?.display_name ?? sender.slice(1).split(':')[0];
-                notifyMessage(get(channels).find(c => c.id === roomId), senderName, kind.Message);
-            }
-            // Update last-activity timestamp for DM sorting
-            dmLastActivity.update(m => ({ ...m, [roomId]: kind.Message.timestamp }));
-        }
-    } else if (me.type === 'TimelineAppend') {
-        const [roomId, entries] = me.data;
-        const ts = lastMessageTs(entries);
-        if (ts != null) {
-            dmLastActivity.update(m => ts >= (m[roomId] ?? 0) ? { ...m, [roomId]: ts } : m);
-        }
-    } else if (me.type === 'TimelineReset') {
-        const [roomId, entries] = me.data;
-        const ts = lastMessageTs(entries);
-        if (ts != null) {
-            dmLastActivity.update(m => ({ ...m, [roomId]: ts }));
-        }
     }
 }

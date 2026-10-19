@@ -4,6 +4,7 @@ pub mod client;
 pub mod encryption;
 pub mod name_colors;
 pub(crate) mod retry;
+pub(crate) mod room_activity;
 pub(crate) mod saved_session;
 pub mod service;
 pub mod sync;

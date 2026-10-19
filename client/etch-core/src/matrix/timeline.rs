@@ -2,17 +2,18 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, RwLock};
 use matrix_sdk::Room;
 use matrix_sdk::ruma::events::room::MediaSource;
-use matrix_sdk_ui::timeline::{Timeline, TimelineItem, TimelineItemContent,
+use matrix_sdk_ui::timeline::{Timeline, TimelineItem, TimelineItemContent, TimelineReadReceiptTracking,
     TimelineItemKind, RoomExt, EventTimelineItem, VirtualTimelineItem,
     MsgLikeKind, MembershipChange, AnyOtherFullStateEventContent,
     TimelineDetails, TimelineEventItemId};
 use matrix_sdk::ruma::events::FullStateEventContent;
 use matrix_sdk::ruma::{OwnedRoomId, RoomId, events::room::message::MessageType};
 use matrix_sdk_ui::eyeball_im::{Vector, VectorDiff};
-use futures_util::{FutureExt, Stream, StreamExt};
+use futures_util::{Stream, StreamExt};
 use tokio::sync::mpsc;
 use crate::events::{CoreEvent, MatrixEvent};
 use crate::matrix::name_colors::NameColorSender;
+use crate::matrix::room_activity::{ActivityFeed, ActivityWatch};
 use crate::models::ChatMessageReceive;
 use crate::models::MediaInfo;
 use crate::models::SenderProfile;
@@ -61,19 +62,19 @@ impl BoundedMediaSources {
 
 pub type MediaSourceMap = Arc<RwLock<BoundedMediaSources>>;
 
-/// The diff task must be dropped with its timeline, or a resubscribe leaves a duplicate
-/// stream running.
-struct RoomTimeline {
+/// Everything kept for one subscribed room; dropping it is the teardown, so a resubscribe
+/// cannot leave a duplicate stream or handler running.
+struct RoomSubscription {
     timeline: Arc<Timeline>,
     _diff_task: AbortOnDrop,
+    _activity: ActivityWatch,
 }
 
 pub struct TimelineManager {
-    timelines: HashMap<OwnedRoomId, RoomTimeline>,
+    timelines: HashMap<OwnedRoomId, RoomSubscription>,
     event_tx: mpsc::Sender<CoreEvent>,
     pub media_sources: MediaSourceMap,
     dispatcher: Arc<ScriptDispatcher>,
-    local_user_id: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -113,12 +114,7 @@ impl TimelineManager {
             event_tx,
             media_sources: Arc::new(RwLock::new(BoundedMediaSources::new(MEDIA_SOURCE_CACHE_CAP))),
             dispatcher,
-            local_user_id: None,
         }
-    }
-
-    pub fn set_local_user_id(&mut self, id: String) {
-        self.local_user_id = Some(id);
     }
 
     /// Clear all timeline subscriptions and the media source cache.
@@ -129,39 +125,52 @@ impl TimelineManager {
         sources.order.clear();
     }
 
-    // Subscribe to a room's timeline. Sends the initial batch of messages,
+    // Subscribe to a room's timeline and activity. Sends the initial batch of messages,
     // then spawns a task that loops on the diff stream forwarding changes
     // as CoreEvents. Does NOT paginate — call paginate_backwards separately.
+    // `name_colors` must be the current session's.
     pub async fn subscribe_to_room(&mut self, room: &Room, name_colors: NameColorSender) {
         let room_id = room.room_id();
-
-        let Ok(timeline) = room.timeline().await else {
+        // Receipts are tracked so the room's unread state and `mark_as_read` judge them alike.
+        let built = room.timeline_builder()
+            .track_read_marker_and_receipts(TimelineReadReceiptTracking::AllEvents)
+            .build().await;
+        let Ok(timeline) = built else {
             log::error!("Failed to get timeline for room: {}", room_id);
             return;
         };
+        // Dropped before the replacement starts, so the two never run side by side.
+        if self.timelines.remove(room_id).is_some() {
+            log::info!("[timeline] Room {room_id} resubscribed, replacing its previous subscription");
+        }
         let (initial_items, stream) = timeline.subscribe().await;
 
-        let feed = self.feed(room_id, name_colors);
+        let feed = self.feed(room_id);
         feed.send_initial(&initial_items).await;
         let diff_task = AbortOnDrop::new(tokio::spawn(feed.forward(stream)));
+        let timeline = Arc::new(timeline);
+        let activity = ActivityWatch::start(room, timeline.clone(), ActivityFeed {
+            event_tx: self.event_tx.clone(),
+            dispatcher: self.dispatcher.clone(),
+            name_colors,
+        });
 
-        // Replacing an entry drops it, aborting its diff task.
         self.timelines.insert(
             room_id.to_owned(),
-            RoomTimeline { timeline: Arc::new(timeline), _diff_task: diff_task },
+            RoomSubscription { timeline, _diff_task: diff_task, _activity: activity },
         );
     }
 
-    /// What a diff task for `room_id` reports to; `name_colors` must be the current session's.
-    fn feed(&self, room_id: &RoomId, name_colors: NameColorSender) -> RoomFeed {
+    fn feed(&self, room_id: &RoomId) -> RoomFeed {
         RoomFeed {
             room_id: room_id.to_string(),
             event_tx: self.event_tx.clone(),
             sources: self.media_sources.clone(),
-            dispatcher: self.dispatcher.clone(),
-            local_user_id: self.local_user_id.clone(),
-            name_colors,
         }
+    }
+
+    pub fn timeline(&self, room_id: &RoomId) -> Option<Arc<Timeline>> {
+        self.timelines.get(room_id).map(|entry| entry.timeline.clone())
     }
 
     /// Returns cloned Arc handles for all subscribed timelines.
@@ -259,15 +268,11 @@ impl TimelineManager {
     }
 }
 
-/// Where one room's timeline changes go: the frontend, the event scripts and the name color
-/// resolver.
+/// Where one room's timeline changes go.
 struct RoomFeed {
     room_id: String,
     event_tx: mpsc::Sender<CoreEvent>,
     sources: MediaSourceMap,
-    dispatcher: Arc<ScriptDispatcher>,
-    local_user_id: Option<String>,
-    name_colors: NameColorSender,
 }
 
 impl RoomFeed {
@@ -285,49 +290,16 @@ impl RoomFeed {
     }
 
     async fn forward(self, mut stream: impl Stream<Item = Vec<VectorDiff<Arc<TimelineItem>>>> + Unpin) {
-        // Diffs already buffered are backfill, not new messages.
-        loop {
-            match stream.next().now_or_never() {
-                Some(Some(diffs)) => {
-                    for diff in diffs {
-                        if let Some(event) = map_diff(diff, &self.room_id, &self.sources)
-                            && !self.send(event).await
-                        {
-                            return;
-                        }
-                    }
-                }
-                Some(None) => return,
-                None => break,
-            }
-        }
-
         while let Some(diffs) = stream.next().await {
             for diff in diffs {
-                if let Some(event) = map_diff(diff, &self.room_id, &self.sources) {
-                    self.on_live(&event);
-                    if !self.send(event).await {
-                        return;
-                    }
+                if let Some(event) = map_diff(diff, &self.room_id, &self.sources)
+                    && !self.send(event).await
+                {
+                    return;
                 }
             }
         }
         log::warn!("[timeline] Diff stream ended for room {}", self.room_id);
-    }
-
-    fn on_live(&self, event: &CoreEvent) {
-        let Some((entry, msg)) = new_message_from_other(event, self.local_user_id.as_deref()) else {
-            return;
-        };
-        let display = entry.sender.as_ref()
-            .and_then(|s| s.display_name.as_deref())
-            .unwrap_or(&msg.sender);
-        self.dispatcher.fire("new_message", &[
-            ("USER", display),
-            ("MESSAGE", &msg.body),
-            ("ROOM", &self.room_id),
-        ]);
-        self.name_colors.activity(&msg.sender);
     }
 
     async fn send(&self, event: CoreEvent) -> bool {
@@ -529,17 +501,6 @@ fn virtual_item_to_entry(virt: &VirtualTimelineItem) -> TimelineEntry {
     TimelineEntry { sender: None, kind }
 }
 
-/// A message appended by someone other than the local user; only diffs seen after the
-/// backfill drain are live.
-fn new_message_from_other<'a>(
-    event: &'a CoreEvent,
-    local_user_id: Option<&str>,
-) -> Option<(&'a TimelineEntry, &'a ChatMessageReceive)> {
-    let CoreEvent::Matrix(MatrixEvent::TimelinePushBack(_, entry)) = event else { return None };
-    let TimelineEntryKind::Message(msg) = &entry.kind else { return None };
-    (local_user_id != Some(msg.sender.as_str())).then_some((entry, msg))
-}
-
 fn map_diff(
     diff: VectorDiff<Arc<TimelineItem>>,
     rid: &str,
@@ -565,8 +526,12 @@ fn map_diff(
         VectorDiff::Remove { index } => {
             Some(MatrixEvent::TimelineRemove(rid.to_owned(), index))
         }
-        VectorDiff::Clear => Some(MatrixEvent::TimelineCleared(rid.to_owned())),
+        VectorDiff::Clear => {
+            log::debug!("[timeline] Room {rid} timeline cleared");
+            Some(MatrixEvent::TimelineCleared(rid.to_owned()))
+        }
         VectorDiff::Reset { values } => {
+            log::debug!("[timeline] Room {rid} timeline reset to {} items", values.len());
             Some(MatrixEvent::TimelineReset(rid.to_owned(),
                 values.iter().map(|item| timeline_item_to_entry(item, sources)).collect()))
         }
@@ -669,14 +634,11 @@ mod tests {
     }
 }
 
-// Tests for the diff-to-event mapper and the new-message script trigger. These
-// cover the pure decision logic; the SDK-driven paths (event_item_to_entry,
+// Tests for the diff-to-event mapper. The SDK-driven paths (event_item_to_entry,
 // subscribe/spawn) are exercised by the Docker integration suite instead.
 #[cfg(test)]
 mod diff_dispatch_tests {
     use super::*;
-    use crate::matrix::name_colors::Input as NameColorInput;
-    use std::time::Duration;
 
     fn sources() -> MediaSourceMap {
         Arc::new(RwLock::new(BoundedMediaSources::new(4)))
@@ -708,154 +670,5 @@ mod diff_dispatch_tests {
         assert!(map_diff(VectorDiff::PopBack, "!r:x", &sources()).is_none());
         assert!(map_diff(VectorDiff::PopFront, "!r:x", &sources()).is_none());
         assert!(map_diff(VectorDiff::Truncate { length: 0 }, "!r:x", &sources()).is_none());
-    }
-
-    fn message_pushback(rid: &str, sender: &str, body: &str, display: Option<&str>) -> CoreEvent {
-        let entry = TimelineEntry {
-            sender: display.map(|d| SenderProfile {
-                display_name: Some(d.to_string()),
-                avatar_url: None,
-            }),
-            kind: TimelineEntryKind::Message(Box::new(ChatMessageReceive {
-                id: "$evt:x".into(),
-                sender: sender.into(),
-                body: body.into(),
-                html_body: None,
-                media: None,
-                timestamp: 0,
-                edited: false,
-                reactions: HashMap::new(),
-            })),
-        };
-        CoreEvent::Matrix(MatrixEvent::TimelinePushBack(rid.to_string(), entry))
-    }
-
-    fn dispatcher_writing(out: &std::path::Path) -> ScriptDispatcher {
-        let script = format!(
-            "echo -n \"$ETCH_USER|$ETCH_MESSAGE|$ETCH_ROOM\" > {}",
-            out.display()
-        );
-        ScriptDispatcher::with_scripts(
-            [("new_message".to_string(), script)].into_iter().collect(),
-            Duration::from_millis(500),
-        )
-    }
-
-    fn feed(
-        dispatcher: ScriptDispatcher,
-        local_user_id: Option<&str>,
-    ) -> (RoomFeed, mpsc::Receiver<NameColorInput>) {
-        let (event_tx, _event_rx) = mpsc::channel(1);
-        let (name_colors, activity) = NameColorSender::test_channel();
-        let feed = RoomFeed {
-            room_id: "!room:x".into(),
-            event_tx,
-            sources: sources(),
-            dispatcher: Arc::new(dispatcher),
-            local_user_id: local_user_id.map(String::from),
-            name_colors,
-        };
-        (feed, activity)
-    }
-
-    fn reported_activity(activity: &mut mpsc::Receiver<NameColorInput>) -> Vec<String> {
-        let mut users = Vec::new();
-        while let Ok(input) = activity.try_recv() {
-            match input {
-                NameColorInput::Activity(user) => users.push(user),
-                _ => panic!("a timeline only reports activity"),
-            }
-        }
-        users
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn a_remote_message_fires_the_script_with_display_name_and_reports_activity() {
-        let dir = tempfile::tempdir().unwrap();
-        let out = dir.path().join("out");
-        let (feed, mut activity) = feed(dispatcher_writing(&out), Some("@me:x"));
-
-        feed.on_live(&message_pushback("!room:x", "@bob:x", "hello there", Some("Bob")));
-
-        assert_eq!(reported_activity(&mut activity), vec!["@bob:x".to_string()]);
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        let content = std::fs::read_to_string(&out).unwrap();
-        assert_eq!(content, "Bob|hello there|!room:x");
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn falls_back_to_sender_id_without_display_name() {
-        let dir = tempfile::tempdir().unwrap();
-        let out = dir.path().join("out");
-        let (feed, _) = feed(dispatcher_writing(&out), None);
-
-        feed.on_live(&message_pushback("!room:x", "@bob:x", "hi", None));
-
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        let content = std::fs::read_to_string(&out).unwrap();
-        assert_eq!(content, "@bob:x|hi|!room:x");
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn does_not_fire_for_own_message() {
-        let dir = tempfile::tempdir().unwrap();
-        let out = dir.path().join("out");
-        let (feed, _) = feed(dispatcher_writing(&out), Some("@me:x"));
-
-        feed.on_live(&message_pushback("!room:x", "@me:x", "my own message", None));
-
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        assert!(!out.exists(), "the local user's own message must not fire new_message");
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn does_not_fire_for_non_message_entry() {
-        let dir = tempfile::tempdir().unwrap();
-        let out = dir.path().join("out");
-        let (feed, _) = feed(dispatcher_writing(&out), None);
-
-        let entry = TimelineEntry {
-            sender: None,
-            kind: TimelineEntryKind::StateEvent(StateEventKind::MemberJoined {
-                user_id: "@bob:x".into(),
-            }),
-        };
-        feed.on_live(&CoreEvent::Matrix(MatrixEvent::TimelinePushBack("!room:x".into(), entry)));
-
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        assert!(!out.exists(), "a membership state event must not fire new_message");
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn backfilled_pushfront_neither_fires_nor_reports_activity() {
-        // Backfilled history arrives as PushFront; only live PushBack should
-        // trigger the new-message script.
-        let dir = tempfile::tempdir().unwrap();
-        let out = dir.path().join("out");
-        let (feed, mut activity) = feed(dispatcher_writing(&out), None);
-
-        let entry = TimelineEntry {
-            sender: None,
-            kind: TimelineEntryKind::Message(Box::new(ChatMessageReceive {
-                id: "$old:x".into(),
-                sender: "@bob:x".into(),
-                body: "old history".into(),
-                html_body: None,
-                media: None,
-                timestamp: 0,
-                edited: false,
-                reactions: HashMap::new(),
-            })),
-        };
-        feed.on_live(&CoreEvent::Matrix(MatrixEvent::TimelinePushFront("!room:x".into(), entry)));
-
-        assert!(reported_activity(&mut activity).is_empty(), "history is not activity");
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        assert!(!out.exists(), "backfilled PushFront history must not fire new_message");
     }
 }

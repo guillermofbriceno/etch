@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { channels, activeChannelId, setActiveChannel, openConnect, usersByChannel, setUserVolume, matrixStatus, matrixConnecting, connectingBookmark, hideDm, dmLastActivity, sidebarCollapsed, sidebarTransitioning, toggleSidebar } from '$lib/stores';
+    import { channels, activeChannelId, setActiveChannel, openConnect, usersByChannel, setUserVolume, matrixStatus, matrixConnecting, connectingBookmark, hideDm, unreadRooms, directMessages, sidebarCollapsed, sidebarTransitioning, toggleSidebar } from '$lib/stores';
     import { sendCoreCommand } from '$lib/ipc';
     import { resolveAvatarUrl, getInitial } from '$lib/media';
     import type { VoiceUser } from '$lib/stores/voiceState';
@@ -47,9 +47,7 @@
     $: textChannels  = $channels
         .filter(c => c.etch_room_type === 'Text')
         .sort((a, b) => (a.channel_id ?? 999) - (b.channel_id ?? 999));
-    $: dmChannels    = $channels
-        .filter(c => c.etch_room_type === 'Dm')
-        .sort((a, b) => ($dmLastActivity[b.id] ?? 0) - ($dmLastActivity[a.id] ?? 0));
+    $: dmChannels    = $directMessages;
 
     function toggleDropdown() {
         dropdownOpen = !dropdownOpen;
@@ -132,7 +130,7 @@
                 <h2 class="category-name">Voice Channels</h2>
                 <ul class="channel-list">
                     {#each voiceChannels as channel (channel.id)}
-                        <li class="channel-item" class:active={$activeChannelId === channel.id} class:unread={channel.unread_count > 0}>
+                        <li class="channel-item" class:active={$activeChannelId === channel.id} class:unread={$unreadRooms.has(channel.id)}>
                             <button class="channel-btn"
                                 on:click={() => handleVoiceClick(channel)}
                                 on:dblclick={() => handleVoiceDblClick(channel)}
@@ -159,7 +157,7 @@
                 <h2 class="category-name">Text Channels</h2>
                 <ul class="channel-list">
                     {#each textChannels as channel (channel.id)}
-                        <li class="channel-item" class:active={$activeChannelId === channel.id} class:unread={channel.unread_count > 0}>
+                        <li class="channel-item" class:active={$activeChannelId === channel.id} class:unread={$unreadRooms.has(channel.id)}>
                             <button class="channel-btn"
                                 on:click={() => setActiveChannel(channel.id)}
                                 title={channel.display_name}
@@ -179,7 +177,7 @@
                 <h2 class="category-name">Direct Messages</h2>
                 <ul class="channel-list">
                     {#each dmChannels as channel (channel.id)}
-                        <li class="channel-item dm-item" class:active={$activeChannelId === channel.id} class:unread={channel.unread_count > 0}>
+                        <li class="channel-item dm-item" class:active={$activeChannelId === channel.id} class:unread={$unreadRooms.has(channel.id)}>
                             <button class="channel-btn"
                                 on:click={() => setActiveChannel(channel.id)}
                                 title={channel.display_name}

@@ -2,27 +2,21 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { get } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
 import { desktopNotifications } from '../desktopNotifications';
-import { channels, handleMatrixEvent } from '../channels';
+import { channels } from '../channels';
+import { handleMatrixEvent } from '../newMessage';
 import { handleMumbleEvent } from '../voiceState';
 import { appFocused } from '../eventRouter';
 import { isDeafened } from '../audio';
 import { deafenSuppressesNotifs } from '../voiceSettings';
-import { currentUser } from '../user';
 import { resetStores } from './helpers';
 import type { RoomInfo } from '$lib/types';
 
 function room(id: string, name: string, type: RoomInfo['etch_room_type']): RoomInfo {
-    return { id, display_name: name, etch_room_type: type, channel_id: null, is_default: false, unread_count: 0, is_encrypted: false, avatar_url: null };
+    return { id, display_name: name, etch_room_type: type, channel_id: null, is_default: false, is_encrypted: false, avatar_url: null };
 }
 
-function receiveMessage(roomId: string, sender = '@alice:s') {
-    handleMatrixEvent({
-        type: 'TimelinePushBack',
-        data: [roomId, {
-            sender: { display_name: 'Alice', avatar_url: null },
-            kind: { Message: { id: 'e1', sender, body: 'see <you> at 5', html_body: null, media: null, timestamp: 1000, edited: false, reactions: {} } },
-        }],
-    } as any);
+function receiveMessage(roomId: string) {
+    handleMatrixEvent({ type: 'NewMessage', data: { room_id: roomId, sender_name: 'Alice', body: 'see <you> at 5' } });
 }
 
 function voiceUser(session_id: number, name: string, channel_id: number) {
@@ -39,7 +33,6 @@ function notifications() {
 beforeEach(() => {
     vi.useFakeTimers();
     resetStores();
-    currentUser.set({ username: 'me', matrixId: '@me:s', displayName: null, avatarUrl: null });
     channels.set([room('t1', 'general', 'Text'), room('v1', 'Lounge', 'Voice'), room('dm1', 'Alice', 'Dm')]);
 
     handleMumbleEvent({ type: 'ChannelState', data: { id: 1, name: 'Lounge', parent: 0 } } as any);
@@ -78,8 +71,7 @@ describe('desktop notifications', () => {
         ]);
     });
 
-    it('stays quiet for the user\'s own message and for voice activity in another channel', () => {
-        receiveMessage('t1', '@me:s');
+    it('stays quiet for voice activity in another channel', () => {
         voiceUser(2, 'bob', 7);
 
         expect(notifications()).toEqual([]);

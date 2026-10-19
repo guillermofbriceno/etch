@@ -1622,15 +1622,14 @@ mod tests {
             matrix,
             MockVoice::new(),
             tmp.path(),
-            vec![CoreCommand::Matrix(MatrixCommand::SendReadReceipt {
+            vec![CoreCommand::Matrix(MatrixCommand::MarkRead {
                 room_id: "!room:example.com".into(),
-                event_id: "$event123".into(),
             })],
         ).await;
 
         let cmds = matrix_state.commands.lock().unwrap();
         assert_eq!(cmds.len(), 1);
-        assert!(matches!(&cmds[0], MatrixCommand::SendReadReceipt { .. }));
+        assert!(matches!(&cmds[0], MatrixCommand::MarkRead { .. }));
     }
 
     #[tokio::test]
@@ -2251,9 +2250,8 @@ mod tests {
 
         let issued = timeout(Duration::from_secs(5), async {
             for i in 0..BURST {
-                cmd_tx.send(CoreCommand::Matrix(MatrixCommand::SendReadReceipt {
-                    room_id: "!room:example.com".into(),
-                    event_id: format!("${i}"),
+                cmd_tx.send(CoreCommand::Matrix(MatrixCommand::MarkRead {
+                    room_id: format!("!room{i}:example.com"),
                 })).await.unwrap();
                 cmd_tx.send(CoreCommand::Mumble(MumbleCommand::SetVadThreshold(i as f64 / 1000.0)))
                     .await.unwrap();
@@ -2284,11 +2282,11 @@ mod tests {
 
         let receipts: Vec<String> = matrix_state.commands.lock().unwrap().iter()
             .filter_map(|c| match c {
-                MatrixCommand::SendReadReceipt { event_id, .. } => Some(event_id.clone()),
+                MatrixCommand::MarkRead { room_id } => Some(room_id.clone()),
                 _ => None,
             })
             .collect();
-        let expected: Vec<String> = (0..BURST).map(|i| format!("${i}")).collect();
+        let expected: Vec<String> = (0..BURST).map(|i| format!("!room{i}:example.com")).collect();
         assert_eq!(receipts, expected, "commands held during the connect must all be served, in order");
     }
 

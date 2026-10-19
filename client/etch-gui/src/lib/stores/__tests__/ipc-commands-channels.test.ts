@@ -18,7 +18,7 @@ beforeEach(() => {
 });
 
 function makeRoom(id: string, name: string, type: 'Voice' | 'Text' | 'Dm' = 'Text'): RoomInfo {
-    return { id, display_name: name, etch_room_type: type, channel_id: null, is_default: false, unread_count: 0, is_encrypted: false, avatar_url: null };
+    return { id, display_name: name, etch_room_type: type, channel_id: null, is_default: false, is_encrypted: false, avatar_url: null };
 }
 
 describe('channels IPC commands', () => {
@@ -99,16 +99,6 @@ describe('channels IPC commands', () => {
             unhideDm('dm1');
 
             expect(get(channels).find(c => c.id === 'dm1')).toBeDefined();
-        });
-
-        it('restores the DM with unread_count of 1', () => {
-            channels.set([makeRoom('dm1', 'Alice', 'Dm'), makeRoom('t1', 'General')]);
-            activeChannelId.set('t1');
-            hideDm('dm1');
-
-            unhideDm('dm1');
-
-            expect(get(channels).find(c => c.id === 'dm1')?.unread_count).toBe(1);
         });
 
         it('is a no-op when the DM is not hidden', () => {

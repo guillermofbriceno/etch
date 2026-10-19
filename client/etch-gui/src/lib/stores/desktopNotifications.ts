@@ -1,6 +1,6 @@
 import { writable, get } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
-import type { ChatMessage, RoomInfo } from '$lib/types';
+import type { RoomInfo } from '$lib/types';
 import { appFocused } from './eventRouter';
 import { isDeafened } from './audio';
 import { deafenSuppressesNotifs } from './voiceSettings';
@@ -28,9 +28,9 @@ function roomLabel(room: RoomInfo): string {
     return room.etch_room_type === 'Text' ? `#${room.display_name}` : room.display_name;
 }
 
-export function notifyMessage(room: RoomInfo | undefined, senderName: string, message: ChatMessage): void {
+export function notifyMessage(room: RoomInfo | undefined, senderName: string, body: string): void {
     const title = !room || room.etch_room_type === 'Dm' ? senderName : `${senderName} in ${roomLabel(room)}`;
-    show('message', title, message.body);
+    show('message', title, body);
 }
 
 export function notifyVoicePresence(userName: string, joined: boolean, channelName: string | undefined): void {

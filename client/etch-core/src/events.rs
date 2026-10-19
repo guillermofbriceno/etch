@@ -26,6 +26,10 @@ pub enum MatrixEvent {
     TimelineReset(String, Vec<TimelineEntry>),
     ChannelList(Vec<RoomInfo>),
     DmCreated(RoomInfo),
+    /// A room's current values, sent when its subscription starts and whenever they change.
+    RoomActivity { room_id: String, unread: bool, last_activity: Option<u64> },
+    /// A message from someone else, arrived by sync after the room was subscribed.
+    NewMessage { room_id: String, sender_name: String, body: String },
     HomeserverResolved(String),
     CurrentUser { username: String, matrix_id: String, display_name: Option<String>, avatar_url: Option<String> },
     PasswordRequest,
