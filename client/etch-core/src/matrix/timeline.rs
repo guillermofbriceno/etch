@@ -102,6 +102,8 @@ pub enum TimelineEntryKind {
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct TimelineEntry {
+    /// The SDK's id for the item, which stays the same while the item is updated or moved.
+    pub id: String,
     pub sender: Option<SenderProfile>,
     pub kind: TimelineEntryKind,
 }
@@ -344,12 +346,13 @@ fn timeline_item_to_entry(
     item: &TimelineItem,
     sources: &MediaSourceMap,
 ) -> TimelineEntry {
+    let id = item.unique_id().0.clone();
     match item.kind() {
         TimelineItemKind::Event(event) => {
-            event_item_to_entry(event, sources)
+            event_item_to_entry(id, event, sources)
         }
         TimelineItemKind::Virtual(virt) => {
-            virtual_item_to_entry(virt)
+            virtual_item_to_entry(id, virt)
         }
     }
 }
@@ -378,6 +381,7 @@ fn extract_media_url(source: &MediaSource, sources: &MediaSourceMap) -> String {
 }
 
 fn event_item_to_entry(
+    id: String,
     event: &EventTimelineItem,
     sources: &MediaSourceMap,
 ) -> TimelineEntry {
@@ -514,10 +518,10 @@ fn event_item_to_entry(
         _ => TimelineEntryKind::Other,
     };
 
-    TimelineEntry { sender, kind }
+    TimelineEntry { id, sender, kind }
 }
 
-fn virtual_item_to_entry(virt: &VirtualTimelineItem) -> TimelineEntry {
+fn virtual_item_to_entry(id: String, virt: &VirtualTimelineItem) -> TimelineEntry {
     let kind = match virt {
         VirtualTimelineItem::DateDivider(ts) => {
             let millis: u64 = ts.0.into();
@@ -526,7 +530,7 @@ fn virtual_item_to_entry(virt: &VirtualTimelineItem) -> TimelineEntry {
         VirtualTimelineItem::ReadMarker => TimelineEntryKind::ReadMarker,
         _ => TimelineEntryKind::Other,
     };
-    TimelineEntry { sender: None, kind }
+    TimelineEntry { id, sender: None, kind }
 }
 
 /// A message appended by someone other than the local user; only diffs seen after the
@@ -712,6 +716,7 @@ mod diff_dispatch_tests {
 
     fn message_pushback(rid: &str, sender: &str, body: &str, display: Option<&str>) -> CoreEvent {
         let entry = TimelineEntry {
+            id: "__test".into(),
             sender: display.map(|d| SenderProfile {
                 display_name: Some(d.to_string()),
                 avatar_url: None,
@@ -819,6 +824,7 @@ mod diff_dispatch_tests {
         let (feed, _) = feed(dispatcher_writing(&out), None);
 
         let entry = TimelineEntry {
+            id: "__test".into(),
             sender: None,
             kind: TimelineEntryKind::StateEvent(StateEventKind::MemberJoined {
                 user_id: "@bob:x".into(),
@@ -840,6 +846,7 @@ mod diff_dispatch_tests {
         let (feed, mut activity) = feed(dispatcher_writing(&out), None);
 
         let entry = TimelineEntry {
+            id: "__test".into(),
             sender: None,
             kind: TimelineEntryKind::Message(Box::new(ChatMessageReceive {
                 id: "$old:x".into(),

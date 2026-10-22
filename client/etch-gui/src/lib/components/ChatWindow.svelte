@@ -2,7 +2,8 @@
     import { beforeUpdate, afterUpdate, onMount } from 'svelte';
     import { activeWindow, loadOlder, activeChannel, activeChannelId, openImage, openConnect, showRoomIds, encryptionStatus, unlockScreen, openEncryptionDialog, matrixStatus } from '$lib/stores';
     import { undecryptableLine } from '$lib/encryptionText';
-    import type { ChatMessage, TimelineEntry, TimelineEntryKind, StateEventKind } from '$lib/types';
+    import { timelineRows, type TimelineRow } from '$lib/timelineRows';
+    import type { TimelineEntry } from '$lib/types';
     import MessageGroup from './MessageGroup.svelte';
     import Icon from './Icon.svelte';
     import AvatarFallback from './AvatarFallback.svelte';
@@ -181,18 +182,6 @@
         return { destroy() { node.removeEventListener('click', handleClick); } };
     }
 
-    function isMessage(kind: TimelineEntryKind): kind is { Message: ChatMessage } {
-        return typeof kind === 'object' && 'Message' in kind;
-    }
-
-    function isStateEvent(kind: TimelineEntryKind): kind is { StateEvent: StateEventKind } {
-        return typeof kind === 'object' && 'StateEvent' in kind;
-    }
-
-    function isDayDivider(kind: TimelineEntryKind): kind is { DayDivider: number } {
-        return typeof kind === 'object' && 'DayDivider' in kind;
-    }
-
     const dayFormatter = new Intl.DateTimeFormat(undefined, {
         weekday: 'long',
         year: 'numeric',
@@ -204,56 +193,30 @@
         return dayFormatter.format(new Date(timestamp));
     }
 
-    function stateEventText(kind: StateEventKind): string {
-        if (typeof kind === 'string') return '';
-        if ('RoomNameChanged' in kind) return `Room name changed to ${kind.RoomNameChanged.name}`;
-        if ('RoomTopicChanged' in kind) return `Room topic changed to ${kind.RoomTopicChanged.topic}`;
-        if ('RoomAvatarChanged' in kind) return 'Room avatar was changed';
-        if ('MemberJoined' in kind) return `${kind.MemberJoined.user_id.split(':')[0]} joined the room`;
-        if ('MemberLeft' in kind) return `${kind.MemberLeft.user_id.split(':')[0]} left the room`;
-        if ('MemberInvited' in kind) return `${kind.MemberInvited.user_id.split(':')[0]} was invited`;
-        if ('MemberBanned' in kind) return `${kind.MemberBanned.user_id.split(':')[0]} was banned`;
-        return '';
+    $: rows = timelineRows($activeWindow.entries);
+
+    type StateGroup = Extract<TimelineRow, { type: 'stateGroup' }>;
+
+    // Holds entry ids, so a group stays open as the run grows at either end.
+    let openGroups = new Set<string>();
+    $: forgetOpenGroups($activeChannelId);
+
+    // Entry ids are unique only within a room.
+    function forgetOpenGroups(_room: string | null) {
+        openGroups = new Set();
     }
 
-    function rendersNothing(kind: TimelineEntryKind): boolean {
-        if (isStateEvent(kind)) return stateEventText(kind.StateEvent) === '';
-        return kind === 'ReadMarker' || kind === 'Redacted' || kind === 'Other';
+    function isOpen(group: StateGroup, open: Set<string>): boolean {
+        return group.lines.some((line) => open.has(line.id));
     }
 
-    /** How many undecryptable entries the line at `index` stands for: the whole run for its first entry, 0 for the rest. */
-    function undecryptableRun(entries: TimelineEntry[], index: number): number {
-        for (let i = index - 1; i >= 0; i--) {
-            const kind = entries[i].kind;
-            if (kind === 'Undecryptable') return 0;
-            if (!rendersNothing(kind)) break;
+    function toggleGroup(group: StateGroup) {
+        const open = isOpen(group, openGroups);
+        for (const line of group.lines) {
+            if (open) openGroups.delete(line.id);
+            else openGroups.add(line.id);
         }
-        let count = 0;
-        for (let i = index; i < entries.length; i++) {
-            const kind = entries[i].kind;
-            if (kind === 'Undecryptable') count++;
-            else if (!rendersNothing(kind)) break;
-        }
-        return count;
-    }
-
-    const GROUP_THRESHOLD_MS = 5 * 60 * 1000;
-
-    function isContinuation(entries: TimelineEntry[], index: number): boolean {
-        if (index === 0) return false;
-        const curr = entries[index];
-        const prev = entries[index - 1];
-        if (!isMessage(curr.kind) || !isMessage(prev.kind)) return false;
-        const currMsg = curr.kind.Message;
-        const prevMsg = prev.kind.Message;
-        return currMsg.sender === prevMsg.sender
-            && (currMsg.timestamp - prevMsg.timestamp) < GROUP_THRESHOLD_MS
-            && !currMsg.edited;
-    }
-
-    function entryKey(entry: TimelineEntry, index: number): string {
-        if (isMessage(entry.kind)) return entry.kind.Message.id;
-        return `entry-${index}`;
+        openGroups = openGroups;
     }
 </script>
 
@@ -289,34 +252,39 @@
         {/if}
 
         <div bind:this={contentElement}>
-            {#each $activeWindow.entries as entry, i (entryKey(entry, i))}
-                {#if isMessage(entry.kind)}
+            {#each rows as row (row.id)}
+                {#if row.type === 'message'}
                     <MessageGroup
-                        msg={entry.kind.Message}
-                        sender={entry.sender}
-                        continuation={isContinuation($activeWindow.entries, i)}
+                        msg={row.msg}
+                        sender={row.sender}
+                        continuation={row.continuation}
                         roomId={$activeChannelId ?? ''}
                     />
-                {:else if isDayDivider(entry.kind)}
+                {:else if row.type === 'dayDivider'}
                     <div class="day-divider">
-                        <span>{formatDayDivider(entry.kind.DayDivider)}</span>
+                        <span>{formatDayDivider(row.timestamp)}</span>
                     </div>
-                {:else if isStateEvent(entry.kind)}
-                    {@const text = stateEventText(entry.kind.StateEvent)}
-                    {#if text}
-                        <div class="state-event">{text}</div>
+                {:else if row.type === 'stateEvent'}
+                    <div class="state-event">{row.text}</div>
+                {:else if row.type === 'stateGroup'}
+                    {@const open = isOpen(row, openGroups)}
+                    <button class="state-group" class:open aria-expanded={open} on:click={() => toggleGroup(row)}>
+                        <Icon name="chevron_down" size={14} class="state-group-chevron" />
+                        <span>{row.summary}</span>
+                    </button>
+                    {#if open}
+                        {#each row.lines as line (line.id)}
+                            <div class="state-event grouped">{line.text}</div>
+                        {/each}
                     {/if}
-                {:else if entry.kind === 'Undecryptable'}
-                    {@const count = undecryptableRun($activeWindow.entries, i)}
-                    {#if count > 0}
-                        {@const line = undecryptableLine(count, unlockScreen($encryptionStatus.type))}
-                        {#if line.remedy}
-                            <button class="undecryptable" on:click={openEncryptionDialog}>
-                                {line.text} <span class="undecryptable-remedy">{line.remedy}</span>
-                            </button>
-                        {:else}
-                            <div class="undecryptable">{line.text}</div>
-                        {/if}
+                {:else}
+                    {@const line = undecryptableLine(row.count, unlockScreen($encryptionStatus.type))}
+                    {#if line.remedy}
+                        <button class="undecryptable" on:click={openEncryptionDialog}>
+                            {line.text} <span class="undecryptable-remedy">{line.remedy}</span>
+                        </button>
+                    {:else}
+                        <div class="undecryptable">{line.text}</div>
                     {/if}
                 {/if}
             {/each}
@@ -511,6 +479,33 @@
         font-style: italic;
         color: var(--text-muted);
     }
+
+    .state-group {
+        display: flex;
+        align-items: flex-start;
+        gap: 6px;
+        width: 100%;
+        padding: 4px 16px;
+        background: none;
+        border: none;
+        font-family: inherit;
+        font-size: 13px;
+        font-style: italic;
+        color: var(--text-muted);
+        text-align: left;
+        cursor: pointer;
+    }
+
+    .state-group:hover { color: var(--text-secondary); }
+    .state-group :global(.state-group-chevron) {
+        flex-shrink: 0;
+        margin-top: 2px;
+        transform: rotate(-90deg);
+        transition: transform 0.15s;
+    }
+    .state-group.open :global(.state-group-chevron) { transform: none; }
+
+    .state-event.grouped { padding-left: 36px; }
 
     /* --- Undecryptable messages --- */
     .undecryptable {
