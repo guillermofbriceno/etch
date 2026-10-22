@@ -57,6 +57,7 @@ export type TimelineEntryKind =
 
 // Matches Rust TimelineEntry struct (serde serialization)
 export type TimelineEntry = {
+    id: string;
     sender: SenderProfile | null;
     kind: TimelineEntryKind;
 };

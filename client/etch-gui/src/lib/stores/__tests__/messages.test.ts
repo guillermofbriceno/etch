@@ -11,6 +11,7 @@ beforeEach(() => {
 
 function makeEntry(id: string, body: string): TimelineEntry {
     return {
+        id,
         sender: { display_name: 'Test', avatar_url: null },
         kind: {
             Message: {

@@ -10,7 +10,7 @@ import { handleMatrixEvent as handleTimelineEvent } from '$lib/stores/messages';
 import {
     handleMatrixEvent as handleEncryptionEvent, encryptionPromptDismissed,
 } from '$lib/stores/encryption';
-import type { EncryptionStatus, TimelineEntry, TimelineEntryKind } from '$lib/types';
+import type { EncryptionStatus, StateEventKind, TimelineEntry, TimelineEntryKind } from '$lib/types';
 import ChatWindow from '../ChatWindow.svelte';
 
 vi.mock('$lib/markdown', () => ({
@@ -23,12 +23,15 @@ vi.mock('$lib/highlight', () => ({
 
 const ROOM = '!room:test';
 
+let nextId = 0;
+
 function entry(kind: TimelineEntryKind): TimelineEntry {
-    return { sender: null, kind };
+    return { id: `item-${++nextId}`, sender: null, kind };
 }
 
 function message(id: string, body: string): TimelineEntry {
     return {
+        id: `item-${++nextId}`,
         sender: { display_name: 'Alice', avatar_url: null },
         kind: {
             Message: {
@@ -40,6 +43,7 @@ function message(id: string, body: string): TimelineEntry {
 }
 
 const undecryptable = (): TimelineEntry => entry('Undecryptable');
+const joined = (user: string): TimelineEntry => entry({ StateEvent: { MemberJoined: { user_id: `@${user}:test` } } as StateEventKind });
 
 async function report(status: EncryptionStatus): Promise<void> {
     handleEncryptionEvent({ type: 'EncryptionStatus', data: status });
@@ -118,5 +122,39 @@ describe('the chat window with no channel', () => {
         await user.click(screen.getByRole('button', { name: 'Connect to a Server' }));
 
         expect(get(activeOverlay)).toBe('connect');
+    });
+});
+
+describe('runs of state events in the chat window', () => {
+    it('folds three or more in a row into one line, which a message ends and a read marker does not', async () => {
+        await show([
+            joined('alice'),
+            joined('bob'),
+            message('$between', 'hello'),
+            joined('carol'),
+            entry('ReadMarker'),
+            joined('dave'),
+            joined('erin'),
+        ], { type: 'Ready' });
+
+        expect(screen.getByText('@alice joined the room')).toBeInTheDocument();
+        expect(screen.getByText('@bob joined the room')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: '@carol, @dave and @erin joined' })).toBeInTheDocument();
+        expect(screen.queryByText('@carol joined the room'), 'a folded run shows only its summary').toBeNull();
+    });
+
+    it('stays open while older history extends it', async () => {
+        const user = userEvent.setup();
+        await show([joined('carol'), joined('dave'), joined('erin')], { type: 'Ready' });
+
+        await user.click(screen.getByRole('button', { name: '@carol, @dave and @erin joined' }));
+        expect(screen.getByText('@dave joined the room')).toBeInTheDocument();
+
+        handleTimelineEvent({ type: 'TimelinePushFront', data: [ROOM, joined('bob')] });
+        await tick();
+
+        const summary = screen.getByRole('button', { name: '@bob, @carol and 2 others joined' });
+        expect(summary).toHaveAttribute('aria-expanded', 'true');
+        expect(screen.getByText('@bob joined the room')).toBeInTheDocument();
     });
 });

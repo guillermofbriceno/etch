@@ -104,11 +104,13 @@ function msg(
         media?: ChatMessage['media'];
     } = {},
 ): TimelineEntry {
+    const id = `$demo-${++msgIdCounter}`;
     return {
+        id,
         sender: profile,
         kind: {
             Message: {
-                id: `$demo-${++msgIdCounter}`,
+                id,
                 sender,
                 body,
                 html_body: opts.html ?? null,
@@ -122,7 +124,7 @@ function msg(
 }
 
 function divider(timestamp: number): TimelineEntry {
-    return { sender: null, kind: { DayDivider: timestamp } };
+    return { id: `demo-divider-${timestamp}`, sender: null, kind: { DayDivider: timestamp } };
 }
 
 // ---------------------------------------------------------------------------

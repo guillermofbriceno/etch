@@ -105,6 +105,8 @@ pub enum TimelineEntryKind {
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct TimelineEntry {
+    /// The SDK's id for the item, which stays the same while the item is updated or moved.
+    pub id: String,
     pub sender: Option<SenderProfile>,
     pub kind: TimelineEntryKind,
 }
@@ -320,12 +322,13 @@ fn timeline_item_to_entry(
     item: &TimelineItem,
     sources: &MediaSourceMap,
 ) -> TimelineEntry {
+    let id = item.unique_id().0.clone();
     match item.kind() {
         TimelineItemKind::Event(event) => {
-            event_item_to_entry(event, sources)
+            event_item_to_entry(id, event, sources)
         }
         TimelineItemKind::Virtual(virt) => {
-            virtual_item_to_entry(virt)
+            virtual_item_to_entry(id, virt)
         }
     }
 }
@@ -354,6 +357,7 @@ fn extract_media_url(source: &MediaSource, sources: &MediaSourceMap) -> String {
 }
 
 fn event_item_to_entry(
+    id: String,
     event: &EventTimelineItem,
     sources: &MediaSourceMap,
 ) -> TimelineEntry {
@@ -490,10 +494,10 @@ fn event_item_to_entry(
         _ => TimelineEntryKind::Other,
     };
 
-    TimelineEntry { sender, kind }
+    TimelineEntry { id, sender, kind }
 }
 
-fn virtual_item_to_entry(virt: &VirtualTimelineItem) -> TimelineEntry {
+fn virtual_item_to_entry(id: String, virt: &VirtualTimelineItem) -> TimelineEntry {
     let kind = match virt {
         VirtualTimelineItem::DateDivider(ts) => {
             let millis: u64 = ts.0.into();
@@ -502,7 +506,7 @@ fn virtual_item_to_entry(virt: &VirtualTimelineItem) -> TimelineEntry {
         VirtualTimelineItem::ReadMarker => TimelineEntryKind::ReadMarker,
         _ => TimelineEntryKind::Other,
     };
-    TimelineEntry { sender: None, kind }
+    TimelineEntry { id, sender: None, kind }
 }
 
 fn map_diff(
