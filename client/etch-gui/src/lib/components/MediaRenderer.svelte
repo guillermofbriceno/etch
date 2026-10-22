@@ -6,7 +6,7 @@
 
     export let src: string;
     export let mimetype: string;
-    export let body: string;
+    export let filename: string;
     export let size = 0;
     export let width = 0;
     export let height = 0;
@@ -64,7 +64,7 @@
 
     async function downloadFile() {
         try {
-            await saveFileAs(body || 'attachment', await fetchBlob(src));
+            await saveFileAs(filename || 'attachment', await fetchBlob(src));
         } catch (e) {
             showToast(`Failed to download file: ${e}`);
         }
@@ -74,7 +74,7 @@
 <div class="media-attachment">
     {#if kind === 'image'}
         <button class="image-btn" on:click={() => openImage(src)}>
-            <img {src} alt={body} style={reserved} />
+            <img {src} alt={filename} style={reserved} />
         </button>
     {:else if kind === 'video'}
         <!-- svelte-ignore a11y_media_has_caption -->
@@ -82,7 +82,7 @@
     {:else if kind === 'audio'}
         <div class="audio-card">
             <div class="audio-label">
-                <span class="file-name">{body}</span>
+                <span class="file-name">{filename}</span>
                 {#if size > 0}<span class="file-size">{formatSize(size)}</span>{/if}
             </div>
             <audio controls preload="metadata" src={playbackUrl ?? undefined} on:error={playbackError}></audio>
@@ -90,7 +90,7 @@
     {:else}
         <button class="file-download" on:click={downloadFile}>
             <Icon name="file" size={16} class="file-icon" />
-            <span class="file-name">{body}</span>
+            <span class="file-name">{filename}</span>
             {#if size > 0}<span class="file-size">{formatSize(size)}</span>{/if}
             <Icon name="download" size={16} class="download-icon" />
         </button>

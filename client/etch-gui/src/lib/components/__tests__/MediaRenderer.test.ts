@@ -5,7 +5,7 @@ import MediaRenderer from '../MediaRenderer.svelte';
 
 const SRC = 'etch-media://example.org/abc123';
 
-type Props = { src?: string; mimetype: string; body: string; size?: number; width?: number; height?: number };
+type Props = { src?: string; mimetype: string; filename: string; size?: number; width?: number; height?: number };
 
 function renderMedia(props: Props) {
     return render(MediaRenderer, { props: { src: SRC, ...props } });
@@ -37,11 +37,11 @@ describe('MediaRenderer', () => {
     // WebKitGTK cannot stream an etch-media URL, so a player must only ever be given the blob.
     it('plays video and audio inline from a blob of the fetched bytes, typed with the mimetype', async () => {
         const cases = [
-            { tag: 'video', mimetype: 'video/mp4', body: 'clip.mp4' },
-            { tag: 'audio', mimetype: 'audio/ogg', body: 'voice.ogg' },
+            { tag: 'video', mimetype: 'video/mp4', filename: 'clip.mp4' },
+            { tag: 'audio', mimetype: 'audio/ogg', filename: 'voice.ogg' },
         ];
-        for (const [i, { tag, mimetype, body }] of cases.entries()) {
-            const { container } = renderMedia({ mimetype, body });
+        for (const [i, { tag, mimetype, filename }] of cases.entries()) {
+            const { container } = renderMedia({ mimetype, filename });
 
             const player = container.querySelector(tag)!;
             expect(player.hasAttribute('src'), tag).toBe(false);
@@ -53,7 +53,7 @@ describe('MediaRenderer', () => {
     });
 
     it('offers a video the webview cannot play as a download and releases its blob', async () => {
-        const { container } = renderMedia({ mimetype: 'video/x-matroska', body: 'clip.mkv' });
+        const { container } = renderMedia({ mimetype: 'video/x-matroska', filename: 'clip.mkv' });
         const video = container.querySelector('video')!;
         await waitFor(() => expect(video.getAttribute('src')).toBe('blob:media-1'));
 
@@ -66,14 +66,14 @@ describe('MediaRenderer', () => {
 
     it('offers a video as a download when its bytes cannot be fetched', async () => {
         fetchMock.mockResolvedValueOnce({ ok: false, status: 502, arrayBuffer: async () => new ArrayBuffer(0) });
-        const { container } = renderMedia({ mimetype: 'video/mp4', body: 'clip.mp4' });
+        const { container } = renderMedia({ mimetype: 'video/mp4', filename: 'clip.mp4' });
 
         await waitFor(() => expect(container.querySelector('.file-download')).toBeInTheDocument());
         expect(container.querySelector('video')).not.toBeInTheDocument();
     });
 
     it('offers video over the inline playback size as a download without fetching it', () => {
-        const { container } = renderMedia({ mimetype: 'video/mp4', body: 'long.mp4', size: 20 * 1024 * 1024 + 1 });
+        const { container } = renderMedia({ mimetype: 'video/mp4', filename: 'long.mp4', size: 20 * 1024 * 1024 + 1 });
 
         expect(container.querySelector('video')).not.toBeInTheDocument();
         expect(container.querySelector('.file-download')).toBeInTheDocument();
@@ -81,7 +81,7 @@ describe('MediaRenderer', () => {
     });
 
     it('releases the blob when the message goes away', async () => {
-        const { container, unmount } = renderMedia({ mimetype: 'video/mp4', body: 'clip.mp4' });
+        const { container, unmount } = renderMedia({ mimetype: 'video/mp4', filename: 'clip.mp4' });
         await waitFor(() => expect(container.querySelector('video')!.getAttribute('src')).toBe('blob:media-1'));
 
         unmount();
@@ -92,7 +92,7 @@ describe('MediaRenderer', () => {
     it('ignores a fetch that finishes after the source changed', async () => {
         let finishFirst: (value: unknown) => void = () => {};
         fetchMock.mockImplementationOnce(() => new Promise((resolve) => { finishFirst = resolve; }));
-        const { container, rerender } = renderMedia({ mimetype: 'video/mp4', body: 'clip.mp4' });
+        const { container, rerender } = renderMedia({ mimetype: 'video/mp4', filename: 'clip.mp4' });
 
         await rerender({ src: 'etch-media://example.org/other' });
         const video = container.querySelector('video')!;
@@ -105,11 +105,11 @@ describe('MediaRenderer', () => {
     });
 
     it('shows an image inline, but offers an SVG or any other file as a download', () => {
-        const gif = renderMedia({ mimetype: 'image/gif', body: 'party.gif' }).container;
+        const gif = renderMedia({ mimetype: 'image/gif', filename: 'party.gif' }).container;
         expect(gif.querySelector('img')?.getAttribute('src')).toBe(SRC);
 
-        for (const [mimetype, body] of [['image/svg+xml', 'logo.svg'], ['application/pdf', 'notes.pdf']]) {
-            const { container } = renderMedia({ mimetype, body });
+        for (const [mimetype, filename] of [['image/svg+xml', 'logo.svg'], ['application/pdf', 'notes.pdf']]) {
+            const { container } = renderMedia({ mimetype, filename });
             expect(container.querySelector('img, video, audio'), mimetype).not.toBeInTheDocument();
             expect(container.querySelector('.file-download'), mimetype).toBeInTheDocument();
         }
@@ -117,7 +117,7 @@ describe('MediaRenderer', () => {
 
     // The webview may not write files, so the shell is given the bytes and asks where to put them.
     it('hands a download to the shell with its bytes and its name', async () => {
-        const { container } = renderMedia({ mimetype: 'application/pdf', body: 'résumé.pdf' });
+        const { container } = renderMedia({ mimetype: 'application/pdf', filename: 'résumé.pdf' });
 
         await fireEvent.click(container.querySelector('.file-download')!);
 
@@ -129,12 +129,12 @@ describe('MediaRenderer', () => {
     });
 
     it('reserves the scaled size of media before it loads, when the dimensions are known', () => {
-        const known = renderMedia({ mimetype: 'image/jpeg', body: 'photo.jpg', width: 1600, height: 1200 }).container;
+        const known = renderMedia({ mimetype: 'image/jpeg', filename: 'photo.jpg', width: 1600, height: 1200 }).container;
         const img = known.querySelector('img')!;
         expect(img.style.width).toBe('400px');
         expect(img.style.aspectRatio).toBe('1600 / 1200');
 
-        const unknown = renderMedia({ mimetype: 'image/png', body: 'photo.png', width: 0, height: 0 }).container;
+        const unknown = renderMedia({ mimetype: 'image/png', filename: 'photo.png', width: 0, height: 0 }).container;
         expect(unknown.querySelector('img')!.getAttribute('style')).toBeNull();
     });
 });

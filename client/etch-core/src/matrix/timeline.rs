@@ -375,8 +375,10 @@ fn event_item_to_entry(
 
                         MessageType::File(file) => {
                             let info = file.info.as_deref();
-                            (None, Some(MediaInfo {
+                            (file.formatted_caption().map(|f| f.body.clone()), Some(MediaInfo {
                                   mxc_url: extract_media_url(&file.source, sources),
+                                  filename: file.filename().to_owned(),
+                                  caption: file.caption().map(str::to_owned),
                                   mimetype: info.and_then(|i| i.mimetype.clone()).unwrap_or_default(),
                                   size: info.and_then(|i| i.size).unwrap_or_default().into(),
                                   width: 0,
@@ -387,8 +389,10 @@ fn event_item_to_entry(
 
                         MessageType::Image(image) => {
                             let info = image.info.as_deref();
-                            (None, Some(MediaInfo {
+                            (image.formatted_caption().map(|f| f.body.clone()), Some(MediaInfo {
                                   mxc_url: extract_media_url(&image.source, sources),
+                                  filename: image.filename().to_owned(),
+                                  caption: image.caption().map(str::to_owned),
                                   mimetype: info.and_then(|i| i.mimetype.clone()).unwrap_or_default(),
                                   size: info.and_then(|i| i.size).unwrap_or_default().into(),
                                   width: info.and_then(|i| i.width).unwrap_or_default().into(),
@@ -399,8 +403,10 @@ fn event_item_to_entry(
 
                         MessageType::Video(video) => {
                             let info = video.info.as_deref();
-                            (None, Some(MediaInfo {
+                            (video.formatted_caption().map(|f| f.body.clone()), Some(MediaInfo {
                                   mxc_url: extract_media_url(&video.source, sources),
+                                  filename: video.filename().to_owned(),
+                                  caption: video.caption().map(str::to_owned),
                                   mimetype: info.and_then(|i| i.mimetype.clone()).unwrap_or_default(),
                                   size: info.and_then(|i| i.size).unwrap_or_default().into(),
                                   width: info.and_then(|i| i.width).unwrap_or_default().into(),
@@ -411,8 +417,10 @@ fn event_item_to_entry(
 
                         MessageType::Audio(audio) => {
                             let info = audio.info.as_deref();
-                            (None, Some(MediaInfo {
+                            (audio.formatted_caption().map(|f| f.body.clone()), Some(MediaInfo {
                                   mxc_url: extract_media_url(&audio.source, sources),
+                                  filename: audio.filename().to_owned(),
+                                  caption: audio.caption().map(str::to_owned),
                                   mimetype: info.and_then(|i| i.mimetype.clone()).unwrap_or_default(),
                                   size: info.and_then(|i| i.size).unwrap_or_default().into(),
                                   width: 0,

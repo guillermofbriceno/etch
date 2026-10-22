@@ -627,8 +627,8 @@ async fn an_attachment_reaches_another_user_intact_with_its_type_size_and_measur
         let received = bob.expect_attachment(&room_id, &name).await;
         for (who, media) in [("its sender", &sent), ("another user", &received)] {
             assert_eq!(
-                (media.mimetype.as_str(), media.size, media.width, media.height, media.duration),
-                (mimetype, bytes.len() as u64, width, height, duration),
+                (media.filename.as_str(), media.caption.as_deref(), media.mimetype.as_str(), media.size, media.width, media.height, media.duration),
+                (name.as_str(), None, mimetype, bytes.len() as u64, width, height, duration),
                 "{name} in {room}, as {who} sees it",
             );
         }
@@ -642,6 +642,41 @@ async fn an_attachment_reaches_another_user_intact_with_its_type_size_and_measur
 
     alice.shutdown().await;
     bob.shutdown().await;
+}
+
+/// Other clients send a caption in `body` and the file's name in `filename`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_captioned_image_from_another_client_keeps_its_caption_apart_from_its_filename() {
+    use matrix_sdk::ruma::events::room::message::{FormattedBody, ImageMessageEventContent, MessageType, RoomMessageEventContent};
+
+    let mut alice = TestHarness::new();
+    let rooms = alice.connect().await;
+    let room_id = TestHarness::find_room(&rooms, "Plaintext Room").id.clone();
+
+    let caption = unique("look at this");
+    let mut image = ImageMessageEventContent::plain(caption.clone(), "mxc://localhost/captioned".into());
+    image.filename = Some("photo.jpg".into());
+    image.formatted = Some(FormattedBody::html(format!("<b>{caption}</b>")));
+    let bob = synced_sender("bob", "bob_password").await;
+    let room = bob.get_room(&matrix_sdk::ruma::RoomId::parse(&room_id).unwrap()).expect("bob is in the room");
+    room.send(RoomMessageEventContent::new(MessageType::Image(image))).await.expect("the image should send");
+
+    let wanted = caption.clone();
+    let (html_body, media) = alice.expect_event(move |e| {
+        let (event_room, entries) = timeline_entries(e)?;
+        if event_room != room_id { return None; }
+        entries.iter().find_map(|entry| match &entry.kind {
+            TimelineEntryKind::Message(msg) if msg.body == wanted => Some((msg.html_body.clone(), msg.media.clone()?)),
+            _ => None,
+        })
+    }, EVENT_TIMEOUT).await;
+
+    assert_eq!(
+        (media.filename.as_str(), media.caption.as_deref(), html_body),
+        ("photo.jpg", Some(caption.as_str()), Some(format!("<b>{caption}</b>"))),
+    );
+
+    alice.shutdown().await;
 }
 
 /// Avatars ask for a thumbnail, because WebKitGTK shrinks a full size image to avatar size crudely.

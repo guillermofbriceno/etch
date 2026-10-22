@@ -8,6 +8,8 @@
 // Matches Rust MediaInfo struct (serde serialization)
 export type MediaInfo = {
     mxc_url: string;
+    filename: string;
+    caption: string | null;
     mimetype: string;
     size: number;
     width: number;

@@ -18,6 +18,8 @@
     export let continuation: boolean;
     export let roomId: string;
 
+    $: text = msg.media ? msg.media.caption : msg.body;
+
     const COLLAPSE_THRESHOLD = 300;
     let bodyEl: HTMLElement;
     let needsCollapse = false;
@@ -147,37 +149,37 @@
             </div>
         {/if}
 
-        {#if !msg.media}
-            <div class="body-wrapper" class:collapsed={needsCollapse && collapsed}>
-                <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
-                <div
-                    class="body"
-                    bind:this={bodyEl}
-                    use:processBody={{ htmlBody: msg.html_body, selfId: $currentUser.matrixId }}
-                    use:collapseWatch={msg.body + (msg.html_body ?? '')}
-                    on:click={handleLinkClick}
-                >
-                    {@html messageBody(msg.body, msg.html_body)}
-                </div>
-            </div>
-            {#if needsCollapse}
-                <button class="collapse-toggle" on:click={toggleCollapse}>
-                    {collapsed ? 'See more' : 'See less'}
-                </button>
-            {/if}
-        {/if}
-
         {#if msg.media}
             {@const mediaSrc = resolveMediaUrl(msg.media.mxc_url)}
             {#if mediaSrc}
                 <MediaRenderer
                     src={mediaSrc}
                     mimetype={msg.media.mimetype}
-                    body={msg.body}
+                    filename={msg.media.filename}
                     size={msg.media.size}
                     width={msg.media.width}
                     height={msg.media.height}
                 />
+            {/if}
+        {/if}
+
+        {#if text !== null}
+            <div class="body-wrapper" class:collapsed={needsCollapse && collapsed}>
+                <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
+                <div
+                    class="body"
+                    bind:this={bodyEl}
+                    use:processBody={{ htmlBody: msg.html_body, selfId: $currentUser.matrixId }}
+                    use:collapseWatch={text + (msg.html_body ?? '')}
+                    on:click={handleLinkClick}
+                >
+                    {@html messageBody(text, msg.html_body)}
+                </div>
+            </div>
+            {#if needsCollapse}
+                <button class="collapse-toggle" on:click={toggleCollapse}>
+                    {collapsed ? 'See more' : 'See less'}
+                </button>
             {/if}
         {/if}
 

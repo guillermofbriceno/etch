@@ -256,7 +256,7 @@ describe('MessageGroup media', () => {
     function mediaMsg(body: string, mimetype: string, extra: Partial<NonNullable<ChatMessage['media']>> = {}) {
         return makeMsg({
             body,
-            media: { mxc_url: 'mxc://example.org/abc123', mimetype, size: 0, width: 0, height: 0, duration: 0, ...extra },
+            media: { mxc_url: 'mxc://example.org/abc123', filename: body, caption: null, mimetype, size: 0, width: 0, height: 0, duration: 0, ...extra },
         });
     }
 
@@ -280,6 +280,24 @@ describe('MessageGroup media', () => {
         }).container;
         expect(video.querySelector('.file-download')).toBeInTheDocument();
         expect(video.querySelector('video')).not.toBeInTheDocument();
+    });
+
+    it('shows a caption as text under the attachment, and names the file by its filename', () => {
+        const { container } = render(MessageGroup, {
+            props: {
+                msg: mediaMsg('quarterly numbers', 'application/pdf', { filename: 'report.pdf', caption: 'quarterly numbers' }),
+                sender,
+                continuation: false,
+                roomId: '!room:test',
+            },
+        });
+        expect(container.querySelector('.file-name')).toHaveTextContent('report.pdf');
+        expect(container.querySelector('.body')).toHaveTextContent('quarterly numbers');
+
+        const uncaptioned = render(MessageGroup, {
+            props: { msg: mediaMsg('report.pdf', 'application/pdf'), sender, continuation: false, roomId: '!room:test' },
+        }).container;
+        expect(uncaptioned.querySelector('.body')).not.toBeInTheDocument();
     });
 });
 

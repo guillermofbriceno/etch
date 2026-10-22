@@ -150,6 +150,8 @@ const generalEntries: TimelineEntry[] = [
     msg(USER.kira, PROFILE.kira, 'feathered dinos are making their way out to exhibits', t(NOW, -5, 43), {
         media: {
             mxc_url: '/demo_dino.png',
+            filename: 'demo_dino.png',
+            caption: 'feathered dinos are making their way out to exhibits',
             mimetype: 'image/png',
             size: 447679,
             width: 639,

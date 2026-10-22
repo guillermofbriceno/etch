@@ -60,6 +60,8 @@ pub struct SenderProfile {
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct MediaInfo {
     pub mxc_url: String,
+    pub filename: String,
+    pub caption: Option<String>,
     pub mimetype: String,
     pub size: u64,
     pub width: u64,
