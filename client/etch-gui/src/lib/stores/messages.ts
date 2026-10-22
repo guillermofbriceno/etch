@@ -3,15 +3,9 @@ import type { TimelineEntry } from '$lib/types';
 import type { MatrixEvent } from '$lib/ipc';
 import { sendCoreCommand } from '$lib/ipc';
 import { probeMediaInfo, type AttachedFile } from '$lib/attachments';
-import { currentUser } from './user';
-import { playSfx } from './sfx';
-import { appFocused } from './eventRouter';
-import { activeChannelId, emitUnreadMessage } from './activeChannel';
+import { activeChannelId } from './activeChannel';
 import { registerSessionStore, declareStores } from './session';
 import { showToast } from './errors';
-
-let lastNotifTime = 0;
-const NOTIF_COOLDOWN_MS = 20_000;
 
 type ChannelWindow = {
     entries: TimelineEntry[];
@@ -39,25 +33,10 @@ function ensureWindowExists(room_id: string): void {
     }));
 }
 
-// Switch active channel, ensure its message window exists, and send a read receipt
+// Switch active channel and ensure its message window exists
 export function setActiveChannel(id: string): void {
     activeChannelId.set(id);
     ensureWindowExists(id);
-
-    // Send read receipt for the last message in the channel
-    const win = get(messageWindows)[id];
-    if (win) {
-        for (let i = win.entries.length - 1; i >= 0; i--) {
-            const kind = win.entries[i].kind;
-            if (typeof kind === 'object' && 'Message' in kind) {
-                sendCoreCommand({
-                    type: 'Matrix',
-                    data: { type: 'SendReadReceipt', data: { room_id: id, event_id: kind.Message.id } },
-                });
-                break;
-            }
-        }
-    }
 }
 
 export function loadOlder(): void {
@@ -149,25 +128,6 @@ export function handleMatrixEvent(me: MatrixEvent): void {
                 const win = getWindow(w, roomId);
                 return { ...w, [roomId]: { ...win, entries: [...win.entries, entry] } };
             });
-
-            // Notification sound: ring if message is from someone else AND
-            // either the app is unfocused or the room isn't the active channel.
-            const kind = entry.kind;
-            if (typeof kind === 'object' && 'Message' in kind) {
-                const sender = kind.Message.sender;
-                const self = get(currentUser).matrixId;
-                if (sender && sender !== self) {
-                    const active = get(activeChannelId);
-                    if (roomId !== active) {
-                        emitUnreadMessage(roomId);
-                    }
-                    const now = Date.now();
-                    if ((!get(appFocused) || roomId !== active) && now - lastNotifTime >= NOTIF_COOLDOWN_MS) {
-                        lastNotifTime = now;
-                        playSfx('new_notif');
-                    }
-                }
-            }
             break;
         }
         case 'TimelinePushFront': {

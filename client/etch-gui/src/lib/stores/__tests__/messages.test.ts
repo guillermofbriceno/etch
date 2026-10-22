@@ -1,23 +1,12 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { get } from 'svelte/store';
 import { activeWindow, handleMatrixEvent } from '../messages';
 import { activeChannelId } from '../activeChannel';
-import { currentUser } from '../user';
-import { appFocused } from '../eventRouter';
 import { resetStores } from './helpers';
 import type { TimelineEntry } from '$lib/types';
 
-vi.mock('../sfx', () => ({
-    playSfx: vi.fn(),
-    setSfxDeafened: vi.fn(),
-    sfxVolume: { subscribe: vi.fn() },
-}));
-
-import * as sfx from '../sfx';
-
 beforeEach(() => {
     resetStores();
-    vi.mocked(sfx.playSfx).mockClear();
 });
 
 function makeEntry(id: string, body: string): TimelineEntry {
@@ -407,114 +396,5 @@ describe('activeWindow (derived)', () => {
         expect(win.entries).toEqual([]);
         expect(win.hasMore).toBe(true);
         expect(win.loading).toBe(false);
-    });
-});
-
-describe('notification sounds', () => {
-    const ROOM = 'notif-room';
-
-    // lastNotifTime is a private module-level variable that persists between
-    // tests. Each test needs a fake clock that's at least 20s ahead of the
-    // previous test's notification time. We increment the base by 30s per test
-    // so the cooldown always passes at the start of each test.
-    let fakeTime = Date.UTC(2099, 0, 1);
-
-    function pushMessage(roomId: string, senderId: string, body: string) {
-        handleMatrixEvent({
-            type: 'TimelinePushBack',
-            data: [roomId, {
-                sender: { display_name: 'User', avatar_url: null },
-                kind: { Message: { id: `$${body}`, sender: senderId, body, html_body: null, media: null, timestamp: Date.now(), edited: false, reactions: {} } },
-            }],
-        } as any);
-    }
-
-    beforeEach(() => {
-        fakeTime += 30_000;
-        vi.useFakeTimers({ now: fakeTime });
-        handleMatrixEvent({ type: 'TimelineCleared', data: ROOM } as any);
-        currentUser.set({ username: 'me', matrixId: '@me:s', displayName: null, avatarUrl: null });
-        activeChannelId.set(ROOM);
-        appFocused.set(true);
-    });
-
-    afterEach(() => {
-        vi.useRealTimers();
-    });
-
-    it('does not play sound for self-messages', () => {
-        pushMessage(ROOM, '@me:s', 'my own message');
-
-        expect(vi.mocked(sfx.playSfx)).not.toHaveBeenCalledWith('new_notif');
-    });
-
-    it('does not play sound when app is focused and message is in the active room', () => {
-        appFocused.set(true);
-        activeChannelId.set(ROOM);
-
-        pushMessage(ROOM, '@other:s', 'hello');
-
-        expect(vi.mocked(sfx.playSfx)).not.toHaveBeenCalledWith('new_notif');
-    });
-
-    it('plays sound when message is in a non-active room', () => {
-        appFocused.set(true);
-        activeChannelId.set('other-room');
-
-        pushMessage(ROOM, '@other:s', 'hello');
-
-        expect(vi.mocked(sfx.playSfx)).toHaveBeenCalledWith('new_notif');
-    });
-
-    it('plays sound when app is unfocused even in the active room', () => {
-        appFocused.set(false);
-        activeChannelId.set(ROOM);
-
-        pushMessage(ROOM, '@other:s', 'hello');
-
-        expect(vi.mocked(sfx.playSfx)).toHaveBeenCalledWith('new_notif');
-    });
-
-    it('respects the 20-second cooldown between notification sounds', () => {
-        appFocused.set(false);
-
-        pushMessage(ROOM, '@other:s', 'first');
-        expect(vi.mocked(sfx.playSfx)).toHaveBeenCalledWith('new_notif');
-        vi.mocked(sfx.playSfx).mockClear();
-
-        // Second message within 20s -- should not play
-        vi.advanceTimersByTime(10_000);
-        pushMessage(ROOM, '@other:s', 'second');
-        expect(vi.mocked(sfx.playSfx)).not.toHaveBeenCalledWith('new_notif');
-
-        // After 20s total -- should play again
-        vi.advanceTimersByTime(10_000);
-        pushMessage(ROOM, '@other:s', 'third');
-        expect(vi.mocked(sfx.playSfx)).toHaveBeenCalledWith('new_notif');
-    });
-
-    it('does not play sound for non-Message timeline entries', () => {
-        appFocused.set(false);
-
-        handleMatrixEvent({
-            type: 'TimelinePushBack',
-            data: [ROOM, { sender: null, kind: 'ReadMarker' }],
-        } as any);
-
-        expect(vi.mocked(sfx.playSfx)).not.toHaveBeenCalledWith('new_notif');
-    });
-
-    it('does not play sound for StateEvent entries', () => {
-        appFocused.set(false);
-
-        handleMatrixEvent({
-            type: 'TimelinePushBack',
-            data: [ROOM, {
-                sender: { display_name: 'Alice', avatar_url: null },
-                kind: { StateEvent: { MemberJoined: { user_id: '@alice:s' } } },
-            }],
-        } as any);
-
-        expect(vi.mocked(sfx.playSfx)).not.toHaveBeenCalledWith('new_notif');
     });
 });

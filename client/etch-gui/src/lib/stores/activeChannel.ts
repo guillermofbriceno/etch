@@ -11,16 +11,3 @@ export function resetActiveChannel(): void {
 }
 
 registerSessionStore('matrix', 'activeChannelId', resetActiveChannel);
-
-// Simple pub/sub for unread message notifications.
-// messages.ts publishes via emitUnreadMessage(), channels.ts subscribes via onUnreadMessage().
-type UnreadListener = (roomId: string) => void;
-let _unreadListener: UnreadListener | null = null;
-
-export function onUnreadMessage(fn: UnreadListener): void {
-    _unreadListener = fn;
-}
-
-export function emitUnreadMessage(roomId: string): void {
-    _unreadListener?.(roomId);
-}

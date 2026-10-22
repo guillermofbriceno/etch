@@ -14,6 +14,8 @@ export type MatrixEvent =
     | { type: 'TimelineReset'; data: [string, TimelineEntry[]] }
     | { type: 'ChannelList'; data: RoomInfo[] }
     | { type: 'DmCreated'; data: RoomInfo }
+    | { type: 'RoomActivity'; data: { room_id: string; unread: boolean; last_activity: number | null } }
+    | { type: 'NewMessage'; data: { room_id: string; sender_name: string; body: string } }
     | { type: 'HomeserverResolved'; data: string }
     | { type: 'CurrentUser'; data: { username: string; matrix_id: string; display_name: string | null; avatar_url: string | null } }
     | { type: 'PasswordRequest' }
@@ -71,7 +73,7 @@ export type MatrixCommand =
     | { type: 'SetNameColor'; data: NameColor | null }
     | { type: 'ResolveNameColors'; data: string[] }
     | { type: 'ChangePassword'; data: { current_password: string; new_password: string } }
-    | { type: 'SendReadReceipt'; data: { room_id: string; event_id: string } }
+    | { type: 'ViewRoom'; data: { room_id: string | null } }
     | { type: 'PaginateBackwards'; data: { room_id: string } }
     | { type: 'EnableEncryption'; data: { room_id: string } }
     | { type: 'CreateRecoveryKey' }

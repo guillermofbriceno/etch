@@ -85,7 +85,6 @@ export type RoomInfo = {
     etch_room_type: RoomType;
     channel_id: number | null;
     is_default: boolean;
-    unread_count: number;
     is_encrypted: boolean;
     avatar_url: string | null;
 };

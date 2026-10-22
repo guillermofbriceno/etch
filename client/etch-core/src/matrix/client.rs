@@ -268,7 +268,6 @@ fn register_event_handlers(client: &Client, tx: mpsc::Sender<InternalEvent>, eve
                 etch_room_type: room_type,
                 channel_id: None,
                 is_default: false,
-                unread_count: 0,
                 is_encrypted: room.latest_encryption_state().await.map(|s| s.is_encrypted()).unwrap_or(false),
                 avatar_url: room.avatar_url().map(|u| u.to_string()),
             };

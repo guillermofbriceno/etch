@@ -1,11 +1,10 @@
-import { describe, it, expect, beforeEach, beforeAll, vi } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { get } from 'svelte/store';
-import { channels, activeChannel, dmLastActivity, handleMatrixEvent, initChannels, initHiddenDms, hideDm, unhideDm } from '../channels';
+import { channels, activeChannel, handleMatrixEvent, initHiddenDms, hideDm, unhideDm } from '../channels';
 import { activeChannelId } from '../activeChannel';
-import { handleMatrixEvent as messagesHandleMatrixEvent } from '../messages';
+import { handleMatrixEvent as newMessageHandleMatrixEvent } from '../newMessage';
 import { setDrafting, setReply, setEditing } from '../compose';
 import { followNewMessages } from '../followMessages';
-import { currentUser } from '../user';
 import { resetStores } from './helpers';
 import type { RoomInfo } from '$lib/types';
 
@@ -14,11 +13,6 @@ vi.mock('../sfx', () => ({
     setSfxDeafened: vi.fn(),
     sfxVolume: { subscribe: vi.fn() },
 }));
-
-// initChannels creates subscriptions that stack -- call once for the whole suite
-beforeAll(() => {
-    initChannels();
-});
 
 beforeEach(() => {
     resetStores();
@@ -31,7 +25,6 @@ function makeRoom(id: string, name: string, type: 'Voice' | 'Text' | 'Dm' = 'Tex
         etch_room_type: type,
         channel_id: null,
         is_default: false,
-        unread_count: 0,
         is_encrypted: false,
         avatar_url: null,
     };
@@ -150,48 +143,18 @@ describe('handleMatrixEvent (channels)', () => {
         });
     });
 
-    describe('TimelinePushBack (hidden DM auto-unhide)', () => {
+    describe('a new message (hidden DM auto-unhide)', () => {
         it('unhides a hidden DM when the other person messages', () => {
-            currentUser.set({ username: 'me', matrixId: '@me:s', displayName: null, avatarUrl: null });
             initHiddenDms(['dm1']);
-
-            // Set up channels so the hidden DM info is stashed
             handleMatrixEvent({
                 type: 'ChannelList',
                 data: [makeRoom('t1', 'General'), makeRoom('dm1', 'Alice', 'Dm')],
             } as any);
             expect(get(channels).find(c => c.id === 'dm1')).toBeUndefined();
 
-            // Simulate incoming message from the other person
-            handleMatrixEvent({
-                type: 'TimelinePushBack',
-                data: ['dm1', {
-                    sender: { display_name: 'Alice', avatar_url: null },
-                    kind: { Message: { id: 'e1', sender: '@alice:s', body: 'hey', html_body: null, media: null, timestamp: Date.now(), reactions: {} } },
-                }],
-            } as any);
+            receive('dm1');
 
             expect(get(channels).find(c => c.id === 'dm1')).toBeDefined();
-        });
-
-        it('does not unhide when the message is from self', () => {
-            currentUser.set({ username: 'me', matrixId: '@me:s', displayName: null, avatarUrl: null });
-            initHiddenDms(['dm1']);
-
-            handleMatrixEvent({
-                type: 'ChannelList',
-                data: [makeRoom('t1', 'General'), makeRoom('dm1', 'Alice', 'Dm')],
-            } as any);
-
-            handleMatrixEvent({
-                type: 'TimelinePushBack',
-                data: ['dm1', {
-                    sender: { display_name: 'Me', avatar_url: null },
-                    kind: { Message: { id: 'e1', sender: '@me:s', body: 'test', html_body: null, media: null, timestamp: Date.now(), reactions: {} } },
-                }],
-            } as any);
-
-            expect(get(channels).find(c => c.id === 'dm1')).toBeUndefined();
         });
     });
 });
@@ -241,43 +204,6 @@ describe('activeChannel (derived)', () => {
     });
 });
 
-describe('unread count tracking', () => {
-    it('clears unread count when switching to a channel', () => {
-        const rooms = [
-            { ...makeRoom('t1', 'General'), unread_count: 5 },
-            makeRoom('t2', 'Random'),
-        ];
-        handleMatrixEvent({ type: 'ChannelList', data: rooms } as any);
-
-        activeChannelId.set('t1');
-
-        expect(get(channels).find(c => c.id === 't1')?.unread_count).toBe(0);
-    });
-
-    it('does not affect other channels when clearing unread', () => {
-        const rooms = [
-            { ...makeRoom('t1', 'General'), unread_count: 5 },
-            { ...makeRoom('t2', 'Random'), unread_count: 3 },
-        ];
-        handleMatrixEvent({ type: 'ChannelList', data: rooms } as any);
-
-        activeChannelId.set('t1');
-
-        expect(get(channels).find(c => c.id === 't2')?.unread_count).toBe(3);
-    });
-
-    it('clears unread to 0 regardless of the count', () => {
-        const rooms = [
-            { ...makeRoom('t1', 'General'), unread_count: 999 },
-        ];
-        handleMatrixEvent({ type: 'ChannelList', data: rooms } as any);
-
-        activeChannelId.set('t1');
-
-        expect(get(channels).find(c => c.id === 't1')?.unread_count).toBe(0);
-    });
-});
-
 describe('hideDm / unhideDm (store-level)', () => {
     it('unhideDm is a no-op for a non-hidden DM', () => {
         const rooms = [makeRoom('dm1', 'Alice', 'Dm'), makeRoom('t1', 'General')];
@@ -289,7 +215,7 @@ describe('hideDm / unhideDm (store-level)', () => {
         expect(get(channels).find(c => c.id === 'dm1')).toBeDefined();
     });
 
-    it('unhideDm restores the channel with unread_count of 1', () => {
+    it('unhideDm restores the channel', () => {
         const rooms = [makeRoom('dm1', 'Alice', 'Dm'), makeRoom('t1', 'General')];
         channels.set(rooms);
         activeChannelId.set('t1');
@@ -298,9 +224,7 @@ describe('hideDm / unhideDm (store-level)', () => {
         expect(get(channels).find(c => c.id === 'dm1')).toBeUndefined();
 
         unhideDm('dm1');
-        const restored = get(channels).find(c => c.id === 'dm1');
-        expect(restored).toBeDefined();
-        expect(restored?.unread_count).toBe(1);
+        expect(get(channels).find(c => c.id === 'dm1')).toBeDefined();
     });
 
     it('hideDm switches active channel when hiding the active DM', () => {
@@ -330,225 +254,41 @@ describe('hideDm / unhideDm (store-level)', () => {
     });
 });
 
-// --- Helpers for dmLastActivity tests ---
-
-function makeMessage(id: string, sender: string, timestamp: number) {
-    return {
-        sender: { display_name: sender, avatar_url: null },
-        kind: { Message: { id, sender: `@${sender}:s`, body: 'hi', html_body: null, media: null, timestamp, reactions: {} } },
-    };
+function receive(roomId: string) {
+    newMessageHandleMatrixEvent({ type: 'NewMessage', data: { room_id: roomId, sender_name: 'Alice', body: 'hi' } });
 }
-
-function makeStateEvent() {
-    return {
-        sender: { display_name: 'system', avatar_url: null },
-        kind: { StateEvent: { RoomNameChanged: { name: 'New Name' } } },
-    };
-}
-
-function makeDayDivider(ts: number) {
-    return { sender: null, kind: { DayDivider: ts } };
-}
-
-describe('dmLastActivity', () => {
-    describe('TimelinePushBack', () => {
-        it('updates timestamp when a message arrives', () => {
-            handleMatrixEvent({
-                type: 'TimelinePushBack',
-                data: ['dm1', makeMessage('e1', 'alice', 1000)],
-            } as any);
-
-            expect(get(dmLastActivity)['dm1']).toBe(1000);
-        });
-
-        it('overwrites with a newer timestamp', () => {
-            handleMatrixEvent({
-                type: 'TimelinePushBack',
-                data: ['dm1', makeMessage('e1', 'alice', 1000)],
-            } as any);
-            handleMatrixEvent({
-                type: 'TimelinePushBack',
-                data: ['dm1', makeMessage('e2', 'alice', 2000)],
-            } as any);
-
-            expect(get(dmLastActivity)['dm1']).toBe(2000);
-        });
-
-        it('does not update for non-message entries (state events)', () => {
-            handleMatrixEvent({
-                type: 'TimelinePushBack',
-                data: ['dm1', makeStateEvent()],
-            } as any);
-
-            expect(get(dmLastActivity)['dm1']).toBeUndefined();
-        });
-
-        it('does not update for string-kind entries (ReadMarker)', () => {
-            handleMatrixEvent({
-                type: 'TimelinePushBack',
-                data: ['dm1', { sender: null, kind: 'ReadMarker' }],
-            } as any);
-
-            expect(get(dmLastActivity)['dm1']).toBeUndefined();
-        });
-
-        it('tracks multiple rooms independently', () => {
-            handleMatrixEvent({
-                type: 'TimelinePushBack',
-                data: ['dm1', makeMessage('e1', 'alice', 1000)],
-            } as any);
-            handleMatrixEvent({
-                type: 'TimelinePushBack',
-                data: ['dm2', makeMessage('e2', 'bob', 2000)],
-            } as any);
-
-            expect(get(dmLastActivity)['dm1']).toBe(1000);
-            expect(get(dmLastActivity)['dm2']).toBe(2000);
-        });
-    });
-
-    describe('TimelineAppend', () => {
-        it('picks the timestamp of the last message in the batch', () => {
-            handleMatrixEvent({
-                type: 'TimelineAppend',
-                data: ['dm1', [
-                    makeMessage('e1', 'alice', 1000),
-                    makeMessage('e2', 'alice', 2000),
-                    makeMessage('e3', 'bob', 3000),
-                ]],
-            } as any);
-
-            expect(get(dmLastActivity)['dm1']).toBe(3000);
-        });
-
-        it('skips non-message entries at the end of the batch', () => {
-            handleMatrixEvent({
-                type: 'TimelineAppend',
-                data: ['dm1', [
-                    makeMessage('e1', 'alice', 5000),
-                    makeDayDivider(86400000),
-                ]],
-            } as any);
-
-            expect(get(dmLastActivity)['dm1']).toBe(5000);
-        });
-
-        it('does not update when batch contains no messages', () => {
-            handleMatrixEvent({
-                type: 'TimelineAppend',
-                data: ['dm1', [makeDayDivider(86400000), makeStateEvent()]],
-            } as any);
-
-            expect(get(dmLastActivity)['dm1']).toBeUndefined();
-        });
-
-        it('does not overwrite a newer timestamp with older history', () => {
-            // Simulate: a new message arrives first, then initial history loads
-            handleMatrixEvent({
-                type: 'TimelinePushBack',
-                data: ['dm1', makeMessage('e-new', 'alice', 9000)],
-            } as any);
-            handleMatrixEvent({
-                type: 'TimelineAppend',
-                data: ['dm1', [
-                    makeMessage('e-old1', 'bob', 1000),
-                    makeMessage('e-old2', 'bob', 2000),
-                ]],
-            } as any);
-
-            expect(get(dmLastActivity)['dm1']).toBe(9000);
-        });
-
-        it('updates when the appended timestamp equals the existing one', () => {
-            dmLastActivity.set({ dm1: 5000 });
-
-            handleMatrixEvent({
-                type: 'TimelineAppend',
-                data: ['dm1', [makeMessage('e1', 'alice', 5000)]],
-            } as any);
-
-            expect(get(dmLastActivity)['dm1']).toBe(5000);
-        });
-    });
-
-    describe('TimelineReset', () => {
-        it('replaces the timestamp with the last message in the new timeline', () => {
-            dmLastActivity.set({ dm1: 1000 });
-
-            handleMatrixEvent({
-                type: 'TimelineReset',
-                data: ['dm1', [
-                    makeMessage('e1', 'alice', 5000),
-                    makeMessage('e2', 'bob', 8000),
-                ]],
-            } as any);
-
-            expect(get(dmLastActivity)['dm1']).toBe(8000);
-        });
-
-        it('preserves existing timestamp when reset timeline has no messages', () => {
-            dmLastActivity.set({ dm1: 5000 });
-
-            handleMatrixEvent({
-                type: 'TimelineReset',
-                data: ['dm1', [makeDayDivider(86400000)]],
-            } as any);
-
-            expect(get(dmLastActivity)['dm1']).toBe(5000);
-        });
-
-        it('can set a timestamp for a room that had none', () => {
-            handleMatrixEvent({
-                type: 'TimelineReset',
-                data: ['dm1', [makeMessage('e1', 'alice', 4000)]],
-            } as any);
-
-            expect(get(dmLastActivity)['dm1']).toBe(4000);
-        });
-    });
-});
 
 describe('following new messages', () => {
-    function receive(roomId: string) {
-        const event = { type: 'TimelinePushBack', data: [roomId, makeMessage('e1', 'alice', 1000)] } as any;
-        messagesHandleMatrixEvent(event);
-        handleMatrixEvent(event);
-    }
-
     beforeEach(() => {
-        currentUser.set({ username: 'me', matrixId: '@me:s', displayName: null, avatarUrl: null });
         handleMatrixEvent({ type: 'ChannelList', data: [makeRoom('t1', 'General'), makeRoom('dm1', 'Alice', 'Dm')] } as any);
         activeChannelId.set('t1');
     });
 
-    it('leaves the active channel alone and counts the message as unread when off', () => {
+    it('leaves the active channel alone when off', () => {
         receive('dm1');
 
         expect(get(activeChannelId)).toBe('t1');
-        expect(get(channels).find(c => c.id === 'dm1')?.unread_count).toBe(1);
     });
 
-    it('switches to the room a message arrived in, with nothing left unread', () => {
+    it('switches to the room a message arrived in', () => {
         followNewMessages.set(true);
 
         receive('dm1');
 
         expect(get(activeChannelId)).toBe('dm1');
-        expect(get(channels).find(c => c.id === 'dm1')?.unread_count).toBe(0);
     });
 
     it.each([
         ['a draft', () => setDrafting(true)],
         ['a reply', () => setReply({ id: 'e0' } as any)],
         ['an edit', () => setEditing({ id: 'e0' } as any)],
-    ])('stays put while %s is in the composer, and counts the message as unread', (_, compose) => {
+    ])('stays put while %s is in the composer', (_, compose) => {
         followNewMessages.set(true);
         compose();
 
         receive('dm1');
 
         expect(get(activeChannelId)).toBe('t1');
-        expect(get(channels).find(c => c.id === 'dm1')?.unread_count).toBe(1);
     });
 
     it('switches to a hidden DM that a message brings back', () => {
@@ -558,6 +298,5 @@ describe('following new messages', () => {
         receive('dm1');
 
         expect(get(activeChannelId)).toBe('dm1');
-        expect(get(channels).find(c => c.id === 'dm1')?.unread_count).toBe(0);
     });
 });

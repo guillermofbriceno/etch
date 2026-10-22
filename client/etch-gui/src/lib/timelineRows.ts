@@ -76,7 +76,8 @@ export function timelineRows(entries: TimelineEntry[]): TimelineRow[] {
         undecryptable = null;
     }
 
-    entries.forEach((entry, index) => {
+    let shown: TimelineEntry | undefined;
+    entries.forEach((entry) => {
         const { id, kind } = entry;
         if (kind === 'Undecryptable') {
             if (states.length) endRun();
@@ -92,12 +93,13 @@ export function timelineRows(entries: TimelineEntry[]): TimelineRow[] {
             endRun();
             rows.push({
                 type: 'message', id, msg: kind.Message, sender: entry.sender,
-                continuation: continues(kind.Message, entries[index - 1]),
+                continuation: continues(kind.Message, shown),
             });
         } else {
             endRun();
             rows.push({ type: 'dayDivider', id, timestamp: kind.DayDivider });
         }
+        shown = entry;
     });
     endRun();
     return rows;

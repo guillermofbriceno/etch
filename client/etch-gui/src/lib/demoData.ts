@@ -6,6 +6,7 @@
 // The mxcToUrl() helper in MessageGroup passes through non-mxc:// URLs.
 
 import { channels } from '$lib/stores/channels';
+import { handleMatrixEvent as handleActivityEvent } from '$lib/stores/roomActivity';
 import { activeChannelId } from '$lib/stores/activeChannel';
 import { handleMatrixEvent as handleMessagesEvent } from '$lib/stores/messages';
 import { currentUser } from '$lib/stores/user';
@@ -131,12 +132,12 @@ function divider(timestamp: number): TimelineEntry {
 // ---------------------------------------------------------------------------
 
 const rooms: RoomInfo[] = [
-    { id: ROOM.lounge,  display_name: 'Lounge',  etch_room_type: 'Voice', channel_id: 1, is_default: true,  unread_count: 0, is_encrypted: false, avatar_url: null },
-    { id: ROOM.gaming,  display_name: 'Gaming',  etch_room_type: 'Voice', channel_id: 2, is_default: false, unread_count: 0, is_encrypted: false, avatar_url: null },
-    { id: ROOM.general, display_name: 'general', etch_room_type: 'Text',  channel_id: null, is_default: false, unread_count: 0, is_encrypted: true, avatar_url: null },
-    { id: ROOM.dev,     display_name: 'dev',     etch_room_type: 'Text',  channel_id: null, is_default: false, unread_count: 0, is_encrypted: true, avatar_url: null },
-    { id: ROOM.random,  display_name: 'random',  etch_room_type: 'Text',  channel_id: null, is_default: false, unread_count: 2, is_encrypted: false, avatar_url: null },
-    { id: ROOM.dmKira,  display_name: 'Kira',    etch_room_type: 'Dm',    channel_id: null, is_default: false, unread_count: 1, is_encrypted: true, avatar_url: null },
+    { id: ROOM.lounge,  display_name: 'Lounge',  etch_room_type: 'Voice', channel_id: 1, is_default: true,  is_encrypted: false, avatar_url: null },
+    { id: ROOM.gaming,  display_name: 'Gaming',  etch_room_type: 'Voice', channel_id: 2, is_default: false, is_encrypted: false, avatar_url: null },
+    { id: ROOM.general, display_name: 'general', etch_room_type: 'Text',  channel_id: null, is_default: false, is_encrypted: true, avatar_url: null },
+    { id: ROOM.dev,     display_name: 'dev',     etch_room_type: 'Text',  channel_id: null, is_default: false, is_encrypted: true, avatar_url: null },
+    { id: ROOM.random,  display_name: 'random',  etch_room_type: 'Text',  channel_id: null, is_default: false, is_encrypted: false, avatar_url: null },
+    { id: ROOM.dmKira,  display_name: 'Kira',    etch_room_type: 'Dm',    channel_id: null, is_default: false, is_encrypted: true, avatar_url: null },
 ];
 
 // ---------------------------------------------------------------------------
@@ -284,6 +285,9 @@ export function injectDemoData(): void {
 
     // Channels
     channels.set(rooms);
+    for (const roomId of [ROOM.random, ROOM.dmKira]) {
+        handleActivityEvent({ type: 'RoomActivity', data: { room_id: roomId, unread: true, last_activity: null } });
+    }
 
     // Messages (inject via TimelineReset so the windows store picks them up)
     for (const [roomId, entries] of Object.entries(messageMap)) {

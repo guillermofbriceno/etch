@@ -1,11 +1,12 @@
 import { initEventRouter } from './eventRouter';
-import { initChannels } from './channels';
+import { initRoomActivity } from './roomActivity';
 
-export { appFocused } from './eventRouter';
+export { appFocused } from './appFocus';
 
 export { activeChannelId } from './activeChannel';
 export { activeWindow, setActiveChannel, loadOlder, sendMessage, sendAttachment, editMessage, redactMessage, createDirectMessage, toggleReaction } from './messages';
-export { channels, activeChannel, hideDm, dmLastActivity } from './channels';
+export { channels, activeChannel, voiceRooms, textRooms, directMessages, hideDm } from './channels';
+export { roomActivity, unreadRooms } from './roomActivity';
 export { currentUser } from './user';
 export { nameColors, canSetNameColor, colorOf, chosenColorOf } from './nameColors';
 export { isMuted, isDeafened, toggleMute, toggleDeafen } from './audio';
@@ -36,5 +37,5 @@ export { initTray, destroyTray } from './tray';
 
 export function initStores(): void {
     initEventRouter();
-    initChannels();
+    initRoomActivity();
 }

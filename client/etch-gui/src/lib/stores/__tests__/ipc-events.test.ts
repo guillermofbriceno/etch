@@ -33,7 +33,8 @@ beforeEach(() => {
 
 // Initialize the event router and capture callbacks.
 // This must happen after the mocks are in place but before tests run.
-import { initEventRouter, appFocused } from '../eventRouter';
+import { initEventRouter } from '../eventRouter';
+import { appFocused } from '../appFocus';
 
 vi.mocked(listen).mockClear();
 initEventRouter();
@@ -71,7 +72,7 @@ describe('Matrix event routing', () => {
     it('routes ChannelList to channels store', async () => {
         const { channels } = await import('../channels');
         const rooms = [
-            { id: 't1', display_name: 'General', etch_room_type: 'Text' as const, channel_id: null, is_default: false, unread_count: 0, is_encrypted: false, avatar_url: null },
+            { id: 't1', display_name: 'General', etch_room_type: 'Text' as const, channel_id: null, is_default: false, is_encrypted: false, avatar_url: null },
         ];
 
         routeCoreEvent({
