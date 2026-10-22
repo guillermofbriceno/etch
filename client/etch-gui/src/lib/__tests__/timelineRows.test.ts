@@ -40,9 +40,10 @@ describe('the summary of a run of state events', () => {
 });
 
 describe('message continuation', () => {
-    it('continues a sender only right after their own recent, unedited message', () => {
+    it('continues a sender only right after their own recent, unedited message, past what shows nothing', () => {
         const rows = timelineRows([
             message('@a:s', 0),
+            { id: 'marker', sender: null, kind: 'ReadMarker' },
             message('@a:s', 4),
             message('@b:s', 5),
             message('@b:s', 11),
