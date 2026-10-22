@@ -1,12 +1,12 @@
 import { initEventRouter } from './eventRouter';
 import { initRoomActivity } from './roomActivity';
 
-export { appFocused } from './eventRouter';
+export { appFocused } from './appFocus';
 
 export { activeChannelId } from './activeChannel';
 export { activeWindow, setActiveChannel, loadOlder, sendMessage, sendAttachment, editMessage, redactMessage, createDirectMessage, toggleReaction } from './messages';
-export { channels, activeChannel, hideDm } from './channels';
-export { roomActivity, unreadRooms, directMessages } from './roomActivity';
+export { channels, activeChannel, voiceRooms, textRooms, directMessages, hideDm } from './channels';
+export { roomActivity, unreadRooms } from './roomActivity';
 export { currentUser } from './user';
 export { nameColors, canSetNameColor, colorOf, chosenColorOf } from './nameColors';
 export { isMuted, isDeafened, toggleMute, toggleDeafen } from './audio';

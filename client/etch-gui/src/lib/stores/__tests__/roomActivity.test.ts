@@ -1,11 +1,10 @@
 import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
 import { get } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/core';
-import { roomActivity, unreadRooms, directMessages, handleMatrixEvent, initRoomActivity } from '../roomActivity';
-import { channels, handleMatrixEvent as channelsHandleMatrixEvent, initHiddenDms } from '../channels';
+import { roomActivity, unreadRooms, handleMatrixEvent, initRoomActivity } from '../roomActivity';
+import { channels, directMessages, handleMatrixEvent as channelsHandleMatrixEvent, initHiddenDms } from '../channels';
 import { activeChannelId } from '../activeChannel';
-import { appFocused } from '../eventRouter';
-import { matrixStatus } from '../matrixConnection';
+import { appFocused } from '../appFocus';
 import { resetStores } from './helpers';
 import type { RoomInfo } from '$lib/types';
 
@@ -17,14 +16,14 @@ function activity(roomId: string, unread: boolean, lastActivity: number | null =
     handleMatrixEvent({ type: 'RoomActivity', data: { room_id: roomId, unread, last_activity: lastActivity } });
 }
 
-function markReads(): string[] {
+function viewed(): (string | null)[] {
     return vi.mocked(invoke).mock.calls
         .map(([, args]) => (args as any)?.command?.data)
-        .filter(data => data?.type === 'MarkRead')
+        .filter(data => data?.type === 'ViewRoom')
         .map(data => data.data.room_id);
 }
 
-// The read receipt triggers are a subscription that would stack if wired per test.
+// The viewed room is a subscription that would stack if wired per test.
 beforeAll(() => {
     initRoomActivity();
 });
@@ -65,32 +64,18 @@ describe('room activity', () => {
     });
 });
 
-describe('marking the open room read', () => {
+describe('the viewed room', () => {
     beforeEach(() => {
-        matrixStatus.set('connected');
         activeChannelId.set('a');
         vi.mocked(invoke).mockClear();
     });
 
-    it('marks a room read when it is opened, and again when it becomes unread', () => {
+    it('is the open room while the window is focused, and none while it is not', () => {
         activeChannelId.set('b');
-        activity('b', true);
-        activity('a', true);
+        appFocused.set(false);
+        activeChannelId.set('c');
+        appFocused.set(true);
 
-        expect(markReads()).toEqual(['b', 'b']);
-    });
-
-    it.each([
-        ['focus', () => appFocused.set(false), () => appFocused.set(true)],
-        ['a live session', () => matrixStatus.set('disconnected'), () => matrixStatus.set('connected')],
-    ])('waits for %s, then marks the open room read', (_, lose, regain) => {
-        lose();
-        activity('a', true);
-        activeChannelId.set('b');
-        expect(markReads()).toEqual([]);
-
-        regain();
-
-        expect(markReads()).toEqual(['b']);
+        expect(viewed()).toEqual(['b', null, 'c']);
     });
 });

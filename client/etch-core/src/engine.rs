@@ -1622,14 +1622,14 @@ mod tests {
             matrix,
             MockVoice::new(),
             tmp.path(),
-            vec![CoreCommand::Matrix(MatrixCommand::MarkRead {
-                room_id: "!room:example.com".into(),
+            vec![CoreCommand::Matrix(MatrixCommand::ViewRoom {
+                room_id: Some("!room:example.com".into()),
             })],
         ).await;
 
         let cmds = matrix_state.commands.lock().unwrap();
         assert_eq!(cmds.len(), 1);
-        assert!(matches!(&cmds[0], MatrixCommand::MarkRead { .. }));
+        assert!(matches!(&cmds[0], MatrixCommand::ViewRoom { .. }));
     }
 
     #[tokio::test]
@@ -2250,8 +2250,8 @@ mod tests {
 
         let issued = timeout(Duration::from_secs(5), async {
             for i in 0..BURST {
-                cmd_tx.send(CoreCommand::Matrix(MatrixCommand::MarkRead {
-                    room_id: format!("!room{i}:example.com"),
+                cmd_tx.send(CoreCommand::Matrix(MatrixCommand::ViewRoom {
+                    room_id: Some(format!("!room{i}:example.com")),
                 })).await.unwrap();
                 cmd_tx.send(CoreCommand::Mumble(MumbleCommand::SetVadThreshold(i as f64 / 1000.0)))
                     .await.unwrap();
@@ -2280,14 +2280,14 @@ mod tests {
             .expect("engine did not shut down within 5s")
             .expect("engine task panicked");
 
-        let receipts: Vec<String> = matrix_state.commands.lock().unwrap().iter()
+        let viewed: Vec<String> = matrix_state.commands.lock().unwrap().iter()
             .filter_map(|c| match c {
-                MatrixCommand::MarkRead { room_id } => Some(room_id.clone()),
+                MatrixCommand::ViewRoom { room_id } => room_id.clone(),
                 _ => None,
             })
             .collect();
         let expected: Vec<String> = (0..BURST).map(|i| format!("!room{i}:example.com")).collect();
-        assert_eq!(receipts, expected, "commands held during the connect must all be served, in order");
+        assert_eq!(viewed, expected, "commands held during the connect must all be served, in order");
     }
 
     /// The first attempt is never released, so reaching Connected means the supersede stopped it.

@@ -1,6 +1,5 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
 
 use futures_util::StreamExt;
 use matrix_sdk::Room;
@@ -8,10 +7,10 @@ use matrix_sdk::event_handler::EventHandlerDropGuard;
 use matrix_sdk::ruma::api::client::receipt::create_receipt::v3::ReceiptType;
 use matrix_sdk::ruma::events::room::message::{OriginalSyncRoomMessageEvent, Relation};
 use matrix_sdk::ruma::html::{HtmlSanitizerMode, RemoveReplyFallback};
-use matrix_sdk::ruma::{EventId, MilliSecondsSinceUnixEpoch, OwnedUserId, UserId};
+use matrix_sdk::ruma::{EventId, MilliSecondsSinceUnixEpoch, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, UserId};
 use matrix_sdk_ui::eyeball_im::Vector;
 use matrix_sdk_ui::timeline::{MsgLikeKind, Timeline, TimelineItem, TimelineItemContent};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 use crate::events::{CoreEvent, MatrixEvent};
 use crate::matrix::name_colors::NameColorSender;
@@ -21,11 +20,10 @@ use crate::task::AbortOnDrop;
 /// A burst beyond this loses its pings, never the room's state, which the timeline carries.
 const MESSAGE_QUEUE: usize = 32;
 
-/// Long enough for a sync long poll to bring the receipt back, so a miss means the server did not.
-pub(crate) const RECEIPT_CONFIRM_WAIT: Duration = Duration::from_secs(30);
-
-/// Sends whether a room is unread and when it was last active as current values, and announces
-/// each new message from someone else; it lives exactly as long as the room's subscription.
+/// Sends whether a room is unread and when it was last active as current values, keeps the room
+/// read while the user is viewing it, and announces each new message from someone else; it lives
+/// exactly as long as the room's subscription. Unread is read from the timeline, which also holds
+/// history; announcements come from a sync handler, which sees only messages that arrive live.
 pub(crate) struct ActivityWatch {
     _handler: EventHandlerDropGuard,
     _task: AbortOnDrop,
@@ -43,7 +41,12 @@ struct IncomingMessage {
 }
 
 impl ActivityWatch {
-    pub(crate) fn start(room: &Room, timeline: Arc<Timeline>, feed: ActivityFeed) -> Self {
+    pub(crate) fn start(
+        room: &Room,
+        timeline: Arc<Timeline>,
+        viewing: watch::Receiver<Option<OwnedRoomId>>,
+        feed: ActivityFeed,
+    ) -> Self {
         let (tx, rx) = mpsc::channel(MESSAGE_QUEUE);
         let own_user_id = room.own_user_id().to_owned();
         let room_id = room.room_id().to_owned();
@@ -74,7 +77,7 @@ impl ActivityWatch {
 
         Self {
             _handler: room.client().event_handler_drop_guard(handle),
-            _task: AbortOnDrop::new(tokio::spawn(run(room.clone(), timeline, rx, feed))),
+            _task: AbortOnDrop::new(tokio::spawn(run(room.clone(), timeline, rx, viewing, feed))),
         }
     }
 }
@@ -83,12 +86,15 @@ async fn run(
     room: Room,
     timeline: Arc<Timeline>,
     mut messages: mpsc::Receiver<IncomingMessage>,
+    mut viewing: watch::Receiver<Option<OwnedRoomId>>,
     feed: ActivityFeed,
 ) {
     let (_, mut changes) = timeline.subscribe().await;
     let mut receipts = timeline.subscribe_own_user_read_receipts_changed().await;
     let mut last_activity = None;
     let mut sent = None;
+    // The SDK does not move our receipt until sync brings it back, so this stops a resend meanwhile.
+    let mut marked: Option<OwnedEventId> = None;
 
     loop {
         let items = timeline.items().await;
@@ -109,9 +115,19 @@ async fn run(
             }
         }
 
+        let viewed = viewing.borrow_and_update().as_deref() == Some(room.room_id());
+        match &shown.newest_confirmed {
+            _ if !viewed => marked = None,
+            Some(newest) if current.0 && marked.as_ref() != Some(&newest.event_id) => {
+                marked = mark_read(&timeline, room.room_id().as_str()).await.then(|| newest.event_id.clone());
+            }
+            _ => {}
+        }
+
         tokio::select! {
             Some(_) = changes.next() => {}
             Some(()) = receipts.next() => {}
+            () = viewed_becomes(&mut viewing, room.room_id(), !viewed) => {}
             Some(message) = messages.recv() => {
                 if !feed.new_message(&room, message).await {
                     return;
@@ -125,46 +141,37 @@ async fn run(
     }
 }
 
+/// Wakes a room only when it starts or stops being the viewed one, not on every switch elsewhere.
+async fn viewed_becomes(viewing: &mut watch::Receiver<Option<OwnedRoomId>>, room_id: &RoomId, viewed: bool) {
+    while viewing.changed().await.is_ok() {
+        if (viewing.borrow_and_update().as_deref() == Some(room_id)) == viewed {
+            return;
+        }
+    }
+    std::future::pending().await
+}
+
 fn log_unread_change(room: &Room, unread: bool, shown: &Shown, read: Option<usize>) {
-    let newest = shown.newest_confirmed.map(|m| m.position);
+    let newest = shown.newest_confirmed.as_ref().map(|m| m.position);
     log::debug!(
         "[activity] Room {} {}: newest confirmed message at {newest:?}{}, receipt at {read:?}, {} pending local echo(es)",
         room.room_id(),
         if unread { "unread" } else { "read" },
-        if shown.newest_confirmed.is_some_and(|m| m.from_someone_else) { " from someone else" } else { "" },
+        if shown.newest_confirmed.as_ref().is_some_and(|m| m.from_someone_else) { " from someone else" } else { "" },
         shown.pending,
     );
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum ReceiptOutcome {
-    Confirmed,
-    /// Sent, but no sync brought it back within the wait.
-    Unconfirmed,
-    AlreadyCovered,
-    Failed,
-}
-
-/// The receipt is judged confirmed when the timeline sees the user's own receipt move.
-pub(crate) async fn mark_read(timeline: &Timeline, room_id: &str, wait: Duration) -> ReceiptOutcome {
-    let mut moved = timeline.subscribe_own_user_read_receipts_changed().await;
+/// False when the receipt could not be sent, so the next change tries again.
+async fn mark_read(timeline: &Timeline, room_id: &str) -> bool {
     match timeline.mark_as_read(ReceiptType::Read).await {
-        Ok(false) => {
-            log::debug!("[activity] Room {room_id} already read; no receipt sent");
-            ReceiptOutcome::AlreadyCovered
-        }
-        Ok(true) => {
-            if tokio::time::timeout(wait, moved.next()).await.is_ok() {
-                log::debug!("[activity] Room {room_id} marked read");
-                ReceiptOutcome::Confirmed
-            } else {
-                log::warn!("[activity] Read receipt for room {room_id} was sent but not confirmed by the server within {wait:?}");
-                ReceiptOutcome::Unconfirmed
-            }
+        Ok(sent) => {
+            log::debug!("[activity] Room {room_id} viewed while unread; {}", if sent { "sent a read receipt" } else { "already read" });
+            true
         }
         Err(e) => {
             log::error!("Failed to mark {room_id} read: {e:?}");
-            ReceiptOutcome::Failed
+            false
         }
     }
 }
@@ -174,9 +181,9 @@ fn millis(ts: MilliSecondsSinceUnixEpoch) -> u64 {
 }
 
 /// The newest message the server has confirmed, which is what a receipt can cover.
-#[derive(Clone, Copy)]
 struct NewestMessage {
     position: usize,
+    event_id: OwnedEventId,
     from_someone_else: bool,
 }
 
@@ -197,11 +204,13 @@ fn scan(items: &Vector<Arc<TimelineItem>>, own_user_id: &UserId) -> Shown {
             continue;
         }
         shown.last_activity.get_or_insert(millis(event.timestamp()));
-        if event.is_local_echo() {
-            shown.pending += 1;
-        } else {
-            shown.newest_confirmed = Some(NewestMessage { position, from_someone_else: event.sender() != own_user_id });
-            break;
+        match event.event_id().filter(|_| !event.is_local_echo()) {
+            None => shown.pending += 1,
+            Some(event_id) => {
+                let from_someone_else = event.sender() != own_user_id;
+                shown.newest_confirmed = Some(NewestMessage { position, event_id: event_id.to_owned(), from_someone_else });
+                break;
+            }
         }
     }
     shown
@@ -248,15 +257,19 @@ mod tests {
 
     #[test]
     fn a_room_is_unread_until_the_receipt_reaches_its_newest_message_from_someone_else() {
-        let theirs = Some(NewestMessage { position: 5, from_someone_else: true });
-        let ours = Some(NewestMessage { position: 5, from_someone_else: false });
+        let message = |from_someone_else| Some(NewestMessage {
+            position: 5,
+            event_id: OwnedEventId::try_from("$newest").unwrap(),
+            from_someone_else,
+        });
+        let (theirs, ours) = (message(true), message(false));
         let cases = [
-            (None, None, false, "a room with no messages"),
-            (ours, None, false, "the newest message is our own"),
-            (theirs, None, true, "no receipt the timeline can place"),
-            (theirs, Some(3), true, "the receipt is on an earlier event"),
-            (theirs, Some(5), false, "the receipt is on it"),
-            (theirs, Some(7), false, "the receipt is on something after it"),
+            (&None, None, false, "a room with no messages"),
+            (&ours, None, false, "the newest message is our own"),
+            (&theirs, None, true, "no receipt the timeline can place"),
+            (&theirs, Some(3), true, "the receipt is on an earlier event"),
+            (&theirs, Some(5), false, "the receipt is on it"),
+            (&theirs, Some(7), false, "the receipt is on something after it"),
         ];
         for (newest, read, unread, case) in cases {
             assert_eq!(is_unread(newest.as_ref(), read), unread, "{case}");

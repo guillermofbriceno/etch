@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { handleMatrixEvent } from '../newMessage';
 import { activeChannelId } from '../activeChannel';
-import { appFocused } from '../eventRouter';
+import { appFocused } from '../appFocus';
 import { resetStores } from './helpers';
 
 vi.mock('../sfx', () => ({

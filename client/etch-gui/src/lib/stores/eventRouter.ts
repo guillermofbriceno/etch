@@ -1,4 +1,4 @@
-import { writable, get } from 'svelte/store';
+import { get } from 'svelte/store';
 import { listen } from '@tauri-apps/api/event';
 import type { CoreEvent } from '$lib/ipc';
 
@@ -14,15 +14,11 @@ import { handleMatrixEvent as encryptionHandleMatrix } from './encryption';
 import { handleSystemEvent as serversHandleSystem } from './servers';
 import { handleSystemEvent as errorsHandleSystem } from './errors';
 import { handleMumbleEvent, handleSystemEvent as voiceHandleSystem } from './voiceState';
-import { resetMatrixSession, resetLoginSession, enterLogin, declareStores } from './session';
+import { resetMatrixSession, resetLoginSession, enterLogin } from './session';
+import { appFocused } from './appFocus';
 
 // Eager, so every store has registered its session scope before the first ServerReset can fire.
 import.meta.glob('./*.ts', { eager: true });
-
-// Track app focus state for notification sounds
-export const appFocused = writable(true);
-
-declareStores('device', 'appFocused');
 
 export function initEventRouter(): void {
     appFocused.set(document.hasFocus());

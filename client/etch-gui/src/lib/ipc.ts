@@ -73,7 +73,7 @@ export type MatrixCommand =
     | { type: 'SetNameColor'; data: NameColor | null }
     | { type: 'ResolveNameColors'; data: string[] }
     | { type: 'ChangePassword'; data: { current_password: string; new_password: string } }
-    | { type: 'MarkRead'; data: { room_id: string } }
+    | { type: 'ViewRoom'; data: { room_id: string | null } }
     | { type: 'PaginateBackwards'; data: { room_id: string } }
     | { type: 'EnableEncryption'; data: { room_id: string } }
     | { type: 'CreateRecoveryKey' }

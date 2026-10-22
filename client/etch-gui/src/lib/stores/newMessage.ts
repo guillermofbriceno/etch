@@ -3,7 +3,7 @@ import type { MatrixEvent } from '$lib/ipc';
 import { activeChannelId } from './activeChannel';
 import { channels, surfaceRoom } from './channels';
 import { notifyMessage } from './desktopNotifications';
-import { appFocused } from './eventRouter';
+import { appFocused } from './appFocus';
 import { playSfx } from './sfx';
 
 const SOUND_COOLDOWN_MS = 20_000;

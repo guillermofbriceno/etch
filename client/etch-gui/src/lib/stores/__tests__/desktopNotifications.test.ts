@@ -5,7 +5,7 @@ import { desktopNotifications } from '../desktopNotifications';
 import { channels } from '../channels';
 import { handleMatrixEvent } from '../newMessage';
 import { handleMumbleEvent } from '../voiceState';
-import { appFocused } from '../eventRouter';
+import { appFocused } from '../appFocus';
 import { isDeafened } from '../audio';
 import { deafenSuppressesNotifs } from '../voiceSettings';
 import { resetStores } from './helpers';

@@ -6,6 +6,7 @@ import { activeChannelId } from './activeChannel';
 import { setActiveChannel } from './messages';
 import { isComposing } from './compose';
 import { followNewMessages } from './followMessages';
+import { roomActivity } from './roomActivity';
 import { registerSessionStore, declareStores } from './session';
 
 export const channels = writable<RoomInfo[]>([]);
@@ -85,6 +86,21 @@ export const activeChannel = derived(
 );
 
 declareStores('derived', 'activeChannel');
+
+const byChannelId = (a: RoomInfo, b: RoomInfo) => (a.channel_id ?? 999) - (b.channel_id ?? 999);
+
+export const voiceRooms = derived(channels, $channels => $channels.filter(c => c.etch_room_type === 'Voice').sort(byChannelId));
+
+export const textRooms = derived(channels, $channels => $channels.filter(c => c.etch_room_type === 'Text').sort(byChannelId));
+
+export const directMessages = derived(
+    [channels, roomActivity],
+    ([$channels, $activity]) => $channels
+        .filter(c => c.etch_room_type === 'Dm')
+        .sort((a, b) => ($activity[b.id]?.lastActivity ?? 0) - ($activity[a.id]?.lastActivity ?? 0)),
+);
+
+declareStores('derived', 'voiceRooms', 'textRooms', 'directMessages');
 
 // --- Event handler called by eventRouter ---
 

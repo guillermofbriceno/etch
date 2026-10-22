@@ -1407,9 +1407,8 @@ impl TestHarness {
 /// above it instead of appending it, and the room's unread state must not depend on that, nor on
 /// the account having muted all notifications. A fresh account, so the mute reaches no other test.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_message_above_a_stuck_local_echo_is_unread_with_notifications_muted_and_can_be_marked_read() {
+async fn a_message_above_a_stuck_local_echo_is_unread_with_notifications_muted_and_kept_read_while_viewed() {
     use crate::matrix::name_colors::NameColorSender;
-    use crate::matrix::room_activity::{mark_read, ReceiptOutcome};
     use crate::matrix::timeline::TimelineManager;
     use matrix_sdk::config::SyncSettings;
     use matrix_sdk::ruma::api::client::push::set_pushrule_enabled;
@@ -1475,45 +1474,32 @@ async fn a_message_above_a_stuck_local_echo_is_unread_with_notifications_muted_a
     assert_eq!(announced, 1);
     assert!(last_activity.is_some(), "the room has messages, so it has a last activity");
 
-    // Nothing syncs during the wait, so the server cannot have confirmed the receipt yet.
-    let timeline = manager.timeline(&room_id).unwrap();
-    assert_eq!(mark_read(&timeline, room_id.as_str(), Duration::from_millis(500)).await, ReceiptOutcome::Unconfirmed);
-    sync().await.unwrap();
-    let cleared = timeout(EVENT_TIMEOUT, async {
-        while let Some(event) = event_rx.recv().await {
-            if let CoreEvent::Matrix(MatrixEvent::RoomActivity { room_id: r, unread: false, .. }) = event
-                && r == rid
-            {
-                return;
+    // A receipt comes back only through sync, so each wait keeps syncing.
+    let sync_until = async |events: &mut mpsc::Receiver<CoreEvent>, unread: bool| {
+        let reported = async {
+            while let Some(event) = events.recv().await {
+                if let CoreEvent::Matrix(MatrixEvent::RoomActivity { room_id: r, unread: u, .. }) = event
+                    && r == rid && u == unread
+                {
+                    return;
+                }
             }
-        }
-    }).await;
-    assert!(cleared.is_ok(), "marking the room read did not make it read");
+        };
+        let syncing = async {
+            loop {
+                sync().await.unwrap();
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        };
+        timeout(EVENT_TIMEOUT, async { tokio::select! { () = reported => {}, never = syncing => never } }).await.is_ok()
+    };
 
-    // As in the app: marked read once the room shows as unread, with a sync running to confirm it.
-    send_text(&bob, room_id.as_str(), &unique("again")).await;
-    sync().await.unwrap();
-    let unread_again = timeout(EVENT_TIMEOUT, async {
-        while let Some(event) = event_rx.recv().await {
-            if let CoreEvent::Matrix(MatrixEvent::RoomActivity { room_id: r, unread: true, .. }) = event
-                && r == rid
-            {
-                return;
-            }
-        }
-    }).await;
-    assert!(unread_again.is_ok(), "the second message did not make the room unread");
-    let syncing = async {
-        loop {
-            sync().await.unwrap();
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    };
-    let outcome = tokio::select! {
-        outcome = mark_read(&timeline, room_id.as_str(), EVENT_TIMEOUT) => outcome,
-        never = syncing => never,
-    };
-    assert_eq!(outcome, ReceiptOutcome::Confirmed);
+    manager.view(Some(room_id.clone()));
+    assert!(sync_until(&mut event_rx, false).await, "viewing the room did not mark it read");
+
+    send_text(&bob, room_id.as_str(), &unique("while-viewed")).await;
+    assert!(sync_until(&mut event_rx, true).await, "a message that arrived while viewing did not make the room unread");
+    assert!(sync_until(&mut event_rx, false).await, "a message that arrived while viewing was not marked read");
 }
 
 /// Messages a connect's catch-up syncs deliver arrived while Etch was closed, a resubscribe

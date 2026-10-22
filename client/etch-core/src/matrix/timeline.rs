@@ -10,7 +10,7 @@ use matrix_sdk::ruma::events::FullStateEventContent;
 use matrix_sdk::ruma::{OwnedRoomId, RoomId, events::room::message::MessageType};
 use matrix_sdk_ui::eyeball_im::{Vector, VectorDiff};
 use futures_util::{Stream, StreamExt};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use crate::events::{CoreEvent, MatrixEvent};
 use crate::matrix::name_colors::NameColorSender;
 use crate::matrix::room_activity::{ActivityFeed, ActivityWatch};
@@ -75,6 +75,8 @@ pub struct TimelineManager {
     event_tx: mpsc::Sender<CoreEvent>,
     pub media_sources: MediaSourceMap,
     dispatcher: Arc<ScriptDispatcher>,
+    /// The room the user is viewing. It outlives `clear`, since the frontend sends it only on change.
+    viewing: watch::Sender<Option<OwnedRoomId>>,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -114,7 +116,13 @@ impl TimelineManager {
             event_tx,
             media_sources: Arc::new(RwLock::new(BoundedMediaSources::new(MEDIA_SOURCE_CACHE_CAP))),
             dispatcher,
+            viewing: watch::Sender::new(None),
         }
+    }
+
+    /// Each room's activity watch keeps the viewed room read.
+    pub fn view(&self, room_id: Option<OwnedRoomId>) {
+        self.viewing.send_replace(room_id);
     }
 
     /// Clear all timeline subscriptions and the media source cache.
@@ -149,7 +157,7 @@ impl TimelineManager {
         feed.send_initial(&initial_items).await;
         let diff_task = AbortOnDrop::new(tokio::spawn(feed.forward(stream)));
         let timeline = Arc::new(timeline);
-        let activity = ActivityWatch::start(room, timeline.clone(), ActivityFeed {
+        let activity = ActivityWatch::start(room, timeline.clone(), self.viewing.subscribe(), ActivityFeed {
             event_tx: self.event_tx.clone(),
             dispatcher: self.dispatcher.clone(),
             name_colors,
@@ -167,10 +175,6 @@ impl TimelineManager {
             event_tx: self.event_tx.clone(),
             sources: self.media_sources.clone(),
         }
-    }
-
-    pub fn timeline(&self, room_id: &RoomId) -> Option<Arc<Timeline>> {
-        self.timelines.get(room_id).map(|entry| entry.timeline.clone())
     }
 
     /// Returns cloned Arc handles for all subscribed timelines.

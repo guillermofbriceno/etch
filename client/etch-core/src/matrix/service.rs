@@ -12,7 +12,6 @@ use matrix_sdk::ruma::{RoomId, UserId};
 use matrix_sdk::send_queue::SendQueueRoomError;
 use crate::commands::{AttachmentSend, MatrixCommand, ServerConnectionForm};
 use crate::events::{CoreEvent, MatrixEvent, InternalEvent, InternalMatrixEvent};
-use crate::matrix::room_activity;
 use crate::matrix::attachment;
 use crate::temp_files::TempFiles;
 use crate::matrix::client::{log_out, start_matrix_client, ConnectionResult};
@@ -547,8 +546,8 @@ impl MatrixBackend for MatrixService {
             CoreEvent::Matrix(MatrixEvent::ChannelList(rooms.clone()))
         ).await;
 
-        // Subscribe to all timelines BEFORE starting the sync loop
-        // so that events arriving via sync flow through the diff streams.
+        // After the catch-up syncs, so what they brought is never announced as new, and before the
+        // sync loop, so everything after reaches the subscriptions.
         let mut watched = 0;
         for room_info in &rooms {
             if let Ok(room_id) = matrix_sdk::ruma::RoomId::parse(&room_info.id)
@@ -689,18 +688,9 @@ impl MatrixBackend for MatrixService {
                     ).await;
                 }
             }
-            MatrixCommand::MarkRead { room_id } => {
-                if self.serving_client("MarkRead").is_none() { return };
-                let Ok(rid) = matrix_sdk::ruma::RoomId::parse(&room_id) else { return };
-                let Some(timeline) = self.timeline_manager.timeline(&rid) else {
-                    log::warn!("Not marking {room_id} read: it has no timeline subscription");
-                    return;
-                };
-                // Spawn as a background task so slow receipt RPCs don't block
-                // the command loop and delay subsequent commands.
-                tokio::spawn(async move {
-                    room_activity::mark_read(&timeline, &room_id, room_activity::RECEIPT_CONFIRM_WAIT).await;
-                });
+            MatrixCommand::ViewRoom { room_id } => {
+                let room_id = room_id.and_then(|id| matrix_sdk::ruma::RoomId::parse(id).ok());
+                self.timeline_manager.view(room_id);
             }
             MatrixCommand::CreateRecoveryKey => {
                 self.ask_encryption("CreateRecoveryKey", encryption::Request::CreateRecoveryKey).await;

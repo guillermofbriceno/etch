@@ -2,9 +2,7 @@ import { writable, derived } from 'svelte/store';
 import type { MatrixEvent } from '$lib/ipc';
 import { sendCoreCommand } from '$lib/ipc';
 import { activeChannelId } from './activeChannel';
-import { channels } from './channels';
-import { appFocused } from './eventRouter';
-import { matrixSessionLive } from './matrixConnection';
+import { appFocused } from './appFocus';
 import { registerSessionStore, declareStores } from './session';
 
 export type RoomActivity = { unread: boolean; lastActivity: number | null };
@@ -25,14 +23,7 @@ export const unreadRooms = derived(
     ),
 );
 
-export const directMessages = derived(
-    [channels, roomActivity],
-    ([$channels, $activity]) => $channels
-        .filter(c => c.etch_room_type === 'Dm')
-        .sort((a, b) => ($activity[b.id]?.lastActivity ?? 0) - ($activity[a.id]?.lastActivity ?? 0)),
-);
-
-declareStores('derived', 'unreadRooms', 'directMessages');
+declareStores('derived', 'unreadRooms');
 
 export function handleMatrixEvent(me: MatrixEvent): void {
     if (me.type !== 'RoomActivity') return;
@@ -40,21 +31,8 @@ export function handleMatrixEvent(me: MatrixEvent): void {
     roomActivity.update(all => ({ ...all, [room_id]: { unread, lastActivity: last_activity } }));
 }
 
-/** While the session is live and the window focused, the open room is marked read when it is
- *  opened, when focus or the session returns, and when it becomes unread. */
+/** Tells core which room the user is looking at, which it keeps read; unfocused, it is none. */
 export function initRoomActivity(): void {
-    let previous: { id: string | null; ready: boolean; activity: RoomActivity | undefined } =
-        { id: null, ready: false, activity: undefined };
-
-    derived([activeChannelId, appFocused, matrixSessionLive, roomActivity], ([id, focused, live, all]) => ({
-        id, ready: focused && live, activity: id ? all[id] : undefined,
-    })).subscribe(current => {
-        const { id, ready, activity } = current;
-        const changed = id !== previous.id || !previous.ready
-            || (activity !== previous.activity && activity?.unread === true);
-        previous = current;
-        if (id && ready && changed) {
-            sendCoreCommand({ type: 'Matrix', data: { type: 'MarkRead', data: { room_id: id } } });
-        }
-    });
+    derived([activeChannelId, appFocused], ([id, focused]) => (focused ? id : null))
+        .subscribe(room_id => sendCoreCommand({ type: 'Matrix', data: { type: 'ViewRoom', data: { room_id } } }));
 }
