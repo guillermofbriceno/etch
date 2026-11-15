@@ -307,6 +307,10 @@
 
           export CONDUWUIT_CONFIG="$PWD/conduwuit.toml"
 
+          # Default inputs for `pnpm emoji:data`, which also takes them as arguments off Nix.
+          export ETCH_EMOJI_TEST="${pkgs.unicode-emoji}/share/unicode/emoji/emoji-test.txt"
+          export ETCH_CLDR_ANNOTATIONS="${pkgs.cldr-annotations}/share/unicode/cldr/common"
+
           # This line prepends [etch-dev] to your prompt
           export PS1="\n\[\033[1;32m\][etch-dev] \[\033[0m\]\w\n\> "
           echo "Build environment ready. Workspace loaded."

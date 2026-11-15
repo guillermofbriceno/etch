@@ -9,9 +9,10 @@
     import { HTML_BODY_SANITIZE } from '$lib/sanitize';
     import { replaceInTextNodes } from '$lib/dom';
     import { resolveMediaUrl, resolveAvatarUrl, getInitial } from '$lib/media';
+    import { isJumboEmoji } from '$lib/emoji';
     import MediaRenderer from './MediaRenderer.svelte';
     import AvatarFallback from './AvatarFallback.svelte';
-    import EmojiPicker from './EmojiPicker.svelte';
+    import MessageActions from './MessageActions.svelte';
 
     export let msg: ChatMessage;
     export let sender: SenderProfile | null;
@@ -19,6 +20,7 @@
     export let roomId: string;
 
     $: text = msg.media ? msg.media.caption : msg.body;
+    $: jumbo = !$compactChat && !msg.media && isJumboEmoji(msg.body);
 
     const COLLAPSE_THRESHOLD = 300;
     let bodyEl: HTMLElement;
@@ -168,6 +170,7 @@
                 <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
                 <div
                     class="body"
+                    class:jumbo
                     bind:this={bodyEl}
                     use:processBody={{ htmlBody: msg.html_body, selfId: $currentUser.matrixId }}
                     use:collapseWatch={text + (msg.html_body ?? '')}
@@ -203,7 +206,7 @@
         {/if}
     </div>
 
-    <EmojiPicker message={msg} {roomId} />
+    <MessageActions message={msg} {roomId} />
 </div>
 
 <style>
@@ -235,7 +238,7 @@
     .message-block.mentioned:hover { background-color: color-mix(in srgb, var(--accent) 12%, transparent); }
     .avatar-gutter { width: var(--avatar-size); margin-right: 16px; flex-shrink: 0; }
 
-    /* Reveal EmojiPicker (message-actions) on hover */
+    /* Reveal MessageActions on hover */
     .message-block:hover > :global(.message-actions) {
         opacity: 1;
         pointer-events: auto;
@@ -252,8 +255,8 @@
     .reaction-badge {
         display: flex;
         align-items: center;
-        gap: 4px;
-        padding: 2px 7px;
+        gap: 5px;
+        padding: 3px 8px;
         background-color: var(--bg-hover);
         border: 1px solid var(--border-input);
         border-radius: 6px;
@@ -277,8 +280,8 @@
         background-color: color-mix(in srgb, var(--accent) 40%, transparent);
     }
 
-    .reaction-emoji { font-size: 16px; line-height: 1; }
-    .reaction-count { font-size: 12px; font-weight: 500; }
+    .reaction-emoji { font-family: var(--font-family-emoji); font-size: 20px; line-height: 1; }
+    .reaction-count { font-size: 13px; font-weight: 500; }
 
     /* --- Message content --- */
     .avatar {
@@ -306,6 +309,12 @@
         line-height: 1.5;
         font-size: var(--font-size-chat);
         overflow-wrap: anywhere;
+    }
+
+    .body.jumbo {
+        font-family: var(--font-family-emoji);
+        font-size: calc(var(--font-size-chat) * 3);
+        line-height: 1.2;
     }
 
     .body :global(p) { margin: 0; }
@@ -416,6 +425,6 @@
 
     .compact .reaction-badges { margin-top: 2px; }
     .compact .reaction-badge { font-size: 12px; }
-    .compact .reaction-emoji { font-size: var(--font-size-base); }
+    .compact .reaction-emoji { font-size: 16px; }
     .compact .reaction-count { font-size: 11px; }
 </style>

@@ -221,6 +221,17 @@ describe('MessageInput', () => {
         expect(textarea.value).toContain('😀');
     });
 
+    it('emoji search inserts the best match on Enter', async () => {
+        const user = userEvent.setup();
+        render(MessageInput);
+
+        await user.click(screen.getByLabelText('Emoji'));
+        await user.type(screen.getByLabelText('Search emoji'), 'thumbs up{Enter}');
+
+        const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+        expect(textarea.value).toBe('👍');
+    });
+
     it('tab completion inserts first match', async () => {
         seedUser(ROOM, '@alice:etch.gg', 'Alice');
         seedUser(ROOM, '@bob:etch.gg', 'Bob');

@@ -12,6 +12,9 @@ if (typeof globalThis.ResizeObserver === 'undefined') {
     };
 }
 
+// jsdom has no canvas, and reports every getContext call as an error.
+HTMLCanvasElement.prototype.getContext = () => null;
+
 // Mock all Tauri API modules so tests run in jsdom without a real Tauri runtime.
 // vi.mock() calls are hoisted by Vitest and apply before any test module imports.
 

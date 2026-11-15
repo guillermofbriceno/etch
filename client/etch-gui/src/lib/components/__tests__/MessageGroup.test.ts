@@ -3,7 +3,7 @@ import { render, screen, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { resetStores } from '$lib/stores/__tests__/helpers';
 import { compactChat } from '$lib/stores/layout';
-import { currentUser } from '$lib/stores';
+import { activeChannelId, currentUser } from '$lib/stores';
 import { invoke } from '@tauri-apps/api/core';
 import { handleMatrixEvent } from '$lib/stores/nameColors';
 import MessageGroup from '../MessageGroup.svelte';
@@ -326,7 +326,7 @@ describe('MessageGroup unsent message', () => {
         render(MessageGroup, { props: { msg, sender, continuation: false, roomId: '!room:test' } });
 
         expect(screen.getByText('Not sent')).toBeInTheDocument();
-        for (const label of ['Reply', 'Edit', 'React with 👍']) {
+        for (const label of ['Reply', 'Edit', 'React with 👍', 'More reactions']) {
             expect(screen.queryByLabelText(label)).not.toBeInTheDocument();
         }
 
@@ -336,5 +336,21 @@ describe('MessageGroup unsent message', () => {
         expect(invoke).toHaveBeenCalledWith('core_command', {
             command: { type: 'Matrix', data: { type: 'CancelSend', data: { room_id: '!room:test', transaction_id: 'txn1' } } },
         });
+    });
+});
+
+describe('MessageGroup reactions', () => {
+    it('reacts with any emoji from the full picker', async () => {
+        activeChannelId.set('!room:test');
+        render(MessageGroup, { props: { msg: makeMsg(), sender, continuation: false, roomId: '!room:test' } });
+
+        await fireEvent.click(screen.getByLabelText('More reactions'));
+        await fireEvent.click(screen.getByLabelText('Animals & Nature'));
+        await fireEvent.click(screen.getByLabelText('sloth'));
+
+        expect(invoke).toHaveBeenCalledWith('core_command', {
+            command: { type: 'Matrix', data: { type: 'ToggleReaction', data: { room_id: '!room:test', event_id: '$msg1', key: '🦥' } } },
+        });
+        expect(screen.queryByLabelText('Search emoji')).not.toBeInTheDocument();
     });
 });

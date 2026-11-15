@@ -18,6 +18,7 @@
     } from '$lib/attachments';
     import { formatSize } from '$lib/media';
     import Icon from './Icon.svelte';
+    import EmojiPicker from './EmojiPicker.svelte';
     import { customScrollbar } from '$lib/scrollbar';
 
     let messageText = '';
@@ -303,61 +304,6 @@
         stopDragDrop?.();
     });
 
-    const EMOJI_CATEGORIES: { label: string; emojis: string[] }[] = [
-        { label: 'Smileys', emojis: [
-            '😀','😃','😄','😁','😆','😅','🤣','😂','🙂','😊',
-            '😇','🥰','😍','🤩','😘','😋','😛','😜','🤪','😝',
-            '🤑','🤗','🤭','🤫','🤔','😐','😑','😶','😏','😒',
-            '🙄','😬','😮‍💨','🤥','😌','😔','😪','🤤','😴','😷',
-            '🤒','🤕','🤢','🤮','🥵','🥶','🥴','😵','🤯','🤠',
-            '🥳','🥸','😎','🤓','🧐','😕','😟','🙁','😮','😯',
-            '😲','😳','🥺','🥹','😦','😧','😨','😰','😥','😢',
-            '😭','😱','😖','😣','😞','😓','😩','😫','🥱','😤',
-            '😡','😠','🤬','😈','👿','💀','☠️','💩','🤡','👹',
-        ]},
-        { label: 'Gestures', emojis: [
-            '👋','🤚','🖐️','✋','🖖','👌','🤌','🤏','✌️','🤞',
-            '🤟','🤘','🤙','👈','👉','👆','🖕','👇','☝️','👍',
-            '👎','✊','👊','🤛','🤜','👏','🙌','👐','🤲','🤝',
-            '🙏','💪','🦾','🫶','🫡','🫰','🫳','🫴',
-        ]},
-        { label: 'Hearts', emojis: [
-            '❤️','🧡','💛','💚','💙','💜','🖤','🤍','🤎','💔',
-            '❤️‍🔥','❤️‍🩹','💕','💞','💓','💗','💖','💘','💝','💟',
-            '♥️','🩷','🩵','🩶',
-        ]},
-        { label: 'Animals', emojis: [
-            '🐶','🐱','🐭','🐹','🐰','🦊','🐻','🐼','🐻‍❄️','🐨',
-            '🐯','🦁','🐮','🐷','🐸','🐵','🙈','🙉','🙊','🐔',
-            '🐧','🐦','🐤','🦆','🦅','🦉','🦇','🐺','🐗','🐴',
-            '🦄','🐝','🪱','🐛','🦋','🐌','🐞','🐜','🪰','🐢',
-            '🐍','🦎','🐙','🦑','🦐','🦀','🐡','🐠','🐟','🐬',
-            '🐳','🐋','🦈','🐊',
-        ]},
-        { label: 'Food', emojis: [
-            '🍎','🍐','🍊','🍋','🍌','🍉','🍇','🍓','🫐','🍈',
-            '🍒','🍑','🥭','🍍','🥥','🥝','🍅','🥑','🍔','🍟',
-            '🍕','🌭','🥪','🌮','🌯','🥗','🍿','🧂','🍩','🍪',
-            '🎂','🍰','🧁','🍫','🍬','🍭','☕','🍵','🧃','🥤',
-            '🍺','🍻','🥂','🍷',
-        ]},
-        { label: 'Objects', emojis: [
-            '⌨️','🖥️','💻','📱','☎️','📷','🎥','🔦','💡','📖',
-            '💰','💎','🔧','🔨','⚙️','🔗','📎','✂️','📝','📌',
-            '🔒','🔓','🔑','🗑️','📦','📫','🏷️','🔔','🎵','🎶',
-            '🎤','🎧','🎮','🎲','🎯','🏆','🥇','🥈','🥉','⚽',
-            '🏀','🏈','⚾','🎾',
-        ]},
-        { label: 'Symbols', emojis: [
-            '✅','❌','❓','❗','‼️','⁉️','💯','🔥','⭐','✨',
-            '💫','💥','💢','💤','🕳️','💬','👁️‍🗨️','🗨️','💭','🚩',
-            '🏳️','🏴','✔️','➕','➖','➗','✖️','♾️','🔴','🟠',
-            '🟡','🟢','🔵','🟣','⚫','⚪','🟤',
-        ]},
-    ];
-
-    let activeCategory = EMOJI_CATEGORIES[0].label;
-
     async function insertEmoji(emoji: string) {
         const start = textareaEl.selectionStart;
         const end = textareaEl.selectionEnd;
@@ -371,6 +317,11 @@
         textareaEl.selectionStart = pos;
         textareaEl.selectionEnd = pos;
         autoResize();
+    }
+
+    function closeEmojiPicker() {
+        showEmojiPicker = false;
+        textareaEl?.focus();
     }
 
     // Anything typed or attached while the send was in flight wins over the restored draft.
@@ -623,28 +574,8 @@
                 </button>
 
                 {#if showEmojiPicker}
-                    <div class="emoji-picker floating">
-                        <div class="emoji-tabs">
-                            {#each EMOJI_CATEGORIES as cat}
-                                <button
-                                    class="emoji-tab {activeCategory === cat.label ? 'active' : ''}"
-                                    on:click={() => activeCategory = cat.label}
-                                >{cat.emojis[0]}</button>
-                            {/each}
-                        </div>
-                        <div class="emoji-grid" use:customScrollbar={{ width: 6, minThumbHeight: 20 }}>
-                            {#each EMOJI_CATEGORIES as cat}
-                                {#if activeCategory === cat.label}
-                                    {#each cat.emojis as emoji}
-                                        <button
-                                            class="emoji-cell"
-                                            on:click={() => insertEmoji(emoji)}
-                                            aria-label={emoji}
-                                        >{emoji}</button>
-                                    {/each}
-                                {/if}
-                            {/each}
-                        </div>
+                    <div class="emoji-picker-popover">
+                        <EmojiPicker onpick={insertEmoji} onclose={closeEmojiPicker} />
                     </div>
                 {/if}
             </div>
@@ -858,63 +789,12 @@
 
     .emoji-picker-anchor { position: relative; }
 
-    .emoji-picker {
+    .emoji-picker-popover {
         position: absolute;
         bottom: 46px;
         right: -4px;
-        width: 352px;
-        height: 360px;
-        display: flex;
-        flex-direction: column;
         z-index: 20;
     }
-
-    .emoji-tabs {
-        display: flex;
-        border-bottom: 1px solid var(--border-input);
-        padding: 4px 4px 0;
-    }
-
-    .emoji-tab {
-        flex: 1;
-        background: none;
-        border: none;
-        border-bottom: 2px solid transparent;
-        padding: 6px 0;
-        font-size: 18px;
-        cursor: pointer;
-        border-radius: 4px 4px 0 0;
-        transition: background-color 0.1s;
-    }
-
-    .emoji-tab:hover { background-color: var(--bg-hover); }
-    .emoji-tab.active { border-bottom-color: var(--accent); }
-
-    .emoji-grid {
-        display: grid;
-        grid-template-columns: repeat(8, 1fr);
-        gap: 2px;
-        padding: 8px;
-        overflow-y: auto;
-        flex: 1;
-    }
-
-
-    .emoji-cell {
-        width: 36px;
-        height: 36px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        background: none;
-        border: none;
-        border-radius: 4px;
-        font-size: 22px;
-        cursor: pointer;
-        transition: background-color 0.1s;
-    }
-
-    .emoji-cell:hover { background-color: var(--bg-active); }
 
     .message-box::placeholder { color: var(--text-muted); }
 

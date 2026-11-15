@@ -38,6 +38,7 @@
     --scrollbar-track: #2e3035;
     --font-family: 'Inter', sans-serif;
     --font-family-mono: 'Consolas', monospace;
+    --font-family-emoji: 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif;
     --font-size-base: 14px;
     --font-size-channel: 16px;
     --font-size-chat: 15px;

@@ -85,6 +85,7 @@ If the CSS file cannot be read, the app loads normally with default styling.
 |---|---|---|
 | `--font-family` | `'Inter', sans-serif` | Global font |
 | `--font-family-mono` | `'Consolas', monospace` | Code font |
+| `--font-family-emoji` | `'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif` | Emoji picker font |
 | `--font-size-base` | `14px` | Base font size for body text |
 | `--font-size-channel` | `16px` | Channel name and category header font size |
 | `--font-size-chat` | `15px` | Message body text font size |
