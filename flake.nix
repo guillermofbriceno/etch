@@ -129,6 +129,14 @@
         };
         pnpmRoot = "client/etch-gui";
 
+        # Source builds report the commit they were built from; the base version stays in
+        # `version` so the dependency fetches are not redone on every commit.
+        postPatch = ''
+          substituteInPlace client/etch-gui/src-tauri/tauri.conf.json \
+            --replace-fail '"version": "${finalAttrs.version}"' \
+                           '"version": "${finalAttrs.version}+${self.shortRev or self.dirtyShortRev or "unknown"}"'
+        '';
+
         buildAndTestSubdir = "client/etch-gui/src-tauri";
 
         # Updater artifacts need the release signing key, and Nix owns updates here.
