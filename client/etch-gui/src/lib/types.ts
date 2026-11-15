@@ -27,6 +27,14 @@ export type ChatMessage = {
     edited: boolean;
     // Maps emoji key → list of sender user IDs who reacted.
     reactions: Record<string, string[]>;
+    // Our own message that has not reached the server, so `id` is empty.
+    pending: PendingSend | null;
+};
+
+// Matches Rust PendingSend struct (serde serialization)
+export type PendingSend = {
+    transaction_id: string;
+    failed: boolean;
 };
 
 // Matches Rust StateEventKind enum (serde externally tagged)

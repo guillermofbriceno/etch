@@ -23,7 +23,7 @@ function seedUser(roomId: string, sender: string, displayName: string) {
         type: 'TimelinePushBack',
         data: [roomId, {
             sender: { display_name: displayName, avatar_url: null },
-            kind: { Message: { id: `$${sender}`, sender, body: 'hi', html_body: null, media: null, timestamp: Date.now(), edited: false, reactions: {} } },
+            kind: { Message: { id: `$${sender}`, sender, body: 'hi', html_body: null, media: null, timestamp: Date.now(), edited: false, reactions: {}, pending: null } },
         }],
     } as any);
 }
@@ -148,6 +148,7 @@ describe('MessageInput', () => {
             timestamp: Date.now(),
             edited: false,
             reactions: {},
+            pending: null,
         };
         setReply(msg);
         render(MessageInput);
@@ -168,6 +169,7 @@ describe('MessageInput', () => {
             timestamp: Date.now(),
             edited: false,
             reactions: {},
+            pending: null,
         };
         setReply(msg);
         render(MessageInput);
@@ -300,6 +302,7 @@ describe('MessageInput', () => {
             timestamp: Date.now(),
             edited: false,
             reactions: {},
+            pending: null,
         };
 
         it('entering edit mode populates textarea with message body', async () => {

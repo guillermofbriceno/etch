@@ -1537,6 +1537,72 @@ async fn a_message_above_a_stuck_local_echo_is_unread_with_notifications_muted_a
     assert!(sync_until(&mut event_rx, false).await, "a message that arrived while viewing was not marked read");
 }
 
+/// The send queue keeps a message it has not sent in its store, so it comes back with every launch
+/// until it is cancelled by transaction ID; a timeline built from that store is what the next launch shows.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unsent_attachment_is_marked_pending_and_cancelling_it_removes_it_from_the_store() {
+    use crate::matrix::name_colors::NameColorSender;
+    use crate::matrix::timeline::TimelineManager;
+    use matrix_sdk::attachment::AttachmentConfig;
+    use matrix_sdk::config::SyncSettings;
+    use matrix_sdk::ruma::api::client::room::create_room::v3::Request as CreateRoomRequest;
+    use matrix_sdk_ui::timeline::RoomExt;
+
+    init_test_logging();
+    let form = register_fresh_user("cancel").await;
+    let dir = tempfile::tempdir().unwrap();
+    let alice = matrix_sdk::Client::builder()
+        .homeserver_url(form.homeserver_url.clone().unwrap())
+        .sqlite_store(dir.path(), None)
+        .build().await.unwrap();
+    alice.matrix_auth().login_username(&form.username, form.password.as_deref().unwrap()).send().await.unwrap();
+    alice.event_cache().subscribe().unwrap();
+    let room = alice.create_room(CreateRoomRequest::new()).await.unwrap();
+    alice.sync_once(SyncSettings::default().timeout(Duration::from_secs(0))).await.unwrap();
+
+    let (event_tx, mut event_rx) = mpsc::channel(256);
+    let mut manager = TimelineManager::new(event_tx, Arc::new(ScriptDispatcher::empty()));
+    let (name_colors, _activity) = NameColorSender::test_channel();
+    manager.subscribe_to_room(&room, name_colors).await;
+
+    room.send_queue().set_enabled(false);
+    room.send_queue()
+        .send_attachment("held.png", mime_guess::mime::IMAGE_PNG, b"png".to_vec(), AttachmentConfig::new())
+        .await.unwrap();
+
+    let rid = room.room_id().to_string();
+    let pending = timeout(EVENT_TIMEOUT, async {
+        loop {
+            let entries = match event_rx.recv().await.expect("the timeline feed closed") {
+                CoreEvent::Matrix(MatrixEvent::TimelineAppend(r, entries)) if r == rid => entries,
+                CoreEvent::Matrix(
+                    MatrixEvent::TimelinePushBack(r, entry)
+                    | MatrixEvent::TimelineInsert(r, _, entry)
+                    | MatrixEvent::TimelineSet(r, _, entry),
+                ) if r == rid => vec![entry],
+                _ => continue,
+            };
+            let found = entries.into_iter().find_map(|entry| match entry.kind {
+                TimelineEntryKind::Message(msg) => msg.pending,
+                _ => None,
+            });
+            if let Some(pending) = found {
+                return pending;
+            }
+        }
+    }).await.expect("the held attachment never reached the frontend as pending");
+    assert!(!pending.failed, "a held message has not failed, it is waiting");
+
+    let stored_echoes = async || {
+        let items = room.timeline().await.unwrap().items().await;
+        items.iter().filter(|item| item.as_event().is_some_and(|e| e.is_local_echo())).count()
+    };
+    assert_eq!(stored_echoes().await, 1, "a fresh timeline should restore the held attachment");
+
+    manager.cancel_send(&rid, &pending.transaction_id).await;
+    assert_eq!(stored_echoes().await, 0, "the cancelled attachment would come back on the next launch");
+}
+
 /// Messages a connect's catch-up syncs deliver arrived while Etch was closed, a resubscribe
 /// must not leave the previous handler behind, and our own messages are never announced.
 #[tokio::test(flavor = "multi_thread")]

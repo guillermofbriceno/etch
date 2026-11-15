@@ -16,7 +16,7 @@ function message(sender: string, minute: number, edited = false): TimelineEntry 
         kind: {
             Message: {
                 id: `$${nextId}`, sender, body: '', html_body: null, media: null,
-                timestamp: minute * 60_000, edited, reactions: {},
+                timestamp: minute * 60_000, edited, reactions: {}, pending: null,
             },
         },
     };

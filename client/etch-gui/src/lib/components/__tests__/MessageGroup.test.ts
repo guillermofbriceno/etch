@@ -3,6 +3,8 @@ import { render, screen, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { resetStores } from '$lib/stores/__tests__/helpers';
 import { compactChat } from '$lib/stores/layout';
+import { currentUser } from '$lib/stores';
+import { invoke } from '@tauri-apps/api/core';
 import { handleMatrixEvent } from '$lib/stores/nameColors';
 import MessageGroup from '../MessageGroup.svelte';
 import type { ChatMessage, SenderProfile } from '$lib/types';
@@ -57,6 +59,7 @@ function makeMsg(overrides: Partial<ChatMessage> = {}): ChatMessage {
         timestamp: Date.now(),
         edited: false,
         reactions: {},
+        pending: null,
         ...overrides,
     };
 }
@@ -313,5 +316,25 @@ describe('MessageGroup sender name', () => {
         await tick();
 
         expect(container.querySelector('.sender')).toHaveStyle({ color: '#ff8800' });
+    });
+});
+
+describe('MessageGroup unsent message', () => {
+    it('marks a failed send and deletes it by transaction ID, offering nothing that needs an event ID', async () => {
+        currentUser.set({ username: 'alice', matrixId: '@alice:etch.gg', displayName: 'Alice', avatarUrl: null });
+        const msg = makeMsg({ id: '', pending: { transaction_id: 'txn1', failed: true } });
+        render(MessageGroup, { props: { msg, sender, continuation: false, roomId: '!room:test' } });
+
+        expect(screen.getByText('Not sent')).toBeInTheDocument();
+        for (const label of ['Reply', 'Edit', 'React with 👍']) {
+            expect(screen.queryByLabelText(label)).not.toBeInTheDocument();
+        }
+
+        await fireEvent.click(screen.getByLabelText('Delete'));
+        await fireEvent.click(screen.getByLabelText('Confirm delete'));
+
+        expect(invoke).toHaveBeenCalledWith('core_command', {
+            command: { type: 'Matrix', data: { type: 'CancelSend', data: { room_id: '!room:test', transaction_id: 'txn1' } } },
+        });
     });
 });

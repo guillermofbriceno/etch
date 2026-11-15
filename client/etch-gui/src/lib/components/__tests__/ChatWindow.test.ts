@@ -36,7 +36,7 @@ function message(id: string, body: string): TimelineEntry {
         kind: {
             Message: {
                 id, sender: '@alice:test', body, html_body: null, media: null,
-                timestamp: 1_700_000_000_000, edited: false, reactions: {},
+                timestamp: 1_700_000_000_000, edited: false, reactions: {}, pending: null,
             },
         },
     };

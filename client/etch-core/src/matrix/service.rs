@@ -620,6 +620,10 @@ impl MatrixBackend for MatrixService {
                 if self.serving_client("RedactMessage").is_none() { return }
                 self.timeline_manager.redact_message(&room_id, &event_id).await;
             }
+            MatrixCommand::CancelSend { room_id, transaction_id } => {
+                if self.serving_client("CancelSend").is_none() { return }
+                self.timeline_manager.cancel_send(&room_id, &transaction_id).await;
+            }
             MatrixCommand::ToggleReaction { room_id, event_id, key } => {
                 if self.serving_client("ToggleReaction").is_none() { return }
                 self.timeline_manager.toggle_reaction(&room_id, &event_id, &key).await;

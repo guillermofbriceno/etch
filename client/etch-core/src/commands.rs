@@ -30,6 +30,8 @@ pub enum MatrixCommand {
     SendAttachment(AttachmentSend),
     EditMessage { room_id: String, event_id: String, text: String, html_body: Option<String> },
     RedactMessage { room_id: String, event_id: String },
+    /// Names the message by `PendingSend::transaction_id`, since it has no event ID yet.
+    CancelSend { room_id: String, transaction_id: String },
     ToggleReaction { room_id: String, event_id: String, key: String },
     CreateDirectMessage { target_user_id: String },
     SetDisplayName(String),

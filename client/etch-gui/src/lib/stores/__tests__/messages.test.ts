@@ -23,6 +23,7 @@ function makeEntry(id: string, body: string): TimelineEntry {
                 timestamp: Date.now(),
                 edited: false,
                 reactions: {},
+                pending: null,
             },
         },
     };

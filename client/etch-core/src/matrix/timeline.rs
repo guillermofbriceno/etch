@@ -5,7 +5,7 @@ use matrix_sdk::ruma::events::room::MediaSource;
 use matrix_sdk_ui::timeline::{Timeline, TimelineItem, TimelineItemContent, TimelineReadReceiptTracking,
     TimelineItemKind, RoomExt, EventTimelineItem, VirtualTimelineItem,
     MsgLikeKind, MembershipChange, AnyOtherFullStateEventContent,
-    TimelineDetails, TimelineEventItemId};
+    TimelineDetails, TimelineEventItemId, EventSendState};
 use matrix_sdk::ruma::events::FullStateEventContent;
 use matrix_sdk::ruma::{OwnedRoomId, RoomId, events::room::message::MessageType};
 use matrix_sdk_ui::eyeball_im::{Vector, VectorDiff};
@@ -16,6 +16,7 @@ use crate::matrix::name_colors::NameColorSender;
 use crate::matrix::room_activity::{ActivityFeed, ActivityWatch};
 use crate::models::ChatMessageReceive;
 use crate::models::MediaInfo;
+use crate::models::PendingSend;
 use crate::models::SenderProfile;
 use crate::scripting::ScriptDispatcher;
 use crate::task::AbortOnDrop;
@@ -224,6 +225,15 @@ impl TimelineManager {
     fn resolve_timeline_item(&self, room_id: &str, event_id: &str, op: &str)
         -> Option<(Arc<Timeline>, TimelineEventItemId)>
     {
+        let timeline = self.room_timeline(room_id, op)?;
+        let Ok(event_id) = matrix_sdk::ruma::OwnedEventId::try_from(event_id) else {
+            log::error!("[{}] Invalid event_id: {}", op, event_id);
+            return None;
+        };
+        Some((timeline, TimelineEventItemId::EventId(event_id)))
+    }
+
+    fn room_timeline(&self, room_id: &str, op: &str) -> Option<Arc<Timeline>> {
         let Ok(room_id) = OwnedRoomId::try_from(room_id) else {
             log::error!("[{}] Invalid room_id: {}", op, room_id);
             return None;
@@ -232,11 +242,7 @@ impl TimelineManager {
             log::error!("[{}] No timeline subscription for room: {}", op, room_id);
             return None;
         };
-        let Ok(event_id) = matrix_sdk::ruma::OwnedEventId::try_from(event_id) else {
-            log::error!("[{}] Invalid event_id: {}", op, event_id);
-            return None;
-        };
-        Some((Arc::clone(&entry.timeline), TimelineEventItemId::EventId(event_id)))
+        Some(Arc::clone(&entry.timeline))
     }
 
     pub async fn edit_message(&self, room_id: &str, event_id: &str, text: &str, html_body: Option<&str>) {
@@ -261,6 +267,15 @@ impl TimelineManager {
         };
         if let Err(e) = timeline.redact(&item_id, None).await {
             log::error!("Failed to redact message: {:?}", e);
+        }
+    }
+
+    /// Drops a message of ours that has not reached the server, including one the send queue gave up on.
+    pub async fn cancel_send(&self, room_id: &str, transaction_id: &str) {
+        let Some(timeline) = self.room_timeline(room_id, "cancel_send") else { return };
+        let item_id = TimelineEventItemId::TransactionId(transaction_id.into());
+        if let Err(e) = timeline.redact(&item_id, None).await {
+            log::error!("Failed to cancel sending a message: {:?}", e);
         }
     }
 
@@ -331,6 +346,16 @@ fn timeline_item_to_entry(
             virtual_item_to_entry(id, virt)
         }
     }
+}
+
+fn pending_send(event: &EventTimelineItem) -> Option<PendingSend> {
+    let failed = match event.send_state()? {
+        EventSendState::NotSentYet { .. } => false,
+        EventSendState::SendingFailed { .. } => true,
+        EventSendState::Sent { .. } => return None,
+    };
+    let transaction_id = event.transaction_id()?.to_string();
+    Some(PendingSend { transaction_id, failed })
 }
 
 fn extract_sender_profile(event: &EventTimelineItem) -> Option<SenderProfile> {
@@ -446,6 +471,7 @@ fn event_item_to_entry(
                         timestamp: ts as u128,
                         edited: message.is_edited(),
                         reactions,
+                        pending: pending_send(event),
                     }))
                 }
                 MsgLikeKind::Redacted => TimelineEntryKind::Redacted,

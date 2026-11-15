@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { toggleReaction, setReply, setEditing, redactMessage, currentUser } from '$lib/stores';
+    import { toggleReaction, setReply, setEditing, redactMessage, cancelSend, currentUser } from '$lib/stores';
     import Icon from './Icon.svelte';
     import type { ChatMessage } from '$lib/types';
 
@@ -21,7 +21,11 @@
             return;
         }
         if (!roomId) return;
-        await redactMessage(roomId, message.id);
+        if (message.pending) {
+            await cancelSend(roomId, message.pending.transaction_id);
+        } else {
+            await redactMessage(roomId, message.id);
+        }
         cancelDelete();
     }
 
@@ -44,20 +48,25 @@
             <Icon name="close" size={16} />
         </button>
     {:else}
-        {#each QUICK_EMOJIS as emoji}
-            <button
-                class="action-btn emoji-btn"
-                on:click={() => toggleReaction(message.id, emoji)}
-                aria-label="React with {emoji}"
-            >{emoji}</button>
-        {/each}
-        <button class="action-btn" aria-label="Reply" on:click={() => setReply(message)}>
-            <Icon name="reply" size={16} />
-        </button>
-        {#if isOwnMessage}
-            <button class="action-btn" aria-label="Edit" on:click={() => setEditing(message)}>
-                <Icon name="edit" size={16} />
+        <!-- Reacting, replying and editing all need the event ID the server has not given yet. -->
+        {#if !message.pending}
+            {#each QUICK_EMOJIS as emoji}
+                <button
+                    class="action-btn emoji-btn"
+                    on:click={() => toggleReaction(message.id, emoji)}
+                    aria-label="React with {emoji}"
+                >{emoji}</button>
+            {/each}
+            <button class="action-btn" aria-label="Reply" on:click={() => setReply(message)}>
+                <Icon name="reply" size={16} />
             </button>
+        {/if}
+        {#if isOwnMessage}
+            {#if !message.pending}
+                <button class="action-btn" aria-label="Edit" on:click={() => setEditing(message)}>
+                    <Icon name="edit" size={16} />
+                </button>
+            {/if}
             <button class="action-btn delete-btn" aria-label="Delete" on:click={handleDelete}>
                 <Icon name="trash" size={16} />
             </button>

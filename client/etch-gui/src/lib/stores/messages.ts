@@ -91,6 +91,13 @@ export async function redactMessage(roomId: string, eventId: string): Promise<vo
     });
 }
 
+export async function cancelSend(roomId: string, transactionId: string): Promise<void> {
+    await sendCoreCommand({
+        type: 'Matrix',
+        data: { type: 'CancelSend', data: { room_id: roomId, transaction_id: transactionId } },
+    });
+}
+
 export async function toggleReaction(eventId: string, key: string): Promise<void> {
     const roomId = get(activeChannelId);
     if (!roomId) return;

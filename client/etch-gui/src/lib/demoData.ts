@@ -118,6 +118,7 @@ function msg(
                 timestamp,
                 edited: false,
                 reactions: opts.reactions ?? {},
+                pending: null,
             },
         },
     };

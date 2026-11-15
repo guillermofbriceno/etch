@@ -197,6 +197,10 @@
                 {/each}
             </div>
         {/if}
+
+        {#if msg.pending?.failed}
+            <div class="send-failed">Not sent</div>
+        {/if}
     </div>
 
     <EmojiPicker message={msg} {roomId} />
@@ -295,6 +299,7 @@
     .sender { font-weight: 500; margin-right: 8px; }
 
     .timestamp { font-size: 12px; color: var(--text-muted); }
+    .send-failed { margin-top: 2px; font-size: 12px; color: var(--status-danger); }
 
     .body {
         color: var(--text-primary);

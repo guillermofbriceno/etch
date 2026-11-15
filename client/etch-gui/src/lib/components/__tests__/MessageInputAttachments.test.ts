@@ -323,7 +323,7 @@ describe('drag and drop', () => {
         render(MessageInput);
         const editing = {
             id: '$edit', sender: '@someone:example.org', body: 'draft', html_body: null,
-            media: null, timestamp: 0, edited: false, reactions: {},
+            media: null, timestamp: 0, edited: false, reactions: {}, pending: null,
         };
         const blockers: [string, () => void, () => void][] = [
             ['an overlay covers it', () => activeOverlay.set('settings'), () => activeOverlay.set('none')],

@@ -81,6 +81,14 @@ pub struct ChatMessageReceive {
     pub edited: bool,
     // emoji key → list of sender user IDs (aggregated from m.reaction events)
     pub reactions: HashMap<String, Vec<String>>,
+    /// Set while our own message has not reached the server, so it has no event ID yet.
+    pub pending: Option<PendingSend>,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
+pub struct PendingSend {
+    pub transaction_id: String,
+    pub failed: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]

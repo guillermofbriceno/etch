@@ -92,7 +92,7 @@ function makeMessageEntry(id: string, body: string) {
         kind: {
             Message: {
                 id, sender: '@someone:example.org', body, html_body: null,
-                media: null, timestamp: 1000, edited: false, reactions: {},
+                media: null, timestamp: 1000, edited: false, reactions: {}, pending: null,
             },
         },
     };
@@ -101,7 +101,7 @@ function makeMessageEntry(id: string, body: string) {
 function makeChatMessage(id: string) {
     return {
         id, sender: '@someone:example.org', body: 'hello', html_body: null,
-        media: null, timestamp: 1000, edited: false, reactions: {},
+        media: null, timestamp: 1000, edited: false, reactions: {}, pending: null,
     };
 }
 

@@ -115,7 +115,7 @@ describe('Matrix event routing', () => {
                     data: ['room1', {
                         id: 'item-1',
                         sender: { display_name: 'A', avatar_url: null },
-                        kind: { Message: { id: '$e1', sender: '@a:s', body: 'routed', html_body: null, media: null, timestamp: Date.now(), edited: false, reactions: {} } },
+                        kind: { Message: { id: '$e1', sender: '@a:s', body: 'routed', html_body: null, media: null, timestamp: Date.now(), edited: false, reactions: {}, pending: null } },
                     }],
                 },
             } satisfies CoreEvent,

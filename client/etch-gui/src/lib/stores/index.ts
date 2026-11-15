@@ -4,7 +4,7 @@ import { initRoomActivity } from './roomActivity';
 export { appFocused } from './appFocus';
 
 export { activeChannelId } from './activeChannel';
-export { activeWindow, setActiveChannel, loadOlder, sendMessage, sendAttachment, editMessage, redactMessage, createDirectMessage, toggleReaction } from './messages';
+export { activeWindow, setActiveChannel, loadOlder, sendMessage, sendAttachment, editMessage, redactMessage, cancelSend, createDirectMessage, toggleReaction } from './messages';
 export { channels, activeChannel, voiceRooms, textRooms, directMessages, hideDm } from './channels';
 export { roomActivity, unreadRooms } from './roomActivity';
 export { currentUser } from './user';
